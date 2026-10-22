@@ -1,0 +1,4 @@
+fun main() {
+    val a: i32? = 5
+    if (val x = a && x > 3) println("big $x")
+}

@@ -1,0 +1,4 @@
+interface Builder { fun build(self): String where Self: Sized; fun name(): String }
+struct B
+impl Builder for B { fun build(self): String = "built"; fun name(): String = "b".to_string() }
+fun main() { println(B.build()) }

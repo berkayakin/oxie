@@ -1,0 +1,8 @@
+fun main() {
+    val parse_all = |xs: &[&str]| -> Result<Vec<i32>, std::num::ParseIntError> {
+        var out = vec[]
+        for (x in xs) out.push(x.parse::<i32>()?)
+        Ok(out)
+    }
+    println("${parse_all(&["1", "2"]):?} ${parse_all(&["x"]).is_err()}")
+}

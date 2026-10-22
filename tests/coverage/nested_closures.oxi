@@ -1,0 +1,4 @@
+fun main() {
+    val adders: Vec<Box<dyn Fn(i32) -> i32>> = (1..=3).map { n -> Box.new(move |x: i32| x + n) as Box<dyn Fn(i32) -> i32> }.collect()
+    println(adders.iter().map { f -> f(10) }.sum::<i32>())
+}

@@ -1,0 +1,5 @@
+import std::any::Any
+fun main() {
+    val items: Vec<Box<dyn Any>> = vec[Box.new(5i32), Box.new("text")]
+    for (i in &items) { if (val n = i.downcast_ref::<i32>()) println("int $n") }
+}

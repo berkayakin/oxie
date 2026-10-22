@@ -1,0 +1,2 @@
+fun evens(limit: u32): impl Iterator<Item = u32> = (0..limit).filter { it % 2 == 0 }
+fun main() { println("${evens(10).collect::<Vec<_>>():?}") }

@@ -68,7 +68,7 @@ pub fn walk_expr(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) {
                 walk_expr(&a.body, f);
             }
         }
-        Block(b) | Unsafe(b) | Loop { body: b, .. } | Async { block: b, .. } => walk_block(b, f),
+        Block(b) | Unsafe(b) | ConstBlock(b) | LabeledBlock { block: b, .. } | Loop { body: b, .. } | Async { block: b, .. } => walk_block(b, f),
         While { cond, body, .. } => {
             walk_cond(cond, f);
             walk_block(body, f);
@@ -121,23 +121,29 @@ pub fn walk_cond(c: &Cond, f: &mut dyn FnMut(&Expr) -> bool) {
     match c {
         Cond::Expr(e) => walk_expr(e, f),
         Cond::Let { expr, .. } => walk_expr(expr, f),
+        Cond::Chain(parts) => parts.iter().for_each(|c| walk_cond(c, f)),
     }
 }
 
 pub fn walk_block(b: &Block, f: &mut dyn FnMut(&Expr) -> bool) {
     for s in &b.stmts {
-        match s {
-            Stmt::Let { init, else_, .. } => {
-                if let Some(e) = init {
-                    walk_expr(e, f);
-                }
-                if let Some(b) = else_ {
-                    walk_block(b, f);
-                }
+        walk_stmt(s, f);
+    }
+}
+
+pub fn walk_stmt(s: &Stmt, f: &mut dyn FnMut(&Expr) -> bool) {
+    match s {
+        Stmt::Let { init, else_, .. } => {
+            if let Some(e) = init {
+                walk_expr(e, f);
             }
-            Stmt::Expr { expr, .. } => walk_expr(expr, f),
-            Stmt::Item(_) => {}
+            if let Some(b) = else_ {
+                walk_block(b, f);
+            }
         }
+        Stmt::Expr { expr, .. } => walk_expr(expr, f),
+        Stmt::Attributed { stmt, .. } => walk_stmt(stmt, f),
+        Stmt::Item(_) => {}
     }
 }
 

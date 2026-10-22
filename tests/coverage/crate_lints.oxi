@@ -1,0 +1,5 @@
+#![allow(dead_code)]
+#![recursion_limit = "256"]
+fun unused_helper(): i32 = 1
+mod inner { fun also_unused() {} }
+fun main() = println("lints ok")

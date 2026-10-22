@@ -42,7 +42,7 @@ impl Project {
     }
 
     pub fn options(&self, out_dir: PathBuf) -> Options {
-        Options { crate_name: self.name.clone(), extern_crates: extern_crates_from_manifest(&self.manifest), out_dir }
+        Options { crate_name: self.name.clone(), extern_crates: extern_crates_from_manifest(&self.manifest), out_dir, script: false }
     }
 
     /// Compiles all sources in memory (to report Oxie errors before invoking cargo).
@@ -184,7 +184,9 @@ pub fn script_project(file: &Path) -> std::io::Result<Project> {
         toml_path(&abs)
     );
     write_if_changed(&dir.join("build.rs"), &build)?;
-    write_if_changed(&dir.join("src/main.rs"), &root_stub("main"))?;
+    // crate attributes written in the script (`#![...]`) go at the top of the generated main.rs
+    let crate_attrs: String = src.lines().filter(|l| l.trim_start().starts_with("#![")).map(|l| format!("{}\n", l.trim())).collect();
+    write_if_changed(&dir.join("src/main.rs"), &format!("{}{}", crate_attrs, root_stub("main")))?;
     Ok(Project { root: dir, manifest, name: stem })
 }
 
@@ -206,5 +208,5 @@ pub fn script_options(name: &str, deps: &[String]) -> Options {
     let manifest = format!("[dependencies]\n{}\n", deps.join("\n"));
     let mut ex: HashSet<String> = extern_crates_from_manifest(&manifest);
     ex.remove("");
-    Options { crate_name: name.to_string(), extern_crates: ex, out_dir: PathBuf::from("/tmp/oxie-check") }
+    Options { crate_name: name.to_string(), extern_crates: ex, out_dir: PathBuf::from("/tmp/oxie-check"), script: true }
 }

@@ -49,6 +49,10 @@ pub struct ClassInfo {
     pub user_new: bool,
     pub is_data: bool,
     pub is_tuple: bool,
+    /// `union` (constructed with a struct literal, no generated constructor)
+    pub is_union: bool,
+    /// No fields at all: the type name is also its only value (`struct Marker`, `class Dog : Animal`)
+    pub is_unit: bool,
     pub has_generics: bool,
     /// Number of lifetime parameters (`data class Token<'a>`).
     pub lifetimes: usize,
@@ -363,6 +367,8 @@ fn method_info_explicit(f: &FunDecl, trait_recv: Option<Recv>) -> Option<MethodI
     let recv = match &f.self_param {
         Some(SelfParam::Ref) => Some(Recv::Ref),
         Some(SelfParam::RefMut) => Some(Recv::RefMut),
+        Some(SelfParam::Typed(Type::Ref { mutable: true, .. })) => Some(Recv::RefMut),
+        Some(SelfParam::Typed(Type::Ref { mutable: false, .. })) => Some(Recv::Ref),
         Some(SelfParam::Value { .. }) | Some(SelfParam::Typed(_)) => Some(Recv::Value),
         None if f.mods.is_static => Some(Recv::Static),
         None if f.mods.is_mut => Some(Recv::RefMut),
@@ -401,7 +407,7 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                 k.ext_traits.push((module.to_vec(), ext_trait_name(module, &f.name)));
             }
             ItemKind::Type(t) => match t.kind {
-                TypeKind::Class | TypeKind::Data | TypeKind::TupleStruct => {
+                TypeKind::Class | TypeKind::Data | TypeKind::TupleStruct | TypeKind::Union => {
                     let fields = t
                         .fields
                         .iter()
@@ -429,6 +435,8 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                         user_new,
                         is_data: t.kind == TypeKind::Data,
                         is_tuple: t.kind == TypeKind::TupleStruct,
+                        is_union: t.kind == TypeKind::Union,
+                        is_unit: t.kind != TypeKind::Union && t.fields.is_empty() && t.tuple_fields.is_empty(),
                         has_generics: !t.generics.is_empty(),
                         lifetimes: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count(),
                     };
@@ -737,6 +745,7 @@ impl<'a> Walker<'a> {
                 self.bind(pat);
             }
             Stmt::Expr { expr, .. } => self.expr(expr),
+            Stmt::Attributed { stmt, .. } => self.stmt(stmt),
             Stmt::Item(_) => {}
         }
     }
@@ -748,6 +757,7 @@ impl<'a> Walker<'a> {
                 self.expr(expr);
                 self.bind(pat);
             }
+            Cond::Chain(parts) => parts.iter().for_each(|c| self.cond(c)),
         }
     }
 
@@ -855,7 +865,7 @@ impl<'a> Walker<'a> {
                     self.pop();
                 }
             }
-            Block(b) | Unsafe(b) | Loop { body: b, .. } => self.block(b),
+            Block(b) | Unsafe(b) | ConstBlock(b) | LabeledBlock { block: b, .. } | Loop { body: b, .. } => self.block(b),
             Async { block, .. } => self.block(block),
             While { cond, body, .. } => {
                 self.push();

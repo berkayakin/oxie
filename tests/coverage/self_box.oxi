@@ -1,0 +1,6 @@
+interface State { fun next(self: Box<Self>): Box<dyn State>; fun name(): &str }
+struct A
+struct B
+impl State for A { fun next(self: Box<Self>): Box<dyn State> = Box.new(B); fun name(): &str = "A" }
+impl State for B { fun next(self: Box<Self>): Box<dyn State> = Box.new(A); fun name(): &str = "B" }
+fun main() { val s: Box<dyn State> = Box.new(A); val t = s.next(); println(t.name()) }

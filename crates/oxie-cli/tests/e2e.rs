@@ -28,7 +28,18 @@ fn programs(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn e2e_programs() {
-    let dir = repo().join("tests/e2e");
+    run_programs("tests/e2e");
+}
+
+/// One small program per Rust feature (generics, lifetimes, GATs, unions, FFI, let chains, ...):
+/// Oxie must accept the Rust feature and produce the expected output.
+#[test]
+fn rust_feature_coverage() {
+    run_programs("tests/coverage");
+}
+
+fn run_programs(rel: &str) {
+    let dir = repo().join(rel);
     let mut failures = Vec::new();
     for p in programs(&dir) {
         let Ok(expected) = std::fs::read_to_string(p.with_extension("out")) else { continue };

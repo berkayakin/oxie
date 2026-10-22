@@ -26,6 +26,8 @@ pub struct Options {
     pub extern_crates: HashSet<String>,
     /// Absolute directory the generated files are written to (used in `#[path]` attributes).
     pub out_dir: PathBuf,
+    /// A single-file script: its generated `main.rs` carries the crate attributes (`#![...]`).
+    pub script: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -146,6 +148,7 @@ pub fn compile(inputs: Vec<Input>, opts: &Options) -> Output {
     for p in &parsed {
         let mut l = Lowerer::new(&k, p.module.clone(), p.is_root);
         l.src_dir = p.input.abs_path.parent().map(|d| d.to_path_buf());
+        l.crate_attrs_allowed = opts.script;
         l.lower_file(&p.file);
         let mut diags = p.diags.clone();
         diags.append(&mut l.diags);
@@ -159,7 +162,21 @@ pub fn compile(inputs: Vec<Input>, opts: &Options) -> Output {
                 "#[path = \"{}\"]\n#[doc(hidden)]\n#[allow(dead_code, unused_imports)]\npub(crate) mod __oxie;\n",
                 abs(Path::new("__oxie.rs"))
             ));
-            header.push_str(&module_decls(&module_files, &[], &abs));
+            // crate-level lint attributes (`#![allow(...)]` in the root file) also cover every module
+            let decls = module_decls(&module_files, &[], &abs);
+            if l.root_lints.is_empty() {
+                header.push_str(&decls);
+            } else {
+                for line in decls.lines() {
+                    if line.starts_with("#[path") || (line.starts_with("pub mod") && line.ends_with('{')) {
+                        for lint in &l.root_lints {
+                            header.push_str(&format!("#[{}]\n", lint));
+                        }
+                    }
+                    header.push_str(line);
+                    header.push('\n');
+                }
+            }
         } else {
             footer.push_str(&module_decls(&module_files, &p.module, &abs));
         }
@@ -240,7 +257,7 @@ fn map_entries(marks: &[Mark], line_offset: u32, idx: &LineIndex, src: &str) -> 
 /// Lowers a single file in isolation (for `oxie emit`, tests and tooling).
 pub fn compile_one(text: &str) -> (String, Vec<Diag>) {
     let input = Input { rel_path: PathBuf::from("main.oxi"), abs_path: PathBuf::from("main.oxi"), text: text.to_string() };
-    let opts = Options { crate_name: "main".into(), extern_crates: HashSet::new(), out_dir: PathBuf::from("/oxie") };
+    let opts = Options { crate_name: "main".into(), extern_crates: HashSet::new(), out_dir: PathBuf::from("/oxie"), script: true };
     let out = compile(vec![input], &opts);
     let diags = out.diags.into_iter().next().map(|d| d.2).unwrap_or_default();
     let text = out.files.into_iter().next().map(|f| f.text).unwrap_or_default();

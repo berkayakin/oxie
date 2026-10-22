@@ -1,0 +1,2 @@
+struct Event { r#type: String }
+fun main() { val e = Event { r#type: "click".to_string() }; println(e.r#type) }

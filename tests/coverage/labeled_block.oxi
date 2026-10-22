@@ -1,0 +1,7 @@
+fun main() {
+    val v = 'found: {
+        for (i in 0..10) { if (i * i > 20) break 'found i }
+        -1
+    }
+    println(v)
+}

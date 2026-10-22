@@ -1,0 +1,2 @@
+union IntOrFloat { i: u32, f: f32 }
+fun main() { val u = IntOrFloat { f: 1.0 }; println(unsafe { u.i }) }

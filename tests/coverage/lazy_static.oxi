@@ -1,0 +1,3 @@
+import std::sync::{LazyLock, Mutex}
+static CACHE: LazyLock<Mutex<Vec<i32>>> = LazyLock.new { Mutex.new(vec[]) }
+fun main() { CACHE.lock().unwrap().push(3); println("${CACHE.lock().unwrap():?}") }

@@ -1,0 +1,6 @@
+fun describe(xs: &[i32]): String = when (xs) {
+    [] -> "empty".to_string()
+    [one] -> "one: $one"
+    [first, .., last] -> "from $first to $last"
+}
+fun main() { println(describe(&[1, 2, 3])); val n = 5; when (n) { x @ 1..=9 -> println("digit $x"); else -> {} } }

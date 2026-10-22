@@ -6,6 +6,8 @@ use crate::lexer::StrPart;
 #[derive(Clone, Debug)]
 pub struct File {
     pub inner_docs: Vec<String>,
+    /// `#![...]` attribute contents (crate- or module-level).
+    pub inner_attrs: Vec<String>,
     pub items: Vec<Item>,
 }
 
@@ -168,6 +170,8 @@ pub enum TypeKind {
     /// Rust tuple struct: `struct Meters(f64)`.
     TupleStruct,
     Enum,
+    /// Rust `union`
+    Union,
 }
 
 #[derive(Clone, Debug)]
@@ -429,6 +433,8 @@ pub enum Cond {
     Expr(Expr),
     /// `val pat = expr` -> `let pat = expr` (bare identifier means `Some(ident)`)
     Let { pat: Pat, expr: Expr, implicit_some: bool },
+    /// Let chain: `val a = x && a > 0 && val b = y` (each part is `Expr` or `Let`)
+    Chain(Vec<Cond>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -592,6 +598,10 @@ pub enum ExprKind {
     /// `println(...)` etc. without `!`
     BuiltinMacro { name: String, args: Vec<Arg> },
     TryCatch { body: Block, catch: Option<Box<Catch>> },
+    /// `'label: { ... }` (a block that `break 'label value` can leave)
+    LabeledBlock { label: String, block: Block },
+    /// `const { ... }` evaluated at compile time
+    ConstBlock(Block),
     Paren(Box<Expr>),
     Raw(String),
     /// Placeholder after a parse error.
@@ -615,6 +625,8 @@ pub enum Stmt {
     Let { pat: Pat, mutable: bool, ty: Option<Type>, init: Option<Expr>, else_: Option<Block>, span: Span },
     Expr { expr: Expr, semi: bool },
     Item(Box<ItemBox>),
+    /// Statement with outer attributes (`@cfg(test) println(...)`); attribute contents as Rust text.
+    Attributed { attrs: Vec<String>, stmt: Box<Stmt> },
 }
 
 /// Wrapper so `Stmt` can derive PartialEq without requiring it on items.
@@ -650,6 +662,8 @@ impl Expr {
                 | ExprKind::DoWhile { .. }
                 | ExprKind::For { .. }
                 | ExprKind::TryCatch { .. }
+                | ExprKind::LabeledBlock { .. }
+                | ExprKind::ConstBlock(_)
         )
     }
     /// Expressions that never produce a value.

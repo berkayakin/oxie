@@ -1,0 +1,4 @@
+interface Shape { const SIDES: u32; fun name(): String }
+struct Square
+impl Shape for Square { const SIDES: u32 = 4; fun name(): String = "square".to_string() }
+fun main() { println("${Square.SIDES} ${Square.name()}") }

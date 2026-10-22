@@ -89,6 +89,39 @@ impl Emitter {
         self.line
     }
 
+    /// Inserts `prefix` lines before every top-level paragraph (an unindented line after a blank
+    /// line), keeping source-map marks in place. Used to apply crate-level lint attributes.
+    pub fn prefix_paragraphs(&mut self, prefix: &[String]) {
+        let lines: Vec<String> = self.buf.split('\n').map(|l| l.to_string()).collect();
+        let mut out = String::new();
+        let mut shift = vec![0u32; lines.len() + 1];
+        let mut count = 0u32;
+        for (i, l) in lines.iter().enumerate() {
+            let starts_item = !l.is_empty()
+                && !l.starts_with(char::is_whitespace)
+                && !l.starts_with(['}', ')', ']'])
+                && !l.starts_with("//")
+                && (i == 0 || lines[i - 1].trim().is_empty());
+            if starts_item {
+                for p in prefix {
+                    out.push_str(p);
+                    out.push('\n');
+                    count += 1;
+                }
+            }
+            shift[i] = count;
+            out.push_str(l);
+            if i + 1 < lines.len() {
+                out.push('\n');
+            }
+        }
+        self.buf = out;
+        for m in &mut self.marks {
+            m.gen_line += shift.get(m.gen_line as usize).copied().unwrap_or(count);
+        }
+        self.line += count;
+    }
+
     /// Writes raw multi-line text, re-indenting each line.
     pub fn raw_lines(&mut self, text: &str) {
         for (i, l) in text.lines().enumerate() {

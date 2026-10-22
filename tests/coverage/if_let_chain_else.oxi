@@ -1,0 +1,4 @@
+fun main() {
+    val r: Result<i32, String> = Err("bad".to_string())
+    if let Ok(v) = r { println(v) } else if let Err(e) = &r { println("err $e") } else { println("?") }
+}

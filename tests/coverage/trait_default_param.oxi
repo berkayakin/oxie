@@ -1,0 +1,4 @@
+interface Combine<Rhs = Self> { type Out; fun combine(other: Rhs): Self::Out }
+struct N(i32)
+impl Combine for N { type Out = i32; fun combine(other: N): i32 = self.0 + other.0 }
+fun main() { println(N(1).combine(N(2))) }

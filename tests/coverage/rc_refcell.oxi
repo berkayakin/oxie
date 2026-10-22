@@ -1,0 +1,8 @@
+import std::rc::Rc
+import std::cell::RefCell
+data class Node(value: i32, children: Vec<Rc<RefCell<Node>>> = vec[])
+fun main() {
+    val root = Rc.new(RefCell.new(Node(1)))
+    root.borrow_mut().children.push(Rc.new(RefCell.new(Node(2))))
+    println(root.borrow().children.len())
+}

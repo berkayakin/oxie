@@ -231,6 +231,10 @@ pub struct Lowerer<'a> {
     pub(crate) in_signature: std::cell::Cell<bool>,
     /// Directory of the source file (for `mod name` declarations of hand-written Rust files).
     pub src_dir: Option<std::path::PathBuf>,
+    /// Scripts put crate attributes in their generated main.rs; projects can't (it's the user's file).
+    pub crate_attrs_allowed: bool,
+    /// Lint attributes from `#![...]` in the crate root, applied to every item and module.
+    pub root_lints: Vec<String>,
 }
 
 pub fn esc(name: &str) -> String {
@@ -293,6 +297,8 @@ impl<'a> Lowerer<'a> {
             members_pub: false,
             in_signature: std::cell::Cell::new(false),
             src_dir: None,
+            crate_attrs_allowed: false,
+            root_lints: Vec::new(),
         }
     }
 
@@ -362,6 +368,25 @@ impl<'a> Lowerer<'a> {
             self.e.w(&format!("//{}", d));
             self.e.nl();
         }
+        // `#![...]`: module files take inner attributes directly. The crate root is `include!`d,
+        // which can't, so its lint attributes are applied to each item and module instead.
+        let is_lint = |a: &str| {
+            let a = a.trim_start();
+            ["allow", "warn", "deny", "forbid", "expect"].iter().any(|l| a.strip_prefix(l).is_some_and(|r| r.trim_start().starts_with('(')))
+        };
+        for a in &file.inner_attrs {
+            if !self.is_root {
+                self.e.w(&format!("#![{}]", a));
+                self.e.nl();
+            } else if is_lint(a) {
+                self.root_lints.push(a.clone());
+            } else if !self.crate_attrs_allowed {
+                self.diags.push(
+                    Diag::error(Span::default(), format!("`#![{}]` applies to the whole crate and must be written in src/main.rs (or src/lib.rs)", a))
+                        .with_help("lint attributes like `#![allow(...)]` work in .oxi files; other crate attributes go in the Rust root file"),
+                );
+            }
+        }
         self.e.w("#[allow(unused_imports)]\nuse crate::__oxie::prelude::*;");
         self.e.nl();
         self.ext_imports();
@@ -371,11 +396,27 @@ impl<'a> Lowerer<'a> {
                 self.note_import(&i.tree);
             }
         }
+        // inline `mod name { }` declarations are path roots too (`math.double(2)`)
+        fn mods(items: &[Item], out: &mut Vec<String>) {
+            for it in items {
+                if let ItemKind::Mod { name, items } = &it.kind {
+                    out.push(name.clone());
+                    mods(items, out);
+                }
+            }
+        }
+        let mut inline = Vec::new();
+        mods(&file.items, &mut inline);
+        self.path_roots.extend(inline);
         for it in &file.items {
             self.e.nl();
             self.item(it, ItemCtx::Top);
         }
         self.emit_tests();
+        if !self.root_lints.is_empty() {
+            let lines: Vec<String> = self.root_lints.iter().map(|a| format!("#[{}]", a)).collect();
+            self.e.prefix_paragraphs(&lines);
+        }
     }
 
     fn ext_imports(&mut self) {
@@ -1468,11 +1509,12 @@ impl<'a> Lowerer<'a> {
                 self.e.nl();
             }
             _ => {
+                let kw = if t.kind == TypeKind::Union { "union" } else { "struct" };
                 if fields.is_empty() {
-                    self.e.w(&format!("{}struct {}{}{};", vis, t.name, g, wc));
+                    self.e.w(&format!("{}{} {}{}{};", vis, kw, t.name, g, wc));
                     self.e.nl();
                 } else {
-                    self.e.w(&format!("{}struct {}{}{} {{", vis, t.name, g, wc));
+                    self.e.w(&format!("{}{} {}{}{} {{", vis, kw, t.name, g, wc));
                     self.e.indent();
                     for (f, ty) in &fields {
                         self.e.nl();
@@ -1496,7 +1538,7 @@ impl<'a> Lowerer<'a> {
         let info = self.k.class(&t.name).cloned();
 
         // inherent impl: constructor + methods
-        let needs_new = t.kind != TypeKind::TupleStruct && !info.as_ref().is_some_and(|c| c.user_new);
+        let needs_new = !matches!(t.kind, TypeKind::TupleStruct | TypeKind::Union) && !info.as_ref().is_some_and(|c| c.user_new);
         let has_inherent = needs_new || !inherent.is_empty();
         let ops: Vec<&Item> = t.members.iter().filter(|m| matches!(&m.kind, ItemKind::Fun(f) if f.mods.is_operator)).collect();
         if has_inherent {
@@ -1712,15 +1754,16 @@ impl<'a> Lowerer<'a> {
         match &m.kind {
             ItemKind::TypeAlias { name, generics, ty } => {
                 let g = self.generics_decl(generics);
+                let wc = self.where_clause(generics);
                 match ty {
-                    Type::Bounds(b) if b.is_empty() => self.e.w(&format!("type {}{};", name, g)),
+                    Type::Bounds(b) if b.is_empty() => self.e.w(&format!("type {}{}{};", name, g, wc)),
                     Type::Bounds(b) => {
                         let bs = self.bounds(b);
-                        self.e.w(&format!("type {}{}: {};", name, g, bs))
+                        self.e.w(&format!("type {}{}: {}{};", name, g, bs, wc))
                     }
                     _ => {
                         let tt = self.ty(ty, TyPos::Generic);
-                        self.e.w(&format!("type {}{} = {};", name, g, tt))
+                        self.e.w(&format!("type {}{} = {}{};", name, g, tt, wc))
                     }
                 }
                 self.e.nl();

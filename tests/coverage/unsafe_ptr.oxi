@@ -1,0 +1,6 @@
+static mut COUNTER: u32 = 0
+fun main() {
+    val x = 5
+    val p: *const i32 = &x
+    unsafe { COUNTER += 1; println("${*p} ${COUNTER}") }
+}

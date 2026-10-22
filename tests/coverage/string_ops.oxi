@@ -1,0 +1,6 @@
+fun main() {
+    val s = String.from("héllo")
+    val upper: String = s.chars().rev().collect()
+    val bytes = s.as_bytes()
+    println("$upper ${bytes.len()} ${&s[0..1]} ${s.starts_with("h")}")
+}

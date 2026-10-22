@@ -233,6 +233,7 @@ fn type_decl_signature(t: &TypeDecl) -> String {
         (TypeKind::Data, _) => "data class",
         (TypeKind::TupleStruct, _) => "struct",
         (TypeKind::Class, _) => "class",
+        (TypeKind::Union, _) => "union",
     };
     let mut s = format!("{} {}{}", kw, t.name, generics_text(&t.generics));
     let ctor: Vec<String> = t.fields.iter().filter(|f| f.in_ctor).map(field_text).collect();
@@ -529,6 +530,7 @@ fn collect_block(b: &Block, offset: u32, out: &mut Vec<Local>) {
                 push_pat(pat, ty.clone(), offset, out);
             }
             Stmt::Expr { expr, .. } => collect_expr(expr, offset, out),
+            Stmt::Attributed { stmt, .. } => collect_block(&Block { stmts: vec![(**stmt).clone()], span: b.span }, offset, out),
             Stmt::Item(_) => {}
         }
     }
@@ -555,8 +557,14 @@ fn collect_expr(e: &Expr, offset: u32, out: &mut Vec<Local>) {
                 }
             }
             ExprKind::If { cond, .. } | ExprKind::While { cond, .. } if inside => {
-                if let Cond::Let { pat, .. } = cond.as_ref() {
-                    push_pat(pat, None, offset, out);
+                let parts: Vec<&Cond> = match cond.as_ref() {
+                    Cond::Chain(v) => v.iter().collect(),
+                    c => vec![c],
+                };
+                for c in parts {
+                    if let Cond::Let { pat, .. } = c {
+                        push_pat(pat, None, offset, out);
+                    }
                 }
             }
             ExprKind::When { arms, binding, .. } if inside => {
@@ -579,7 +587,7 @@ fn collect_expr(e: &Expr, offset: u32, out: &mut Vec<Local>) {
             _ => {}
         }
         // statements inside blocks: walk_expr visits blocks via walk_block; capture lets there
-        if let ExprKind::Block(b) | ExprKind::Unsafe(b) = &x.kind {
+        if let ExprKind::Block(b) | ExprKind::Unsafe(b) | ExprKind::ConstBlock(b) | ExprKind::LabeledBlock { block: b, .. } = &x.kind {
             if b.span.start <= offset && offset <= b.span.end {
                 collect_lets(b, offset, out);
             }

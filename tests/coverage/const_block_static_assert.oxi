@@ -1,0 +1,2 @@
+const LIMIT: usize = 4
+fun main() { val arr = [0u8; LIMIT]; println("${arr.len()} ${const { LIMIT * 2 }}") }

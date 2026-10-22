@@ -114,6 +114,13 @@ impl<'a> Lowerer<'a> {
             Stmt::Item(b) => {
                 self.item(&b.0, ItemCtx::Local);
             }
+            Stmt::Attributed { attrs, stmt } => {
+                for a in attrs {
+                    self.e.w(&format!("#[{}]", a));
+                    self.e.nl();
+                }
+                self.stmt(stmt);
+            }
         }
     }
 
@@ -169,6 +176,11 @@ impl<'a> Lowerer<'a> {
             }
             ExprKind::Block(b) => {
                 self.block_stmt(b);
+                true
+            }
+            ExprKind::LabeledBlock { label, block } => {
+                self.e.w(&format!("'{}: ", label));
+                self.block_stmt(block);
                 true
             }
             ExprKind::Unsafe(b) => {
@@ -282,6 +294,10 @@ impl<'a> Lowerer<'a> {
             ExprKind::If { cond, then, else_ } if else_.is_some() => self.if_expr(cond, then, else_.as_deref(), Some(t)),
             ExprKind::When { subject, binding, arms, rust_match } => self.when_with_binding(subject.as_deref(), binding.as_ref(), arms, *rust_match, Some(t), e.span),
             ExprKind::Block(b) => self.block_value(b, t),
+            ExprKind::LabeledBlock { label, block } if t.wrap.is_none() => {
+                self.e.w(&format!("'{}: ", label));
+                self.block_value(block, t);
+            }
             ExprKind::Paren(x) => self.tail(x, t),
             _ => {
                 let wrap = t.wrap.clone().filter(|_| !is_ok_err_call(e));
@@ -520,7 +536,8 @@ impl<'a> Lowerer<'a> {
     fn emits_block_like(&self, e: &Expr) -> bool {
         use ExprKind::*;
         match &e.kind {
-            If { .. } | When { .. } | Block(_) | Unsafe(_) | Loop { .. } | While { .. } | For { .. } | DoWhile { .. } | TryCatch { .. } | Async { .. } => true,
+            If { .. } | When { .. } | Block(_) | Unsafe(_) | Loop { .. } | While { .. } | For { .. } | DoWhile { .. } | TryCatch { .. } | Async { .. }
+            | LabeledBlock { .. } | ConstBlock(_) => true,
             Elvis(_, r) => !is_literal(r),
             Try(_) => self.in_try_block(),
             MethodCall { name, args, .. } => (name == "copy" && !args.is_empty() && args.iter().all(|a| a.name.is_some())) || name == "let",
@@ -711,6 +728,14 @@ impl<'a> Lowerer<'a> {
                 self.when_with_binding(subject.as_deref(), binding.as_ref(), arms, *rust_match, Some(&t), e.span);
             }
             Block(b) => self.block_value(b, &Target::none()),
+            LabeledBlock { label, block } => {
+                self.e.w(&format!("'{}: ", label));
+                self.block_value(block, &Target::none());
+            }
+            ConstBlock(b) => {
+                self.e.w("const ");
+                self.block_value(b, &Target::none());
+            }
             Unsafe(b) => {
                 self.e.w("unsafe ");
                 self.block_value(b, &Target::none());
@@ -731,6 +756,23 @@ impl<'a> Lowerer<'a> {
                 self.loops.push(LoopCtx { dowhile_label: None });
                 self.block_stmt(body);
                 self.loops.pop();
+            }
+            While { label, cond, body } if matches!(cond.as_ref(), Cond::Chain(_)) => {
+                // `while (val a = x && a > 0)` -> loop { match/if ... else break }
+                let Cond::Chain(parts) = cond.as_ref() else { unreachable!() };
+                if let Some(l) = label {
+                    self.e.w(&format!("'{}: ", l));
+                }
+                self.e.w("loop {");
+                self.e.indent();
+                self.e.nl();
+                self.loops.push(LoopCtx { dowhile_label: None });
+                let brk = Expr::new(ExprKind::Break { label: None, value: None }, e.span);
+                self.let_chain(parts, body, Some(&brk), None);
+                self.loops.pop();
+                self.e.dedent();
+                self.e.nl();
+                self.e.w("}");
             }
             While { label, cond, body } => {
                 if let Some(l) = label {
@@ -975,8 +1017,134 @@ impl<'a> Lowerer<'a> {
         .filter(|t| *t != Type::Infer)
     }
 
+    /// Let chains (`val a = x && a > 0 && val b = f(a)`), lowered to nested `if`/`match` so they
+    /// work in every Rust edition. The `else` branch is repeated where a part can fail.
+    fn let_chain(&mut self, parts: &[Cond], then: &Block, else_: Option<&Expr>, mode: Option<&Target>) {
+        if parts.is_empty() {
+            match mode {
+                Some(t) => self.block_value(then, t),
+                None => self.block_stmt(then),
+            }
+            return;
+        }
+        let guards_end = |from: usize| parts[from..].iter().position(|c| !matches!(c, Cond::Expr(_))).map_or(parts.len(), |p| from + p);
+        match &parts[0] {
+            Cond::Expr(_) => {
+                let end = guards_end(0);
+                self.e.w("if ");
+                for (i, c) in parts[..end].iter().enumerate() {
+                    if i > 0 {
+                        self.e.w(" && ");
+                    }
+                    if let Cond::Expr(x) = c {
+                        self.expr(x, 5);
+                    }
+                }
+                self.e.w(" ");
+                self.chain_rest(&parts[end..], then, else_, mode);
+                self.e.w(" else ");
+                self.chain_else(else_, mode);
+            }
+            Cond::Let { pat, expr, implicit_some } => {
+                let end = guards_end(1);
+                self.e.w("match ");
+                self.expr(expr, P_LOWEST + 1);
+                self.e.w(" {");
+                self.e.indent();
+                self.e.nl();
+                self.push_scope();
+                let p = self.pat(pat);
+                if *implicit_some {
+                    self.e.w(&format!("Some({})", p));
+                } else {
+                    self.e.w(&p);
+                }
+                self.bind_pat(pat, None);
+                for (i, c) in parts[1..end].iter().enumerate() {
+                    self.e.w(if i == 0 { " if " } else { " && " });
+                    if let Cond::Expr(x) = c {
+                        self.expr(x, 5);
+                    }
+                }
+                self.e.w(" => ");
+                self.chain_rest(&parts[end..], then, else_, mode);
+                self.pop_scope();
+                self.e.nl();
+                self.e.w("#[allow(unreachable_patterns)]");
+                self.e.nl();
+                self.e.w("_ => ");
+                self.chain_else(else_, mode);
+                self.e.dedent();
+                self.e.nl();
+                self.e.w("}");
+            }
+            Cond::Chain(inner) => {
+                let mut all = inner.clone();
+                all.extend(parts[1..].iter().cloned());
+                self.let_chain(&all, then, else_, mode);
+            }
+        }
+    }
+
+    fn chain_rest(&mut self, rest: &[Cond], then: &Block, else_: Option<&Expr>, mode: Option<&Target>) {
+        if rest.is_empty() {
+            match mode {
+                Some(t) => self.block_value(then, t),
+                None => self.block_stmt(then),
+            }
+        } else {
+            self.e.w("{");
+            self.e.indent();
+            self.e.nl();
+            self.let_chain(rest, then, else_, mode);
+            self.e.dedent();
+            self.e.nl();
+            self.e.w("}");
+        }
+    }
+
+    fn chain_else(&mut self, else_: Option<&Expr>, mode: Option<&Target>) {
+        match else_ {
+            None => self.e.w("{}"),
+            Some(el) => match (&el.kind, mode) {
+                (ExprKind::Block(b), Some(t)) => self.block_value(b, t),
+                (ExprKind::Block(b), None) => self.block_stmt(b),
+                (_, Some(t)) => {
+                    self.e.w("{");
+                    self.e.indent();
+                    self.e.nl();
+                    self.tail(el, t);
+                    self.e.dedent();
+                    self.e.nl();
+                    self.e.w("}");
+                }
+                (_, None) => {
+                    self.e.w("{");
+                    self.e.indent();
+                    self.e.nl();
+                    let bl = self.stmt_expr(el);
+                    if !bl {
+                        self.e.w(";");
+                    }
+                    self.e.dedent();
+                    self.e.nl();
+                    self.e.w("}");
+                }
+            },
+        }
+    }
+
     fn cond(&mut self, c: &Cond) {
         match c {
+            Cond::Chain(parts) => {
+                // only reached for conditions outside `if`/`while`; join the parts
+                for (i, p) in parts.iter().enumerate() {
+                    if i > 0 {
+                        self.e.w(" && ");
+                    }
+                    self.cond(p);
+                }
+            }
             Cond::Expr(e) => {
                 let parens = contains_struct_lit(e);
                 if parens {
@@ -1044,6 +1212,19 @@ impl<'a> Lowerer<'a> {
         format!("<{}>", parts.join(", "))
     }
 
+    /// Is `Type.method()` a call on the value of a fieldless struct (rather than a static call)?
+    fn unit_value_method(&self, ty: &str, method: &str) -> bool {
+        let Some(c) = self.k.class(ty) else { return false };
+        if !c.is_unit {
+            return false;
+        }
+        if let Some(m) = c.methods.get(method) {
+            return m.recv != Recv::Static;
+        }
+        // a default method of one of the interfaces brs knows
+        self.k.traits.values().any(|t| t.methods.get(method).is_some_and(|m| m.recv != Recv::Static))
+    }
+
     /// Interprets `Type.member` / `module.item` chains as Rust paths.
     pub(crate) fn as_path(&self, e: &Expr) -> Option<(Vec<String>, PathKind)> {
         match &e.kind {
@@ -1065,6 +1246,13 @@ impl<'a> Lowerer<'a> {
                     return Some((segs.clone(), PathKind::Module));
                 }
                 None
+            }
+            // `Stack::<i32>.new()`: a type with explicit generic arguments
+            ExprKind::Path { segs, generics: Some(g), global: false } if is_type_like(segs.last().unwrap()) && !self.is_local(&segs[0]) => {
+                let mut p = segs.clone();
+                let last = p.pop().unwrap();
+                p.push(format!("{}::{}", last, self.generic_args_text(g)));
+                Some((p, PathKind::Type))
             }
             ExprKind::Path { segs, generics: None, .. } => {
                 let last = segs.last().unwrap();
@@ -1182,7 +1370,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 if let Some(cls) = self.k.class(&name).cloned() {
-                    if !cls.is_tuple {
+                    if !cls.is_tuple && !cls.is_union {
                         let g = generics.as_ref().map(|g| format!("::{}", self.generic_args_text(g))).unwrap_or_default();
                         self.e.w(&format!("{}{}::new", esc(&name), g));
                         let params = cls.ctor_params();
@@ -1600,6 +1788,19 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 self.pop_scope();
+                return;
+            }
+        }
+        // `Square.name()` on a fieldless struct: the type name is also its value
+        if let Some(n) = recv.ident() {
+            if !self.is_local(n) && self.unit_value_method(n, name) {
+                self.e.w(&format!("{}.{}", esc(n), member(name)));
+                if let Some(g) = generics {
+                    let gt = self.generic_args_text(g);
+                    self.e.w(&format!("::{}", gt));
+                }
+                let params = self.k.class(n).and_then(|c| c.methods.get(name)).map(|m| m.params.clone());
+                self.arg_list(args, params.as_deref(), TyPos::Param, span);
                 return;
             }
         }
@@ -2178,6 +2379,10 @@ impl<'a> Lowerer<'a> {
 
     /// `mode`: None = statement, Some(target) = value.
     fn if_expr(&mut self, cond: &Cond, then: &Block, else_: Option<&Expr>, mode: Option<&Target>) {
+        if let Cond::Chain(parts) = cond {
+            self.let_chain(parts, then, else_, mode);
+            return;
+        }
         self.e.w("if ");
         self.push_scope();
         self.cond(cond);

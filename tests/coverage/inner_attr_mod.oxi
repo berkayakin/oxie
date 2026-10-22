@@ -1,0 +1,5 @@
+mod math {
+    pub fun double(x: i32): i32 = x * 2
+    pub mod deep { pub fun triple(x: i32): i32 = super::double(x) + x }
+}
+fun main() { println(math::deep::triple(2)); println(math.double(4)) }

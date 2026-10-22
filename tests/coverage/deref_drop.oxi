@@ -1,0 +1,6 @@
+import std::ops::Deref
+struct Meters(f64)
+impl Deref for Meters { type Target = f64; fun deref(&self): &f64 = &self.0 }
+struct Noisy(String)
+impl Drop for Noisy { mut fun drop() { println("drop ${self.0}") } }
+fun main() { val m = Meters(2.5); println(*m * 2.0); val n = Noisy("x".to_string()); println("end") }

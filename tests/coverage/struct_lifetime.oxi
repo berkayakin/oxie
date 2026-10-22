@@ -1,0 +1,6 @@
+struct Parser<'a> { input: &'a str, pos: usize }
+impl<'a> Parser<'a> {
+    fun new(input: &'a str): Parser<'a> = Parser { input: input, pos: 0 }
+    fun rest(): &'a str = &self.input[self.pos..]
+}
+fun main() { val p = Parser.new("hello"); println(p.rest()) }

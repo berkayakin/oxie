@@ -1,0 +1,6 @@
+// dep: tokio = { version = "1", features = ["full"] }
+interface Fetch { async fun get(id: u32): String }
+struct Api
+impl Fetch for Api { async fun get(id: u32): String = "item $id" }
+@tokio::main
+async fun main() { println(Api.get(7).await) }

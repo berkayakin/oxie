@@ -39,7 +39,7 @@ pub fn compile_dir(dir: &str) {
     for i in &inputs {
         println!("cargo:rerun-if-changed={}", i.abs_path.display());
     }
-    run(inputs, &manifest_dir, &out_dir);
+    run(inputs, &manifest_dir, &out_dir, false);
 }
 
 /// Compiles a single script file as the crate root (used by `oxie run file.oxi`).
@@ -56,15 +56,16 @@ pub fn compile_script(path: &str) {
         }
     };
     let inputs = vec![oxie_compiler::Input { rel_path: PathBuf::from("main.oxi"), abs_path, text }];
-    run(inputs, &manifest_dir, &out_dir);
+    run(inputs, &manifest_dir, &out_dir, true);
 }
 
-fn run(inputs: Vec<oxie_compiler::Input>, manifest_dir: &Path, out_dir: &Path) {
+fn run(inputs: Vec<oxie_compiler::Input>, manifest_dir: &Path, out_dir: &Path, script: bool) {
     let manifest = std::fs::read_to_string(manifest_dir.join("Cargo.toml")).unwrap_or_default();
     let opts = Options {
         crate_name: std::env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "main".into()),
         extern_crates: extern_crates_from_manifest(&manifest),
         out_dir: out_dir.to_path_buf(),
+        script,
     };
     let output = oxie_compiler::compile(inputs, &opts);
     let mut failed = false;

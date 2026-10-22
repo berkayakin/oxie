@@ -1,0 +1,4 @@
+import std::fmt::Display
+interface Shout { fun shout(): String }
+impl<T: Display> Shout for T { fun shout(): String = self.to_string().to_uppercase() }
+fun main() { println("hi".shout()); println(42.shout()) }

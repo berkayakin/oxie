@@ -1,0 +1,17 @@
+interface Lender {
+    type Item<'a> where Self: 'a
+    fun next<'a>(&'a mut self): Self::Item<'a>?
+}
+struct Windows { data: Vec<i32>, pos: usize }
+impl Lender for Windows {
+    type Item<'a> = &'a [i32] where Self: 'a
+    fun next<'a>(&'a mut self): &'a [i32]? {
+        if (self.pos + 2 > self.data.len()) return null
+        self.pos += 1
+        Some(&self.data[self.pos - 1..self.pos + 1])
+    }
+}
+fun main() {
+    var w = Windows { data: vec[1, 2, 3], pos: 0 }
+    while (val win = w.next()) println("${win:?}")
+}

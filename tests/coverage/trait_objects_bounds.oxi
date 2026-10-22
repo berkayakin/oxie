@@ -1,0 +1,3 @@
+import std::thread
+fun run(job: Box<dyn FnOnce() -> i32 + Send + 'static>): i32 = thread.spawn(job).join().unwrap()
+fun main() { println(run(Box.new { 40 + 2 })) }

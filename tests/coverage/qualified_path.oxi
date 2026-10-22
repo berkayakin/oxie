@@ -1,0 +1,6 @@
+interface A { fun id(): i32 = 1 }
+interface B { fun id(): i32 = 2 }
+struct S
+impl A for S {}
+impl B for S {}
+fun main() { val s = S; println("${<S as A>::id(&s)} ${<S as B>::id(&s)}") }

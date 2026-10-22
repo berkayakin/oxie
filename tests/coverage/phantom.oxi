@@ -1,0 +1,4 @@
+import std::marker::PhantomData
+struct Id<T> { raw: u64, _t: PhantomData<T> }
+struct User
+fun main() { val id: Id<User> = Id { raw: 7, _t: PhantomData }; println(id.raw) }

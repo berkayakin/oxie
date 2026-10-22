@@ -1,0 +1,6 @@
+fun main() {
+    #[allow(unused_variables)]
+    val unused = 1
+    @cfg(debug_assertions)
+    println("debug build")
+}

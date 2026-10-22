@@ -1,0 +1,6 @@
+fun main() {
+    var pair = (String.from("a"), 1)
+    val (ref name, ref mut n) = pair
+    *n += 1
+    println("$name ${pair.1}")
+}

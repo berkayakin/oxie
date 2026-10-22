@@ -28,6 +28,8 @@ pub fn is_type_like(s: &str) -> bool {
 
 pub struct Parser<'a> {
     src: &'a str,
+    /// `#![...]` attributes seen at file level
+    inner_attrs: Vec<String>,
     toks: Vec<Token>,
     pos: usize,
     pub diags: Vec<Diag>,
@@ -37,7 +39,7 @@ pub struct Parser<'a> {
 
 pub fn parse_file(src: &str) -> (File, Vec<Diag>) {
     let (toks, mut diags) = lexer::lex(src);
-    let mut p = Parser { src, toks, pos: 0, diags: Vec::new(), no_struct: false };
+    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false };
     let file = p.file();
     diags.append(&mut p.diags);
     (file, diags)
@@ -46,7 +48,7 @@ pub fn parse_file(src: &str) -> (File, Vec<Diag>) {
 /// Parses a standalone expression (used for tests and tooling).
 pub fn parse_expr_str(src: &str) -> (Expr, Vec<Diag>) {
     let (toks, mut diags) = lexer::lex(src);
-    let mut p = Parser { src, toks, pos: 0, diags: Vec::new(), no_struct: false };
+    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false };
     let e = p.expr().unwrap_or(Expr::new(ExprKind::Error, Span::default()));
     diags.append(&mut p.diags);
     (e, diags)
@@ -326,7 +328,7 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
-        File { inner_docs, items }
+        File { inner_docs, inner_attrs: std::mem::take(&mut self.inner_attrs), items }
     }
 
     fn docs_and_attrs(&mut self) -> PResult<(Vec<String>, Vec<Attr>)> {
@@ -361,12 +363,8 @@ impl<'a> Parser<'a> {
                     self.bump();
                     if inner {
                         self.bump();
-                        let sp = self.span();
-                        self.diags.push(
-                            Diag::warning(sp, "inner attributes `#![...]` are ignored in .oxi files")
-                                .with_help("put crate-level attributes in src/main.rs or src/lib.rs"),
-                        );
-                        self.raw_group()?;
+                        let g = self.raw_group()?;
+                        self.inner_attrs.push(g[1..g.len() - 1].to_string());
                     } else {
                         let g = self.raw_group()?;
                         attrs.push(Attr::Raw(g[1..g.len() - 1].to_string()));
@@ -433,7 +431,7 @@ impl<'a> Parser<'a> {
         }
         let kind = if self.is_fun_start() {
             ItemKind::Fun(self.fun_decl()?)
-        } else if self.is_kw("class") || self.is_kw("struct") {
+        } else if self.is_kw("class") || self.is_kw("struct") || (self.is_kw("union") && self.is_ident_at(1)) {
             ItemKind::Type(self.class_decl(false, false)?)
         } else if self.is_kw("data") && self.is_kw_at(1, "class") {
             self.bump();
@@ -759,20 +757,30 @@ impl<'a> Parser<'a> {
         }
         if self.is_punct("&") {
             let mut n = 1;
-            if matches!(self.tok_at(n), Tok::Lifetime(_)) {
-                n += 1;
-            }
+            let lifetime = match self.tok_at(n) {
+                Tok::Lifetime(l) => {
+                    n += 1;
+                    Some(l.clone())
+                }
+                _ => None,
+            };
+            // `&'a self` keeps its lifetime: `self: &'a Self`
+            let with_lifetime = |mutable: bool| match &lifetime {
+                Some(l) => SelfParam::Typed(Type::Ref { lifetime: Some(l.clone()), mutable, inner: Box::new(Type::simple("Self")) }),
+                None if mutable => SelfParam::RefMut,
+                None => SelfParam::Ref,
+            };
             if is_self(self, n) {
                 for _ in 0..=n {
                     self.bump();
                 }
-                return Ok(Some(SelfParam::Ref));
+                return Ok(Some(with_lifetime(false)));
             }
             if self.is_kw_at(n, "mut") && is_self(self, n + 1) {
                 for _ in 0..=n + 1 {
                     self.bump();
                 }
-                return Ok(Some(SelfParam::RefMut));
+                return Ok(Some(with_lifetime(true)));
             }
         }
         Ok(None)
@@ -1155,8 +1163,9 @@ impl<'a> Parser<'a> {
     }
 
     fn class_decl(&mut self, is_data: bool, is_error: bool) -> PResult<TypeDecl> {
-        let is_struct = self.is_kw("struct");
-        self.bump(); // class / struct
+        let is_union = self.is_kw("union");
+        let is_struct = self.is_kw("struct") || is_union;
+        self.bump(); // class / struct / union
         let name_span = self.span();
         let name = self.ident()?;
         let mut generics = self.generics_opt()?;
@@ -1238,6 +1247,9 @@ impl<'a> Parser<'a> {
         }
         if is_error && decl.message.is_none() && self.eat_punct("=") {
             decl.message = Some(self.expr()?);
+        }
+        if is_union {
+            decl.kind = TypeKind::Union;
         }
         Ok(decl)
     }
@@ -1529,7 +1541,15 @@ impl<'a> Parser<'a> {
                     if self.eat_punct(":") {
                         bounds = self.bounds()?;
                     }
+                    let mut generics = generics;
+                    // generic associated types: `type Item<'a> where Self: 'a`
+                    if self.is_kw("where") {
+                        self.where_clause(&mut generics)?;
+                    }
                     let ty = if self.eat_punct("=") { self.ty()? } else { Type::Bounds(bounds) };
+                    if self.is_kw("where") {
+                        self.where_clause(&mut generics)?;
+                    }
                     items.push(Item { docs, attrs, vis, kind: ItemKind::TypeAlias { name, generics, ty }, span: istart.to(self.prev_span()) });
                     return Ok(());
                 }
@@ -1719,7 +1739,9 @@ impl<'a> Parser<'a> {
         }
         match self.tok() {
             Tok::Ident(s) => match s.as_str() {
-                "class" | "struct" | "interface" | "trait" | "impl" | "import" | "use" | "typealias" | "const" | "mod" => true,
+                "class" | "struct" | "interface" | "trait" | "impl" | "import" | "use" | "typealias" | "mod" => true,
+                "const" => !self.is_punct_at(1, "{"),
+                "union" => self.is_ident_at(1),
                 "enum" => self.is_ident_at(1),
                 "data" | "error" => self.is_kw_at(1, "class") || self.is_kw_at(1, "enum"),
                 "static" => self.is_ident_at(1) || self.is_kw_at(1, "mut"),
@@ -1735,6 +1757,27 @@ impl<'a> Parser<'a> {
     }
 
     fn stmt(&mut self) -> PResult<Stmt> {
+        // attributes on a statement (`@cfg(debug_assertions) println(...)`, `#[allow(...)] val x = ...`)
+        if self.is_punct("@") || (self.is_punct("#") && self.is_punct_at(1, "[")) {
+            let save = self.pos;
+            let nd = self.diags.len();
+            let (_, attrs) = self.docs_and_attrs()?;
+            let declaration = self.is_item_start() || self.is_fun_start() || matches!(self.tok(), Tok::Ident(s) if matches!(s.as_str(), "pub" | "private" | "internal" | "public"));
+            if !declaration && !attrs.is_empty() {
+                let texts = attrs
+                    .iter()
+                    .map(|a| match a {
+                        Attr::Oxie { name, args: Some(a), .. } => format!("{}({})", name, a),
+                        Attr::Oxie { name, args: None, .. } => name.clone(),
+                        Attr::Raw(r) => r.clone(),
+                    })
+                    .collect();
+                let inner = self.stmt()?;
+                return Ok(Stmt::Attributed { attrs: texts, stmt: Box::new(inner) });
+            }
+            self.pos = save;
+            self.diags.truncate(nd);
+        }
         let start = self.span();
         if self.is_kw("val") || self.is_kw("var") || self.is_kw("let") {
             let kw = self.bump();
@@ -2262,17 +2305,70 @@ impl<'a> Parser<'a> {
     }
 
     fn cond(&mut self) -> PResult<Cond> {
-        if self.is_kw("val") || self.is_kw("let") || self.is_kw("var") {
-            self.bump();
-            let pat = self.pattern()?;
-            self.expect_punct("=")?;
-            let expr = self.expr()?;
-            let implicit_some = matches!(&pat, Pat::Ident { sub: None, .. });
-            let is_let_kw = false;
-            let _ = is_let_kw;
-            return Ok(Cond::Let { pat, expr, implicit_some });
+        if !self.chain_ahead() {
+            if self.is_let_start() {
+                self.bump();
+                let pat = self.pattern()?;
+                self.expect_punct("=")?;
+                let expr = self.expr()?;
+                let implicit_some = matches!(&pat, Pat::Ident { sub: None, .. });
+                return Ok(Cond::Let { pat, expr, implicit_some });
+            }
+            return Ok(Cond::Expr(self.expr()?));
         }
-        Ok(Cond::Expr(self.expr()?))
+        // let chain: parts joined by `&&`; scrutinees and conditions stop at `&&`/`||`
+        let mut parts = Vec::new();
+        loop {
+            if self.is_let_start() {
+                self.bump();
+                let pat = self.pattern()?;
+                self.expect_punct("=")?;
+                let expr = self.cmp_expr()?;
+                let implicit_some = matches!(&pat, Pat::Ident { sub: None, .. });
+                parts.push(Cond::Let { pat, expr, implicit_some });
+            } else {
+                parts.push(Cond::Expr(self.cmp_expr()?));
+            }
+            if !self.eat_punct("&&") {
+                break;
+            }
+        }
+        Ok(Cond::Chain(parts))
+    }
+
+    fn is_let_start(&self) -> bool {
+        self.is_kw("val") || self.is_kw("let") || self.is_kw("var")
+    }
+
+    /// Is the condition starting here a let chain (`val x = a && ...` or `a && val x = b`)?
+    fn chain_ahead(&self) -> bool {
+        let mut i = 0;
+        let mut depth = 0i32;
+        let mut seen_let = self.is_let_start();
+        let mut seen_and = false;
+        loop {
+            match self.tok_at(i) {
+                Tok::Eof | Tok::Newline => break,
+                Tok::Punct("(") | Tok::Punct("[") => depth += 1,
+                Tok::Punct("{") if depth == 0 => break,
+                Tok::Punct("{") => depth += 1,
+                Tok::Punct(")") | Tok::Punct("]") | Tok::Punct("}") => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                Tok::Punct("&&") if depth == 0 => {
+                    seen_and = true;
+                    if matches!(self.tok_at(i + 1), Tok::Ident(s) if s == "val" || s == "let" || s == "var") {
+                        seen_let = true;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        seen_let && seen_and
     }
 
     /// Parses `if`/`while` header. Returns the condition and whether Kotlin-style parens were used.
@@ -2364,9 +2460,10 @@ impl<'a> Parser<'a> {
                     return self.for_expr(label, start);
                 }
                 if self.is_punct("{") {
-                    return self.err("labeled blocks are not supported; use `rust { }`");
+                    let block = self.block()?;
+                    return Ok(Expr::new(ExprKind::LabeledBlock { label: label.unwrap(), block }, start.to(self.prev_span())));
                 }
-                self.expected("loop after label")
+                self.expected("`loop`, `while`, `for` or `{` after label")
             }
             Tok::Punct("(") => self.paren_or_lambda(),
             Tok::Punct("[") => {
@@ -2425,7 +2522,7 @@ impl<'a> Parser<'a> {
                     let (c, _) = self.if_header()?;
                     let cond = match c {
                         Cond::Expr(e) => e,
-                        Cond::Let { .. } => return self.err("`do { } while (val ...)` is not supported"),
+                        Cond::Let { .. } | Cond::Chain(_) => return self.err("`do { } while (val ...)` is not supported"),
                     };
                     Ok(Expr::new(ExprKind::DoWhile { label: None, body, cond: Box::new(cond) }, start.to(self.prev_span())))
                 }
@@ -2499,6 +2596,11 @@ impl<'a> Parser<'a> {
                         None
                     };
                     Ok(Expr::new(ExprKind::Continue(label), start.to(self.prev_span())))
+                }
+                "const" if self.is_punct_at(1, "{") => {
+                    self.bump();
+                    let b = self.block()?;
+                    Ok(Expr::new(ExprKind::ConstBlock(b), start.to(self.prev_span())))
                 }
                 "unsafe" if self.is_punct_at(1, "{") => {
                     self.bump();
@@ -2589,7 +2691,7 @@ impl<'a> Parser<'a> {
                 StrPart::Interp { src: s, offset, spec } => {
                     let (toks, mut diags) = lexer::lex_at(&s, offset);
                     self.diags.append(&mut diags);
-                    let mut sub = Parser { src: self.src, toks, pos: 0, diags: Vec::new(), no_struct: false };
+                    let mut sub = Parser { src: self.src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false };
                     let e = sub.expr();
                     if e.is_ok() && !matches!(sub.tok(), Tok::Newline | Tok::Eof) {
                         let sp = sub.span();

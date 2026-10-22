@@ -1,0 +1,6 @@
+import std::fmt
+struct Wrapper<T>(T)
+impl<T: fmt::Display> fmt::Display for Wrapper<T> {
+    fun fmt(f: &mut fmt::Formatter): fmt::Result = write!(f, "[{}]", self.0)
+}
+fun main() { println(Wrapper(5)) }

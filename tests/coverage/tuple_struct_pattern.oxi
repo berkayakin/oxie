@@ -1,0 +1,2 @@
+struct Pair(i32, i32)
+fun main() { val Pair(a, b) = Pair(1, 2); println(a + b); when (Pair(3, 4)) { Pair(x, 4) -> println(x); else -> {} } }

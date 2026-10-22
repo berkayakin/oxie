@@ -1,0 +1,7 @@
+import std::ops::{Add, Index}
+#[derive(Debug, Clone, Copy)]
+struct V(i32, i32)
+impl Add for V { type Output = V; fun add(self, o: V): V = V(self.0 + o.0, self.1 + o.1) }
+struct Bag { items: Vec<String> }
+impl Index<usize> for Bag { type Output = String; fun index(&self, i: usize): &String = &self.items[i] }
+fun main() { println("${V(1, 2) + V(3, 4):?}"); val b = Bag { items: vec["a".to_string()] }; println(b[0]) }

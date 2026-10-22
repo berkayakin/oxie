@@ -1,0 +1,6 @@
+import std::cmp::Ordering
+data class Version(major: u32, minor: u32)
+impl PartialOrd for Version {
+    fun partial_cmp(other: &Self): Ordering? = Some(self.major.cmp(&other.major).then(self.minor.cmp(&other.minor)))
+}
+fun main() { println(Version(1, 2) < Version(1, 3)) }
