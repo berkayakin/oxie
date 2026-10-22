@@ -1,0 +1,10 @@
+[package]
+name = "word_count"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+
+[build-dependencies]
+brs-build = { path = "../../crates/brs-build" }

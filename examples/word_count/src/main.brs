@@ -1,0 +1,40 @@
+import std::collections::HashMap
+import std::env
+import std::fs
+
+data class WordStat(word: String, count: usize)
+
+/// Counts words, ignoring case and punctuation.
+fun count_words(text: &str): HashMap<String, usize> {
+    var counts = HashMap()
+    for (word in text.split { c: char -> !c.is_alphanumeric() && c != '\'' }) {
+        if (word.is_empty()) continue
+        *counts.entry(word.to_lowercase()).or_insert(0) += 1
+    }
+    counts
+}
+
+fun top(counts: &HashMap<String, usize>, n: usize): Vec<WordStat> {
+    var stats: Vec<WordStat> = counts.iter().map { (w, c) -> WordStat(w.clone(), *c) }.collect()
+    stats.sort_by { a, b -> b.count.cmp(&a.count).then_with { a.word.cmp(&b.word) } }
+    stats.truncate(n)
+    stats
+}
+
+fun main() throws {
+    val path = env.args().nth(1) ?: "sample.txt".to_string()
+    val text = fs.read_to_string(&path).context("cannot read '$path'")?
+    val counts = count_words(&text)
+    val total: usize = counts.values().sum()
+    println("$total words, ${counts.len()} distinct")
+    for ((i, s) in top(&counts, 5).iter().enumerate()) {
+        val bar = "#".repeat(s.count)
+        println("${i + 1}. ${s.word:<6} ${s.count} $bar")
+    }
+}
+
+test "counts case-insensitively" {
+    val c = count_words("A a b")
+    assert_eq(c["a"], 2)
+    assert_eq(c.get("b"), Some(&1))
+}

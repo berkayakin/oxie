@@ -184,7 +184,19 @@ impl<'a> Lowerer<'a> {
                 self.try_catch(body, catch.as_deref(), None);
                 true
             }
-            ExprKind::Field { .. } | ExprKind::MethodCall { .. } if has_safe_link(e) && self.safe_chain_stmt(e) => true,
+            ExprKind::Field { .. } | ExprKind::MethodCall { .. } if has_safe_link(e) => {
+                let r = self.resolve_question_dots(e);
+                if has_safe_link(&r) && self.safe_chain_stmt(&r) {
+                    return true;
+                }
+                if self.in_throwing_fn() && self.is_throwing_call(&r) {
+                    self.expr(&r, P_POSTFIX);
+                    self.e.w("?");
+                    return false;
+                }
+                self.expr(&r, P_LOWEST);
+                false
+            }
             ExprKind::Paren(x) => self.stmt_expr(x),
             ExprKind::Call { callee, args } if callee.ident() == Some("run") && self.is_builtin_call("run") && args.len() == 1 => {
                 if let ExprKind::Lambda { body, .. } = &args[0].value.kind {
@@ -583,11 +595,23 @@ impl<'a> Lowerer<'a> {
                 }
                 match (op, target_ty) {
                     (None, Some(t)) => self.coerce(value, &t, TyPos::Local),
-                    _ => self.expr(value, P_LOWEST + 1),
+                    // String += "...$x": append a borrowed str
+                    (Some(BinOp::Add), _) if matches!(value.kind, Template(_)) || (matches!(value.kind, Binary(BinOp::Add, ..)) && self.is_string_concat(value)) => {
+                        self.e.w("&");
+                        self.expr(value, P_UNARY);
+                    }
+                    _ => self.expr(value, P_LOWEST),
                 }
             }
             Call { callee, args } => self.call(callee, args, e.span),
-            MethodCall { .. } | Field { .. } | Index(..) if has_safe_link(e) => self.safe_chain(e),
+            MethodCall { .. } | Field { .. } | Index(..) if has_safe_link(e) => {
+                let r = self.resolve_question_dots(e);
+                if has_safe_link(&r) {
+                    self.safe_chain(&r);
+                } else {
+                    self.expr_inner(&r);
+                }
+            }
             MethodCall { recv, name, generics, args, .. } => self.method_call(recv, name, generics.as_ref(), args, e.span),
             Field { recv, name, .. } => {
                 if let Some((p, _)) = self.field_path(e) {
@@ -1598,6 +1622,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+        let args = self.fix_lambda_arity(recv, name, args);
         self.expr(recv, P_POSTFIX);
         self.e.w(".");
         self.e.w(&member(name));
@@ -1605,7 +1630,33 @@ impl<'a> Lowerer<'a> {
             let gt = self.generic_args_text(g);
             self.e.w(&format!("::{}", gt));
         }
-        self.arg_list(args, None, TyPos::Param, span);
+        self.arg_list(&args, None, TyPos::Param, span);
+    }
+
+    /// Kotlin lambdas may ignore their argument (`map_err { MyError() }`); Rust closures must
+    /// declare it. Adds `_` for std methods whose closure always receives a value.
+    fn fix_lambda_arity(&self, recv: &Expr, name: &str, args: &[Arg]) -> Vec<Arg> {
+        const ONE_ARG: &[&str] = &[
+            "map", "map_err", "and_then", "filter", "for_each", "any", "all", "find", "position", "inspect", "inspect_err", "retain",
+            "sort_by_key", "sort_unstable_by_key", "max_by_key", "min_by_key", "flat_map", "filter_map", "take_while", "skip_while",
+            "map_while", "find_map", "partition", "is_some_and", "is_ok_and", "is_err_and", "map_or", "or_insert_with_key", "group_by",
+            "dedup_by_key", "chunk_by", "split", "rsplit", "splitn", "matches", "trim_matches", "trim_start_matches", "trim_end_matches",
+        ];
+        let result_like = matches!(name, "unwrap_or_else" | "or_else" | "map_or_else") && self.is_result_expr(recv);
+        if !ONE_ARG.contains(&name) && !result_like {
+            return args.to_vec();
+        }
+        args.iter()
+            .map(|a| {
+                let mut a = a.clone();
+                if let ExprKind::Lambda { params, body, .. } = &mut a.value.kind {
+                    if params.is_empty() && !visit::uses_it(body) {
+                        params.push(LambdaParam { pat: Pat::Wild, ty: None });
+                    }
+                }
+                a
+            })
+            .collect()
     }
 
     // ------------------------------------------------------------------ safe navigation
@@ -1666,9 +1717,9 @@ impl<'a> Lowerer<'a> {
 
     fn emit_chain_base(&mut self, base: &Expr, prefix: &[&Expr]) -> bool {
         let place = self.is_place(base) && prefix.iter().all(|l| matches!(l.kind, ExprKind::Field { .. } | ExprKind::Index(..)));
-        self.expr(base, P_POSTFIX);
-        for l in prefix {
-            self.link_suffix(l);
+        match prefix.last() {
+            Some(l) => self.expr(l, P_POSTFIX),
+            None => self.expr(base, P_POSTFIX),
         }
         place
     }
@@ -1719,6 +1770,119 @@ impl<'a> Lowerer<'a> {
             self.e.w(")");
             borrowed = flatten && ends_in_field;
         }
+    }
+
+    /// `?.` means Kotlin safe navigation on optional values and Rust's `?` + `.` on results.
+    /// Rewrites the chain so that links decided as error propagation become `Try` + member access.
+    pub(crate) fn resolve_question_dots(&self, e: &Expr) -> Expr {
+        let (base, links) = chain_links(e);
+        let force = self.force_safe
+            || links.iter().any(|l| link_is_safe(l) && matches!(&l.kind, ExprKind::MethodCall { name, .. } if name == "let"));
+        let mut cur = base.clone();
+        let mut cur_is_option = false;
+        for l in links {
+            let mut node = l.clone();
+            let safe = link_is_safe(l);
+            let mut make_try = false;
+            if safe && !force && !cur_is_option {
+                make_try = if self.is_result_expr(&cur) {
+                    true
+                } else if self.is_option_expr(&cur) {
+                    false
+                } else {
+                    self.can_propagate()
+                };
+            }
+            let new_recv = if make_try {
+                let sp = cur.span;
+                Expr::new(ExprKind::Try(Box::new(cur)), sp)
+            } else {
+                cur
+            };
+            match &mut node.kind {
+                ExprKind::Field { recv, safe: s, .. } | ExprKind::MethodCall { recv, safe: s, .. } => {
+                    *recv = Box::new(new_recv);
+                    if make_try {
+                        *s = false;
+                    }
+                }
+                ExprKind::Index(recv, _) => *recv = Box::new(new_recv),
+                _ => {}
+            }
+            if safe && !make_try {
+                cur_is_option = true;
+            }
+            cur = node;
+        }
+        cur
+    }
+
+    fn can_propagate(&self) -> bool {
+        match self.fns.last() {
+            Some(f) if !f.tries.is_empty() => true,
+            Some(f) if !f.is_lambda => f.throws || f.ret.as_ref().map_or(false, |t| t.last_name() == Some("Result")),
+            _ => false,
+        }
+    }
+
+    fn is_result_expr(&self, e: &Expr) -> bool {
+        const RESULT_METHODS: &[&str] = &[
+            "parse", "read_to_string", "read_line", "read_to_end", "read_exact", "write_all", "flush", "open", "create", "read_dir",
+            "metadata", "canonicalize", "from_str", "from_utf8", "try_into", "try_from", "lock", "send", "recv", "accept", "connect",
+            "bind", "json", "text", "bytes", "context", "with_context", "map_err", "ok_or", "ok_or_else", "send_timeout", "recv_timeout",
+            "try_recv", "elapsed", "duration_since", "read_line_to", "remove_file", "create_dir_all", "copy", "rename",
+        ];
+        const RESULT_FNS: &[&str] = &["read_to_string", "read", "write", "open", "create", "from_str", "from_slice", "from_reader", "to_string_pretty", "var", "read_dir", "metadata"];
+        if self.is_throwing_call(e) {
+            return true;
+        }
+        match &e.kind {
+            ExprKind::Await(_) => true,
+            ExprKind::MethodCall { recv, name, .. } => {
+                if let Some((p, _)) = self.as_path(recv) {
+                    let _ = p;
+                    return RESULT_FNS.contains(&name.as_str()) || RESULT_METHODS.contains(&name.as_str());
+                }
+                RESULT_METHODS.contains(&name.as_str())
+            }
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Path { segs, .. } if segs.len() > 1 => RESULT_FNS.contains(&segs.last().unwrap().as_str()),
+                _ => false,
+            },
+            ExprKind::Paren(x) => self.is_result_expr(x),
+            _ => matches!(self.infer_type(e), Some(t) if t.last_name() == Some("Result")),
+        }
+    }
+
+    fn is_option_expr(&self, e: &Expr) -> bool {
+        const OPTION_METHODS: &[&str] = &[
+            "get", "get_mut", "first", "last", "find", "find_map", "pop", "next", "next_back", "peek", "max", "min", "max_by_key",
+            "min_by_key", "max_by", "min_by", "position", "rposition", "nth", "last_mut", "first_mut", "parent", "file_name",
+            "extension", "file_stem", "checked_add", "checked_sub", "checked_mul", "checked_div", "strip_prefix", "strip_suffix",
+            "split_once", "rsplit_once", "to_str", "ok", "err", "pop_front", "pop_back", "front", "back", "get_key_value", "char_indices_next",
+            "and_then", "filter", "or_else", "remove_entry", "find_char", "chars_next",
+        ];
+        if has_safe_link(e) || self.place_is_option(e) {
+            return true;
+        }
+        match &e.kind {
+            ExprKind::MethodCall { name, .. } => {
+                if OPTION_METHODS.contains(&name.as_str()) {
+                    return true;
+                }
+            }
+            ExprKind::Field { name, .. } => {
+                let mut segs: Vec<&Expr> = Vec::new();
+                segs.push(e);
+                if self.segment_yields_option(&segs) {
+                    return true;
+                }
+                let _ = name;
+            }
+            ExprKind::Paren(x) => return self.is_option_expr(x),
+            _ => {}
+        }
+        matches!(self.infer_type(e), Some(Type::Option(_))) || matches!(self.infer_type(e), Some(t) if t.last_name() == Some("Option"))
     }
 
     /// Does a `?.` segment produce an `Option` (so the chain must be flattened like Kotlin)?
@@ -1881,9 +2045,12 @@ impl<'a> Lowerer<'a> {
     }
 
     fn elvis(&mut self, l: &Expr, r: &Expr) {
+        let saved = self.force_safe;
+        self.force_safe = true;
         if is_literal(r) {
             self.e.w(&format!("{}::ElvisOr::or_val(", RT));
             self.expr(l, P_LOWEST);
+            self.force_safe = saved;
             self.e.w(", ");
             self.expr(r, P_LOWEST);
             self.e.w(")");
@@ -1892,6 +2059,7 @@ impl<'a> Lowerer<'a> {
         let v = self.fresh("v");
         self.e.w(&format!("match {}::Elvis::opt(", RT));
         self.expr(l, P_LOWEST);
+        self.force_safe = saved;
         self.e.w(&format!(") {{ Some({v}) => {v}, None => "));
         self.expr(r, P_LOWEST);
         self.e.w(" }");

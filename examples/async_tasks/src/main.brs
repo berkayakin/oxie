@@ -1,0 +1,50 @@
+import std::time::{Duration, Instant}
+import tokio::sync::mpsc
+import tokio::task::JoinSet
+
+data class Job(id: u32, cost_ms: u64)
+
+error class JobFailed(id: u32) = "job $id failed"
+
+/// Simulates work: odd multiples of 7 fail.
+async fun run_job(job: Job): u64 throws JobFailed {
+    tokio.time.sleep(Duration.from_millis(job.cost_ms)).await
+    if (job.id % 7 == 0) throw JobFailed(job.id)
+    job.cost_ms * 2
+}
+
+@tokio::main
+async fun main() {
+    val started = Instant.now()
+
+    // run jobs concurrently and collect results as they finish
+    var set = JoinSet()
+    for (id in 1..=8) {
+        set.spawn(run_job(Job(id, 10 * (9 - id) as u64)))
+    }
+    var ok = 0u64
+    var failed = vec[]
+    while (val Some(res) = set.join_next().await) {
+        when (res.unwrap()) {
+            Ok(v) -> ok += v
+            Err(e) -> failed.push(e.to_string())
+        }
+    }
+    println("sum of results: $ok")
+    println("failures: ${failed:?}")
+
+    // producer / consumer over a channel
+    val (tx, mut rx) = mpsc.channel::<String>(4)
+    val producer = tokio.spawn(async move {
+        for (i in 1..=3) {
+            tx.send("message $i".to_string()).await.unwrap()
+        }
+    })
+    var received = vec[]
+    while (val Some(msg) = rx.recv().await) received.push(msg)
+    producer.await.unwrap()
+    println("received: ${received:?}")
+
+    val elapsed = started.elapsed()
+    println("concurrent: ${elapsed < Duration.from_millis(300)}")
+}

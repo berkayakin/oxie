@@ -1,0 +1,111 @@
+import std::collections::HashMap
+import std::fmt
+
+error enum BankError {
+    InsufficientFunds(needed: u64, available: u64) = "insufficient funds: need $needed, have $available"
+    AccountNotFound(id: String) = "account '$id' not found"
+    Frozen(id: String) = "account '$id' is frozen"
+    InvalidAmount = "amount must be positive"
+}
+
+/// Anything that charges interest or fees each month.
+interface MonthlyPolicy {
+    fun name(): String
+    fun apply(balance: u64): u64
+}
+
+class SavingsPolicy(rate_percent: u64) : MonthlyPolicy {
+    override fun name() = "savings ${rate_percent}%"
+    override fun apply(balance: u64) = balance + balance * rate_percent / 100
+}
+
+class CheckingPolicy(fee: u64) : MonthlyPolicy {
+    override fun name() = "checking (fee $fee)"
+    override fun apply(balance: u64) = balance.saturating_sub(fee)
+}
+
+class Account(id: String, owner: String, var balance: u64 = 0, var frozen: bool = false, policy: Box<MonthlyPolicy>) {
+    fun deposit(amount: u64) throws BankError {
+        if (amount == 0) throw BankError.InvalidAmount
+        check_active()?
+        balance += amount
+    }
+
+    fun withdraw(amount: u64) throws BankError {
+        if (amount == 0) throw BankError.InvalidAmount
+        check_active()?
+        if (amount > balance) throw BankError.InsufficientFunds(amount, balance)
+        balance -= amount
+    }
+
+    fun check_active() throws BankError {
+        if (frozen) throw BankError.Frozen(id.clone())
+    }
+
+    fun end_of_month() {
+        balance = policy.apply(balance)
+    }
+}
+
+impl fmt::Display for Account {
+    fun fmt(f: &mut fmt::Formatter): fmt::Result =
+        write(f, "{:<6} {:<8} {:>8} ({})", self.id, self.owner, self.balance, self.policy.name())
+}
+
+class Bank {
+    var accounts: HashMap<String, Account> = HashMap()
+    var log: Vec<String> = vec[]
+
+    fun open(id: &str, owner: &str, policy: Box<MonthlyPolicy>) {
+        accounts.insert(id.to_string(), Account(id.to_string(), owner.to_string(), policy = policy))
+    }
+
+    fun account(id: &str): &mut Account throws BankError =
+        accounts.get_mut(id) ?: throw BankError.AccountNotFound(id.to_string())
+
+    fun transfer(from: &str, to: &str, amount: u64) throws BankError {
+        // check the destination first so a failed transfer changes nothing
+        account(to)?.check_active()?
+        account(from)?.withdraw(amount)?
+        account(to)?.deposit(amount)?
+        log.push("moved $amount from $from to $to")
+    }
+
+    fun report() {
+        var ids: Vec<&String> = accounts.keys().collect()
+        ids.sort()
+        for (id in ids) println("  ${accounts[id]}")
+    }
+}
+
+fun main() {
+    var bank = Bank()
+    bank.open("A-1", "alice", Box.new(SavingsPolicy(2)))
+    bank.open("B-2", "bob", Box.new(CheckingPolicy(5)))
+
+    val steps: Vec<(&str, &str, u64)> = vec[("A-1", "B-2", 0), ("B-2", "A-1", 10), ("A-1", "C-3", 5)]
+    try {
+        bank.account("A-1")?.deposit(500)?
+        bank.account("B-2")?.deposit(100)?
+        bank.transfer("A-1", "B-2", 120)?
+    } catch (e) {
+        println("setup failed: $e")
+    }
+    for ((from, to, amount) in steps) {
+        when (val r = bank.transfer(from, to, amount)) {
+            Ok(_) -> println("ok: $from -> $to ($amount)")
+            Err(e) -> println("failed: $e")
+        }
+    }
+    bank.account("B-2").unwrap().frozen = true
+    if (val Err(e) = bank.transfer("A-1", "B-2", 1)) println("failed: $e")
+    bank.account("B-2").unwrap().frozen = false
+    match bank.transfer("A-1", "B-2", 1_000_000) {
+        Err(BankError.InsufficientFunds(needed, available)) => println("short by ${needed - available}"),
+        other => println("unexpected: ${other:?}"),
+    }
+    for (acc in bank.accounts.values_mut()) acc.end_of_month()
+    println("after one month:")
+    bank.report()
+    println("log: ${bank.log:?}")
+}

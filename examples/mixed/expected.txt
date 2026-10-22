@@ -1,0 +1,7 @@
+Invoice for ACME
+  widget     3 x $2.50
+  gadget     1 x $12.00
+  subtotal: $19.50
+total with tax: $23.40
+parsed: Line { name: "bolt", qty: 10, unit_cents: 15 }
+error: cannot parse line 'nonsense' (expected: NAME x QTY @ CENTS)

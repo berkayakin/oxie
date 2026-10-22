@@ -15,8 +15,14 @@ fn static_str() -> Type {
 
 impl<'a> Lowerer<'a> {
     pub(crate) fn infer_type(&self, e: &Expr) -> Option<Type> {
+        self.infer(e, false)
+    }
+
+    /// `through_try`: the expression is the operand of `?`, so a throwing call yields its value type.
+    fn infer(&self, e: &Expr, through_try: bool) -> Option<Type> {
         use ExprKind::*;
         match &e.kind {
+            Try(x) => self.infer(x, true),
             Int(s) => Some(ty(int_suffix(s).unwrap_or("i32"))),
             Float(s) => Some(ty(if s.ends_with("f32") { "f32" } else { "f64" })),
             Bool(_) | Is { .. } | In { .. } => Some(ty("bool")),
@@ -55,14 +61,14 @@ impl<'a> Lowerer<'a> {
                 }
                 if let Some(c) = &self.class {
                     if let Some(m) = c.methods.get(n) {
-                        return if m.throws { None } else { m.ret.clone() };
+                        return if m.throws && !through_try { None } else { m.ret.clone() };
                     }
                 }
                 if let Some(c) = self.k.class(n) {
                     return if c.has_generics { None } else { Some(ty(n)) };
                 }
                 if let Some(f) = self.k.funs.get(n) {
-                    return if f.throws { None } else { f.ret.clone() };
+                    return if f.throws && !through_try { None } else { f.ret.clone() };
                 }
                 if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
                     return Some(ty(&en.name));
@@ -72,7 +78,7 @@ impl<'a> Lowerer<'a> {
             MethodCall { recv, name, .. } => {
                 if matches!(recv.kind, SelfValue) {
                     if let Some(m) = self.class.as_ref().and_then(|c| c.methods.get(name)) {
-                        return if m.throws { None } else { m.ret.clone() };
+                        return if m.throws && !through_try { None } else { m.ret.clone() };
                     }
                 }
                 if let Some((p, _)) = self.as_path(recv) {
@@ -82,7 +88,7 @@ impl<'a> Lowerer<'a> {
                         if name == "new" && !c.user_new {
                             return if c.has_generics { None } else { Some(ty(&owner)) };
                         }
-                        return c.methods.get(name).and_then(|m| if m.throws { None } else { m.ret.clone() });
+                        return c.methods.get(name).and_then(|m| if m.throws && !through_try { None } else { m.ret.clone() });
                     }
                     if let Some(en) = self.k.enum_(&owner) {
                         if en.variant(name).is_some() {

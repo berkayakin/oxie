@@ -1,0 +1,91 @@
+import std::env
+import std::fs
+import std::path::PathBuf
+
+/// One item on the list.
+data class Task(id: u32, title: String, done: bool = false)
+
+error enum TodoError {
+    NotFound(id: u32) = "no task with id $id"
+    BadCommand(cmd: String) = "unknown command '$cmd' (try: add, done, remove, list, clear)"
+    MissingArgument(what: String) = "missing $what"
+}
+
+/// Stores tasks in a simple tab-separated text file.
+class TodoList(path: PathBuf, tasks: Vec<Task> = vec[]) {
+    companion object {
+        fun load(path: PathBuf): TodoList throws {
+            var list = TodoList(path.clone())
+            if (path.exists()) {
+                for (line in fs.read_to_string(&path).context("reading ${path.display()}")?.lines()) {
+                    val parts: Vec<&str> = line.splitn(3, '\t').collect()
+                    if (parts.len() != 3) continue
+                    list.tasks.push(Task(parts[0].parse()?, parts[2].to_string(), parts[1] == "x"))
+                }
+            }
+            list
+        }
+    }
+
+    fun save() throws {
+        val text = tasks.iter().map { t -> "${t.id}\t${if (t.done) "x" else " "}\t${t.title}\n" }.collect::<String>()
+        fs.write(&path, text)?
+    }
+
+    fun add(title: &str): u32 {
+        val id = tasks.iter().map { it.id }.max().unwrap_or(0) + 1
+        tasks.push(Task(id, title.to_string()))
+        id
+    }
+
+    fun complete(id: u32) throws TodoError {
+        val task = tasks.iter_mut().find { it.id == id } ?: throw TodoError.NotFound(id)
+        task.done = true
+    }
+
+    fun remove(id: u32) throws TodoError {
+        val before = tasks.len()
+        tasks.retain { it.id != id }
+        if (tasks.len() == before) throw TodoError.NotFound(id)
+    }
+
+    fun print() {
+        if (tasks.is_empty()) {
+            println("Nothing to do!")
+            return
+        }
+        for (t in &tasks) {
+            val mark = if (t.done) "✔" else " "
+            println("[$mark] ${t.id:>2}. ${t.title}")
+        }
+        val left = tasks.iter().filter { !it.done }.count()
+        println("$left of ${tasks.len()} left")
+    }
+}
+
+fun arg_id(args: &[String]): u32 throws {
+    val text = args.get(2) ?: throw TodoError.MissingArgument("task id".to_string())
+    text.parse()?
+}
+
+fun main() throws {
+    val args: Vec<String> = env.args().collect()
+    val path = env.var("TODO_FILE").map(PathBuf.from).unwrap_or(PathBuf.from("todo.txt"))
+    var list = TodoList.load(path)?
+    val cmd = args.get(1).map { it.as_str() } ?: "list"
+    when (cmd) {
+        "add" -> {
+            val title = args[2..].join(" ")
+            if (title.is_empty()) throw TodoError.MissingArgument("task title".to_string())
+            val id = list.add(&title)
+            println("Added task $id")
+        }
+        "done" -> list.complete(arg_id(&args)?)?
+        "remove" -> list.remove(arg_id(&args)?)?
+        "clear" -> list.tasks.clear()
+        "list" -> {}
+        else -> throw TodoError.BadCommand(cmd.to_string())
+    }
+    list.save()
+    list.print()
+}

@@ -78,3 +78,27 @@ fn diagnostics_point_at_brs_sources() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// Every example project under `examples/` with an `expected.txt` must print exactly that,
+/// and every example's `test` blocks must pass.
+#[test]
+fn examples_run_and_test() {
+    let dir = repo().join("examples");
+    let mut failures = Vec::new();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.join("Cargo.toml").exists()).collect();
+    entries.sort();
+    for ex in entries {
+        if let Ok(expected) = std::fs::read_to_string(ex.join("expected.txt")) {
+            let out = brs().arg("run").current_dir(&ex).env("TODO_FILE", "/nonexistent/todo.txt").output().unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout != expected {
+                failures.push(format!("{}:\n--- expected\n{}\n--- actual\n{}\n--- stderr\n{}", ex.display(), expected, stdout, String::from_utf8_lossy(&out.stderr)));
+            }
+        }
+        let out = brs().arg("test").current_dir(&ex).output().unwrap();
+        if !out.status.success() {
+            failures.push(format!("{}: `brs test` failed\n{}{}", ex.display(), String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}

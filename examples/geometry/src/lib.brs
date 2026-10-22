@@ -1,0 +1,59 @@
+//! A tiny 2D geometry library written in brs, usable from Rust and brs.
+
+/// A point or vector in 2D.
+data class Point(x: f64, y: f64) {
+    companion object {
+        const ORIGIN: Point = Point { x: 0.0, y: 0.0 }
+    }
+
+    fun distance_to(other: Point): f64 = ((x - other.x).powi(2) + (y - other.y).powi(2)).sqrt()
+
+    operator fun plus(o: Point): Point = Point(x + o.x, y + o.y)
+    operator fun minus(o: Point): Point = Point(x - o.x, y - o.y)
+}
+
+/// Anything with an area and a perimeter.
+interface Shape {
+    fun area(): f64
+    fun perimeter(): f64
+}
+
+data class Circle(center: Point, radius: f64) : Shape {
+    override fun area() = std.f64.consts.PI * radius * radius
+    override fun perimeter() = 2.0 * std.f64.consts.PI * radius
+}
+
+/// A polygon given by its vertices in order.
+data class Polygon(points: Vec<Point>) : Shape {
+    /// Shoelace formula.
+    override fun area(): f64 {
+        var sum = 0.0
+        for (i in 0..points.len()) {
+            val a = points[i]
+            val b = points[(i + 1) % points.len()]
+            sum += a.x * b.y - b.x * a.y
+        }
+        sum.abs() / 2.0
+    }
+
+    override fun perimeter(): f64 =
+        (0..points.len()).map { i -> points[i].distance_to(points[(i + 1) % points.len()]) }.sum()
+}
+
+/// Sum of the areas of all shapes.
+fun total_area(shapes: &[&dyn Shape]): f64 = shapes.iter().map { it.area() }.sum()
+
+test "distance" {
+    assert_eq(Point(0.0, 0.0).distance_to(Point(3.0, 4.0)), 5.0)
+}
+
+test "polygon area" {
+    val square = Polygon(vec[Point(0.0, 0.0), Point(2.0, 0.0), Point(2.0, 2.0), Point(0.0, 2.0)])
+    assert_eq(square.area(), 4.0)
+    assert_eq(square.perimeter(), 8.0)
+}
+
+test "operators" {
+    assert_eq(Point(1.0, 2.0) + Point(3.0, 4.0), Point(4.0, 6.0))
+    assert_eq(Point(1.0, 2.0) - Point.ORIGIN, Point(1.0, 2.0))
+}

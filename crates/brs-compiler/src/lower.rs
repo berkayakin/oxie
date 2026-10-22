@@ -223,6 +223,8 @@ pub struct Lowerer<'a> {
     pub(crate) tests: Vec<(Vec<Attr>, TestDecl)>,
     pub(crate) in_test_mod: bool,
     pub(crate) pending_trait_ret: Option<Type>,
+    /// Lowering the left side of `?:`: every `?.` is safe navigation.
+    pub(crate) force_safe: bool,
 }
 
 pub fn esc(name: &str) -> String {
@@ -281,6 +283,7 @@ impl<'a> Lowerer<'a> {
             tests: Vec::new(),
             in_test_mod: false,
             pending_trait_ret: None,
+            force_safe: false,
         }
     }
 

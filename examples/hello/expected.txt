@@ -1,0 +1,8 @@
+Welcome to brs (run #1)
+adults: Ada, Grace
+Hello, Ada.
+Hi Tim!
+Hello, Grace.
+oldest: Grace
+nickname: none
+parsed: 42

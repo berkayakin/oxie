@@ -1,0 +1,71 @@
+/// Conway's Game of Life on a wrapping grid.
+class Grid(width: usize, height: usize, cells: Vec<bool>) {
+    companion object {
+        fun parse(pattern: &str): Grid {
+            val lines: Vec<&str> = pattern.lines().map { it.trim() }.filter { !it.is_empty() }.collect()
+            val height = lines.len()
+            val width = lines[0].len()
+            val cells = lines.iter().flat_map { it.chars().map { c -> c == '#' } }.collect()
+            Grid(width, height, cells)
+        }
+    }
+
+    fun alive(x: i64, y: i64): bool {
+        val w = width as i64
+        val h = height as i64
+        cells[(((y % h + h) % h) * w + (x % w + w) % w) as usize]
+    }
+
+    fun neighbours(x: i64, y: i64): usize {
+        var n = 0
+        for (dy in -1..=1) {
+            for (dx in -1..=1) {
+                if ((dx != 0 || dy != 0) && alive(x + dx, y + dy)) n += 1
+            }
+        }
+        n
+    }
+
+    fun step(): Grid {
+        var next = vec[false; width * height]
+        for (y in 0..height) {
+            for (x in 0..width) {
+                val n = neighbours(x as i64, y as i64)
+                val live = alive(x as i64, y as i64)
+                next[y * width + x] = when (n) {
+                    3 -> true
+                    2 -> live
+                    else -> false
+                }
+            }
+        }
+        Grid(width, height, next)
+    }
+
+    fun population(): usize = cells.iter().filter { **it }.count()
+
+    override fun toString(): String {
+        var s = String()
+        for (row in cells.chunks(width)) {
+            for (c in row) s.push(if (*c) '#' else '.')
+            s.push('\n')
+        }
+        s
+    }
+}
+
+fun main() {
+    var grid = Grid.parse("""
+        ......
+        ..#...
+        ...#..
+        .###..
+        ......
+        ......
+        """)
+    for (gen in 0..4) {
+        println("generation $gen (population ${grid.population()}):")
+        print("$grid")
+        grid = grid.step()
+    }
+}

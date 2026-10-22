@@ -1,0 +1,6 @@
+20 words, 13 distinct
+1. the    5 #####
+2. dog    2 ##
+3. fox    2 ##
+4. quick  2 ##
+5. as     1 #

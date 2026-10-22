@@ -1,0 +1,28 @@
+import crate::legacy::money
+
+data class Line(name: String, qty: u32, unit_cents: u64) {
+    fun total(): u64 = qty as u64 * unit_cents
+}
+
+class Invoice(customer: String, lines: Vec<Line>) {
+    fun subtotal(): u64 = lines.iter().map { it.total() }.sum()
+
+    override fun toString(): String {
+        var s = "Invoice for $customer\n"
+        for (l in &lines) s += "  ${l.name:<8} ${l.qty:>3} x ${money(l.unit_cents)}\n"
+        s + "  subtotal: ${money(subtotal())}"
+    }
+}
+
+fun total_with_tax(inv: &Invoice, tax_percent: u64): String = money(inv.subtotal() * (100 + tax_percent) / 100)
+
+error class BadLine(text: String) = "cannot parse line '$text' (expected: NAME x QTY @ CENTS)"
+
+/// Parses `NAME x QTY @ CENTS`.
+fun parse_line(text: &str): Line throws BadLine {
+    val parts: Vec<&str> = text.split_whitespace().collect()
+    if (parts.len() != 5 || parts[1] != "x" || parts[3] != "@") throw BadLine(text.to_string())
+    val qty = parts[2].parse().map_err { BadLine(text.to_string()) }?
+    val cents = parts[4].parse().map_err { BadLine(text.to_string()) }?
+    Line(parts[0].to_string(), qty, cents)
+}

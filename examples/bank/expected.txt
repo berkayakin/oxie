@@ -1,0 +1,9 @@
+failed: amount must be positive
+ok: B-2 -> A-1 (10)
+failed: account 'C-3' not found
+failed: account 'B-2' is frozen
+short by 999610
+after one month:
+  A-1    alice         397 (savings 2%)
+  B-2    bob           205 (checking (fee 5))
+log: ["moved 120 from A-1 to B-2", "moved 10 from B-2 to A-1"]
