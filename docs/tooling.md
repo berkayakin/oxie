@@ -3,11 +3,24 @@
 ## Installing
 
 ```bash
-cargo install --path crates/oxie-cli
+cargo install --git https://github.com/berkayakin/oxie oxie-cli
 ```
 
-installs `oxie` into `~/.cargo/bin`. New projects depend on `crates/oxie-build` from this
-repository by path; set `OXIE_HOME` to the repository root if you move it.
+installs `oxie` into `~/.cargo/bin`. New projects and scripts take the `oxie-build` crate from
+the repository on GitHub, so their first build needs network access. Cargo pins the commit in
+the project's `Cargo.lock`; `cargo update -p oxie-build` moves it to the latest.
+
+### Working on Oxie
+
+```bash
+git clone https://github.com/berkayakin/oxie.git && cd oxie
+cargo install --path crates/oxie-cli
+export OXIE_HOME="$PWD"
+```
+
+With `OXIE_HOME` set to a checkout, new projects and scripts use its `crates/oxie-build` by
+path instead, so they build with your changes and without network access. The test suite sets
+it to the checkout it runs in.
 
 ## The `oxie` command
 
@@ -55,13 +68,13 @@ A `.oxi` file outside a project runs as a script. Its dependencies go in header 
 fun main() = println(rand.random::<u32>())
 ```
 
-Scripts are built in `~/.cache/Oxie` (set `OXIE_CACHE` to change it) with a shared target
+Scripts are built in `~/.cache/oxie` (set `OXIE_CACHE` to change it) with a shared target
 directory, so only the first run of a script compiles its dependencies.
 
 ## Project layout
 
 ```
-Cargo.toml          [build-dependencies] oxie-build = { path = ".../crates/oxie-build" }
+Cargo.toml          [build-dependencies] oxie-build = { git = "https://github.com/berkayakin/oxie" }
 build.rs            fn main() { oxie_build::compile(); }
 src/main.rs         include!(concat!(env!("OUT_DIR"), "/oxie/main.rs"));
 src/main.oxi        crate root (src/lib.oxi for libraries)

@@ -15,11 +15,11 @@ Language support for [Oxie](../../README.md) in the Kuana editor:
 1. Install the `oxie` command (the language server is `oxie lsp`):
 
    ```bash
-   cargo install --path crates/oxie-cli
+   cargo install --git https://github.com/berkayakin/oxie oxie-cli
    ```
 
 2. In Kuana: Settings → Extensions → **Install from Folder…** and choose this folder
-   (or link it: `ln -s "$PWD" ~/.config/kuana/extensions/Oxie`, then **Reload Extensions**).
+   (or link it: `ln -s "$PWD" ~/.config/kuana/extensions/oxie`, then **Reload Extensions**).
 
 Kuana compiles the bundled grammar (`grammars/oxie/src/parser.c`) the first time; validate
 the extension with `kuana extension check editors/kuana-oxie`.

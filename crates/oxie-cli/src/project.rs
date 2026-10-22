@@ -5,13 +5,17 @@ use std::path::{Path, PathBuf};
 
 use oxie_compiler::compile::{extern_crates_from_manifest, Input, Options, Output};
 
-/// Directory of the `oxie-build` crate, used as a path dependency by new projects.
-pub fn oxie_build_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("OXIE_HOME") {
-        return PathBuf::from(home).join("crates/oxie-build");
+/// The Oxie repository, where new projects and scripts get `oxie-build` from.
+pub const REPOSITORY: &str = "https://github.com/berkayakin/oxie";
+
+/// The `oxie-build` build-dependency of new projects and scripts, as a TOML inline table:
+/// from the repository on GitHub, or from the local checkout at `OXIE_HOME` when it is set
+/// (working on Oxie itself, or offline).
+pub fn oxie_build_dep() -> String {
+    match std::env::var("OXIE_HOME") {
+        Ok(home) if !home.is_empty() => format!("{{ path = \"{}\" }}", toml_path(&Path::new(&home).join("crates/oxie-build"))),
+        _ => format!("{{ git = \"{REPOSITORY}\" }}"),
     }
-    let compiled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../oxie-build");
-    std::fs::canonicalize(&compiled).unwrap_or(compiled)
 }
 
 pub struct Project {
@@ -85,9 +89,9 @@ build = "build.rs"
 [dependencies]
 {deps}
 [build-dependencies]
-oxie-build = {{ path = "{}" }}
+oxie-build = {}
 "#,
-        toml_path(&oxie_build_dir())
+        oxie_build_dep()
     )
 }
 

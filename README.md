@@ -86,11 +86,12 @@ reads takes `&self`, a function that returns `Self` without touching `self` is s
 Requirements: Rust 1.80+ (`rustup`).
 
 ```bash
-git clone https://github.com/berkayakin/oxie.git && cd oxie
-cargo install --path crates/oxie-cli
+cargo install --git https://github.com/berkayakin/oxie oxie-cli
 ```
 
-This installs the `oxie` command (compiler driver, formatter and language server).
+This installs the `oxie` command (compiler driver, formatter and language server). Projects
+it creates get the `oxie-build` helper from this repository on GitHub. To work on Oxie itself,
+see [working on Oxie](docs/tooling.md#working-on-oxie).
 
 ## Quick start
 
