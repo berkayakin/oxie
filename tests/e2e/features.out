@@ -1,0 +1,22 @@
+HEY!
+4 even: true, 7 even: false
+second: Some(20)
+bumped: [11, 21, 31]
+c = (7, 10), -c = (-7, -10), |b| = 5
+Circle { radius: 1.0 } area=3.00 round=true
+Square { side: 2.0 } area=4.00 round=false
+Triangle { a: 3.0, b: 4.0, c: 5.0 } area=6.00 round=false
+Point area=0.00 round=false
+direction: East
+app v1.2.3 (max 100)
+version: 1.2.3
+temp: 100.0F hot
+freezing: mild
+countdown: [3, 2, 1]
+sum countdown: 10
+largest: 9 1.5
+<a><b>
+Dog says woof
+Tom says meow
+swap: (2, 1)
+meters: 5.5

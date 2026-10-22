@@ -11,6 +11,12 @@ fn is_const_like(s: &str) -> bool {
     s.len() > 1 && s.chars().next().map_or(false, |c| c.is_uppercase()) && s.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
 }
 
+/// Methods whose return type is inferred from the expected type; `.into()` would break that.
+const INFERENCE_DEPENDENT: &[&str] = &[
+    "parse", "collect", "into", "try_into", "sum", "product", "unwrap_or_default", "default", "from", "ok", "err", "map", "and_then",
+    "get", "first", "last", "find", "max", "min", "pop", "next", "cloned", "copied", "as_ref", "as_deref", "take", "filter",
+];
+
 fn escape_braces(s: &str) -> String {
     s.replace('{', "{{").replace('}', "}}")
 }
@@ -141,7 +147,8 @@ impl<'a> Lowerer<'a> {
             self.block_stmt(b);
         }
         self.e.w(";");
-        self.bind_pat(pat, ty.cloned());
+        let known = ty.cloned().or_else(|| init.and_then(|e| self.infer_type(e)));
+        self.bind_pat(pat, known);
     }
 
     /// Emits an expression in statement position. Returns true if it is block-like (no `;` needed).
@@ -290,6 +297,11 @@ impl<'a> Lowerer<'a> {
                     self.e.w(")");
                 }
                 _ if self.is_place(e) && !self.place_is_option(e) => {
+                    self.expr(e, P_POSTFIX);
+                    self.e.w(".into()");
+                }
+                // a call returning `T` converts to `T?` with `.into()` (identity when it already returns `T?`)
+                ExprKind::MethodCall { name, .. } if !INFERENCE_DEPENDENT.contains(&name.as_str()) && !has_safe_link(e) => {
                     self.expr(e, P_POSTFIX);
                     self.e.w(".into()");
                 }
@@ -1495,6 +1507,25 @@ impl<'a> Lowerer<'a> {
             }
             self.e.w(&format!(" {} }}", v));
             return;
+        }
+        // method of a brs class when the receiver's type is known
+        if !matches!(recv.kind, ExprKind::SelfValue) {
+            let owner = match self.infer_type(recv) {
+                Some(Type::Ref { inner, .. }) => inner.single_name().map(|s| s.to_string()),
+                Some(t) => t.single_name().map(|s| s.to_string()),
+                None => None,
+            };
+            let m = owner.as_ref().and_then(|o| self.k.class(o).and_then(|c| c.methods.get(name)).or_else(|| self.k.enum_(o).and_then(|e| e.methods.get(name)))).cloned();
+            if let Some(m) = m {
+                self.expr(recv, P_POSTFIX);
+                self.e.w(&format!(".{}", esc(name)));
+                if let Some(g) = generics {
+                    let gt = self.generic_args_text(g);
+                    self.e.w(&format!("::{}", gt));
+                }
+                self.arg_list(args, Some(&m.params), TyPos::Param, span);
+                return;
+            }
         }
         // self.method(...) with known parameters / calling a function-typed field
         if matches!(recv.kind, ExprKind::SelfValue) {

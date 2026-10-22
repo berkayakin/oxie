@@ -420,8 +420,9 @@ impl<'a> Lowerer<'a> {
         let mut used = HashSet::new();
         for (attrs, t) in tests {
             self.e.nl();
-            let mut name = slug(&t.name);
-            while !used.insert(name.clone()) {
+            let base = slug(&t.name);
+            let mut name = if base.starts_with("test") { base } else { format!("test_{}", base) };
+            while self.k.funs.contains_key(&name) || !used.insert(name.clone()) {
                 name.push('_');
             }
             self.e.w(&format!("/// {}", t.name.replace('\n', " ")));
@@ -1252,12 +1253,22 @@ impl<'a> Lowerer<'a> {
         self.attrs(&it.attrs, &[]);
         self.e.w(&sig);
         self.bind_params(f);
+        // inside an extension of a brs type, its fields and methods are in scope (like Kotlin)
+        let saved_class = self.class.take();
+        if let Some(owner) = recv_ty.single_name() {
+            if self.k.class(owner).is_some() || self.k.enum_(owner).is_some() {
+                let mut ctx = self.class_ctx_for(owner, &[], &[]);
+                ctx.is_static = matches!(f.self_param, Some(SelfParam::Typed(_)));
+                self.class = Some(ctx);
+            }
+        }
         if let Some(body) = &f.body {
             self.e.w(" ");
             self.fun_body(f, body);
         } else {
             self.error(f.name_span, "extension functions need a body");
         }
+        self.class = saved_class;
         self.pop_scope();
         self.e.dedent();
         self.e.nl();
