@@ -225,6 +225,8 @@ pub struct Lowerer<'a> {
     pub(crate) pending_trait_ret: Option<Type>,
     /// Lowering the left side of `?:`: every `?.` is safe navigation.
     pub(crate) force_safe: bool,
+    /// Inside a `pub` class/enum: members default to `pub`.
+    pub(crate) members_pub: bool,
 }
 
 pub fn esc(name: &str) -> String {
@@ -284,6 +286,7 @@ impl<'a> Lowerer<'a> {
             in_test_mod: false,
             pending_trait_ret: None,
             force_safe: false,
+            members_pub: false,
         }
     }
 
@@ -511,9 +514,16 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Default visibility is crate-wide (`pub(crate)`, Kotlin's `internal`): visible across the
+    /// whole project, but not exported from a library unless marked `pub`. Members of a `pub`
+    /// class or enum default to `pub`. Keeping items unexported lets the optimizer inline them
+    /// exactly like private Rust functions.
     pub(crate) fn vis(&self, v: &Vis, ctx: ItemCtx) -> String {
         match v {
-            Vis::Default | Vis::Public => {
+            Vis::Default if ctx == ItemCtx::Local => String::new(),
+            Vis::Default if self.members_pub => "pub ".into(),
+            Vis::Default => "pub(crate) ".into(),
+            Vis::Public => {
                 if ctx == ItemCtx::Local {
                     String::new()
                 } else {
@@ -1379,6 +1389,8 @@ impl<'a> Lowerer<'a> {
 
     fn class_decl(&mut self, it: &Item, t: &TypeDecl, ctx: ItemCtx) {
         let vis = self.vis(&it.vis, ctx);
+        let saved_members_pub = self.members_pub;
+        self.members_pub = it.vis == Vis::Public;
         let g = self.generics_decl(&t.generics);
         let gn = self.generics_names(&t.generics);
         let wc = self.where_clause(&t.generics);
@@ -1481,6 +1493,7 @@ impl<'a> Lowerer<'a> {
             self.error_class_impls(t, &g, &self_ty, &wc);
         }
         self.class = saved_class;
+        self.members_pub = saved_members_pub;
     }
 
     pub(crate) fn recv_of(&self, owner: &str, f: &FunDecl) -> Recv {
@@ -1577,7 +1590,9 @@ impl<'a> Lowerer<'a> {
             .filter(|(f, _)| f.in_ctor)
             .map(|(f, ty)| format!("{}: {}", esc(&f.name), self.ty(ty, TyPos::Field)))
             .collect();
-        self.e.w(&format!("pub fn new({}) -> Self {{", params.join(", ")));
+        let vis = if self.members_pub { "pub " } else { "pub(crate) " };
+        // generated, so an unused constructor is not the user's problem
+        self.e.w(&format!("#[allow(dead_code)]\n{}fn new({}) -> Self {{", vis, params.join(", ")));
         self.e.indent();
         self.e.nl();
         let has_init = t.init.is_some();
@@ -1858,6 +1873,8 @@ impl<'a> Lowerer<'a> {
 
     fn enum_decl(&mut self, it: &Item, t: &TypeDecl, ctx: ItemCtx) {
         let vis = self.vis(&it.vis, ctx);
+        let saved_members_pub = self.members_pub;
+        self.members_pub = it.vis == Vis::Public;
         let g = self.generics_decl(&t.generics);
         let gn = self.generics_names(&t.generics);
         let wc = self.where_clause(&t.generics);
@@ -1936,6 +1953,7 @@ impl<'a> Lowerer<'a> {
             self.error_enum_impls(t, &g, &self_ty, &wc);
         }
         self.class = saved_class;
+        self.members_pub = saved_members_pub;
     }
 
     fn error_enum_impls(&mut self, t: &TypeDecl, g: &str, self_ty: &str, wc: &str) {

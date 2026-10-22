@@ -1,0 +1,169 @@
+//! brs implementations of the benchmark workloads, written the way a brs user would write them.
+import std::collections::HashMap
+
+// ---------------------------------------------------------------- n-body
+
+data class Body(var x: f64, var y: f64, var z: f64, var vx: f64, var vy: f64, var vz: f64, mass: f64)
+
+const SOLAR_MASS: f64 = 4.0 * std::f64::consts::PI * std::f64::consts::PI
+const DAYS_PER_YEAR: f64 = 365.24
+
+fun bodies(): Vec<Body> = vec[
+    Body(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, SOLAR_MASS),
+    Body(4.84143144246472090e+00, -1.16032004402742839e+00, -1.03622044471123109e-01, 1.66007664274403694e-03 * DAYS_PER_YEAR,
+        7.69901118419740425e-03 * DAYS_PER_YEAR, -6.90460016972063023e-05 * DAYS_PER_YEAR, 9.54791938424326609e-04 * SOLAR_MASS),
+    Body(8.34336671824457987e+00, 4.12479856412430479e+00, -4.03523417114321381e-01, -2.76742510726862411e-03 * DAYS_PER_YEAR,
+        4.99852801234917238e-03 * DAYS_PER_YEAR, 2.30417297573763929e-05 * DAYS_PER_YEAR, 2.85885980666130812e-04 * SOLAR_MASS),
+    Body(1.28943695621391310e+01, -1.51111514016986312e+01, -2.23307578892655734e-01, 2.96460137564761618e-03 * DAYS_PER_YEAR,
+        2.37847173959480950e-03 * DAYS_PER_YEAR, -2.96589568540237556e-05 * DAYS_PER_YEAR, 4.36624404335156298e-05 * SOLAR_MASS),
+    Body(1.53796971148509165e+01, -2.59193146099879641e+01, 1.79258772950371181e-01, 2.68067772490389322e-03 * DAYS_PER_YEAR,
+        1.62824170038242295e-03 * DAYS_PER_YEAR, -9.51592254519715870e-05 * DAYS_PER_YEAR, 5.15138902046611451e-05 * SOLAR_MASS),
+]
+
+fun advance(bodies: &mut [Body], dt: f64) {
+    val n = bodies.len()
+    for (i in 0..n) {
+        for (j in i + 1..n) {
+            val dx = bodies[i].x - bodies[j].x
+            val dy = bodies[i].y - bodies[j].y
+            val dz = bodies[i].z - bodies[j].z
+            val d2 = dx * dx + dy * dy + dz * dz
+            val mag = dt / (d2 * d2.sqrt())
+            val mj = bodies[j].mass * mag
+            val mi = bodies[i].mass * mag
+            bodies[i].vx -= dx * mj
+            bodies[i].vy -= dy * mj
+            bodies[i].vz -= dz * mj
+            bodies[j].vx += dx * mi
+            bodies[j].vy += dy * mi
+            bodies[j].vz += dz * mi
+        }
+    }
+    for (b in bodies.iter_mut()) {
+        b.x += dt * b.vx
+        b.y += dt * b.vy
+        b.z += dt * b.vz
+    }
+}
+
+fun energy(bodies: &[Body]): f64 {
+    var e = 0.0
+    for ((i, b) in bodies.iter().enumerate()) {
+        e += 0.5 * b.mass * (b.vx * b.vx + b.vy * b.vy + b.vz * b.vz)
+        for (other in &bodies[i + 1..]) {
+            val dx = b.x - other.x
+            val dy = b.y - other.y
+            val dz = b.z - other.z
+            e -= b.mass * other.mass / (dx * dx + dy * dy + dz * dz).sqrt()
+        }
+    }
+    e
+}
+
+pub fun nbody(steps: usize): f64 {
+    var bs = bodies()
+    for (_ in 0..steps) advance(&mut bs, 0.01)
+    energy(&bs)
+}
+
+// ---------------------------------------------------------------- word frequency
+
+pub fun word_frequency(words: usize): usize {
+    val vocab = listOf("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda", "mu")
+    var seed = 42u64
+    var text = String.with_capacity(words * 6)
+    for (_ in 0..words) {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
+        text.push_str(vocab[(seed >> 33) as usize % vocab.len()])
+        text.push(' ')
+    }
+    var counts: HashMap<&str, usize> = HashMap()
+    for (w in text.split_whitespace()) *counts.entry(w).or_insert(0) += 1
+    counts.values().max().copied() ?: 0
+}
+
+// ---------------------------------------------------------------- primes
+
+pub fun count_primes(limit: usize): usize {
+    var sieve = vec[true; limit + 1]
+    sieve[0] = false
+    sieve[1] = false
+    var i = 2
+    while (i * i <= limit) {
+        if (sieve[i]) {
+            var j = i * i
+            while (j <= limit) {
+                sieve[j] = false
+                j += i
+            }
+        }
+        i += 1
+    }
+    sieve.iter().filter { **it }.count()
+}
+
+// ---------------------------------------------------------------- dynamic dispatch
+
+interface Shape {
+    fun area(): f64
+}
+
+data class Circle(r: f64) : Shape {
+    override fun area() = 3.141592653589793 * r * r
+}
+
+data class Rect(w: f64, h: f64) : Shape {
+    override fun area() = w * h
+}
+
+pub fun shapes_total(count: usize): f64 {
+    var shapes: Vec<Box<Shape>> = Vec.with_capacity(count)
+    for (i in 0..count) {
+        val f = (i % 100) as f64
+        if (i % 2 == 0) shapes.push(Box.new(Circle(f))) else shapes.push(Box.new(Rect(f, f + 1.0)))
+    }
+    shapes.iter().map { it.area() }.sum()
+}
+
+// ---------------------------------------------------------------- error handling
+
+error class BadNumber(text: String) = "bad number: $text"
+
+fun parse_value(text: &str): i64 throws BadNumber {
+    val v: i64 = text.parse().map_err { BadNumber(text.to_string()) }?
+    if (v < 0) throw BadNumber(text.to_string())
+    v
+}
+
+pub fun sum_valid(count: usize): i64 {
+    var inputs = Vec.with_capacity(count)
+    for (i in 0..count) {
+        inputs.push(when (i % 10) {
+            0 -> "oops".to_string()
+            1 -> "-5".to_string()
+            else -> i.to_string()
+        })
+    }
+    var total = 0i64
+    for (s in &inputs) {
+        total += parse_value(s) ?: 0
+    }
+    total
+}
+
+// ---------------------------------------------------------------- recursion & sorting
+
+pub fun fib(n: u32): u64 = if (n < 2) n as u64 else fib(n - 1) + fib(n - 2)
+
+data class Point(x: i64, y: i64)
+
+pub fun sort_points(count: usize): i64 {
+    var seed = 7u64
+    var points = Vec.with_capacity(count)
+    for (_ in 0..count) {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1)
+        points.push(Point((seed >> 40) as i64 % 1000, (seed >> 20) as i64 % 1000))
+    }
+    points.sort_by_key { it.x * it.x + it.y * it.y }
+    points[count / 2].x + points[count / 2].y
+}

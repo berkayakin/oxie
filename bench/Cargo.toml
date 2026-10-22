@@ -1,0 +1,12 @@
+[package]
+name = "brs-bench"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+publish = false
+description = "The same workloads written in brs and in hand-written Rust, timed side by side"
+
+[dependencies]
+
+[build-dependencies]
+brs-build = { path = "../crates/brs-build" }

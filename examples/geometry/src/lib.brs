@@ -1,7 +1,7 @@
 //! A tiny 2D geometry library written in brs, usable from Rust and brs.
 
 /// A point or vector in 2D.
-data class Point(x: f64, y: f64) {
+pub data class Point(x: f64, y: f64) {
     companion object {
         const ORIGIN: Point = Point { x: 0.0, y: 0.0 }
     }
@@ -13,18 +13,18 @@ data class Point(x: f64, y: f64) {
 }
 
 /// Anything with an area and a perimeter.
-interface Shape {
+pub interface Shape {
     fun area(): f64
     fun perimeter(): f64
 }
 
-data class Circle(center: Point, radius: f64) : Shape {
+pub data class Circle(center: Point, radius: f64) : Shape {
     override fun area() = std.f64.consts.PI * radius * radius
     override fun perimeter() = 2.0 * std.f64.consts.PI * radius
 }
 
 /// A polygon given by its vertices in order.
-data class Polygon(points: Vec<Point>) : Shape {
+pub data class Polygon(points: Vec<Point>) : Shape {
     /// Shoelace formula.
     override fun area(): f64 {
         var sum = 0.0
@@ -41,7 +41,7 @@ data class Polygon(points: Vec<Point>) : Shape {
 }
 
 /// Sum of the areas of all shapes.
-fun total_area(shapes: &[&dyn Shape]): f64 = shapes.iter().map { it.area() }.sum()
+pub fun total_area(shapes: &[&dyn Shape]): f64 = shapes.iter().map { it.area() }.sum()
 
 test "distance" {
     assert_eq(Point(0.0, 0.0).distance_to(Point(3.0, 4.0)), 5.0)

@@ -137,7 +137,7 @@ fn language_server_features() {
     let text = h["contents"]["value"].as_str().unwrap();
     assert!(text.contains("data class Point(x: i32, y: i32)"), "{text}");
     assert!(text.contains("A point."), "{text}");
-    assert!(text.contains("pub struct Point"), "{text}");
+    assert!(text.contains("struct Point"), "{text}");
 
     // go to definition of a method through a typed local
     let d = c.request("textDocument/definition", json!({"textDocument": {"uri": uri}, "position": pos(SRC, "moved(3)", 1)}));
