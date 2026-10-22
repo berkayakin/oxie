@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/oxie-logo-dark.svg">
+    <img src="docs/assets/oxie-logo-light.svg" alt="Oxie logo" height="120">
+  </picture>
+</p>
+
 # Oxie
 
 **Oxie is a programming language for the Rust ecosystem: a concise, familiar syntax that compiles
