@@ -1,9 +1,0 @@
-[package]
-name = "brs-build"
-description = "build.rs helper that compiles .brs files into Rust"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-brs-compiler = { path = "../brs-compiler" }

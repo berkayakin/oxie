@@ -1,6 +1,6 @@
 # Error handling
 
-brs uses Rust's error model — errors are values of type `Result<T, E>` — with Kotlin/Swift
+Oxie uses Rust's error model — errors are values of type `Result<T, E>` — with Kotlin/Swift
 style syntax on top. There are no exceptions and no hidden costs: everything below compiles to
 ordinary `Result` code.
 
@@ -22,7 +22,7 @@ fun main() {
 }
 ```
 
-| brs | Rust |
+| Oxie | Rust |
 |---|---|
 | `fun f(): T throws` | `fn f() -> Result<T, AnyError>` |
 | `fun f(): T throws MyError` | `fn f() -> Result<T, MyError>` |
@@ -34,7 +34,7 @@ fun main() {
 `AnyError` is `Box<dyn std::error::Error + Send + Sync>`: any error type converts into it,
 and so do strings, so `throw "message"` and `throw "value $x is bad"` work.
 
-Calling another brs function that `throws` from a throwing function propagates its error
+Calling another Oxie function that `throws` from a throwing function propagates its error
 automatically when you use the call as a statement or return value — like an exception would:
 
 ```kotlin
@@ -56,7 +56,7 @@ When you assign the result instead (`val r = check(5)`), you get the `Result` to
 
 ## Error types
 
-`error enum` declares an error type with a message per case. brs implements `Display`,
+`error enum` declares an error type with a message per case. Oxie implements `Display`,
 `std::error::Error` and `Debug` for it:
 
 ```kotlin
@@ -199,5 +199,5 @@ Use them for bugs, not for expected failures.
 ## Using Rust error crates
 
 Everything interoperates with the Rust ecosystem: `thiserror` and `anyhow` work as usual
-(`@derive(thiserror::Error)`, `throws anyhow::Error`), and a brs `error enum` is a normal Rust
+(`@derive(thiserror::Error)`, `throws anyhow::Error`), and an Oxie `error enum` is a normal Rust
 error type that Rust code can match on and convert.

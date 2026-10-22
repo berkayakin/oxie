@@ -1,3 +1,3 @@
 fn main() {
-    brs_build::compile();
+    oxie_build::compile();
 }

@@ -1,0 +1,9 @@
+[package]
+name = "oxie-build"
+description = "build.rs helper that compiles .oxi files into Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oxie-compiler = { path = "../oxie-compiler" }

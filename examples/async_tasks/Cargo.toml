@@ -7,4 +7,4 @@ build = "build.rs"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 [build-dependencies]
-brs-build = { path = "../../crates/brs-build" }
+oxie-build = { path = "../../crates/oxie-build" }

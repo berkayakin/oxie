@@ -1,0 +1,17 @@
+id = "oxie"
+name = "Oxie"
+version = "0.1.0"
+schema_version = 1
+description = "Oxie language support: syntax highlighting, outline, run and test buttons, and the Oxie language server (diagnostics, completion, hover, go to definition, rename, formatting)."
+authors = ["Berkay Akin"]
+
+# The grammar is bundled in grammars/oxie/src (generated from editors/tree-sitter-oxie).
+[grammars.oxie]
+
+[language_servers.oxi]
+name = "oxie"
+languages = ["Oxie"]
+command = "oxie"
+args = ["lsp"]
+install = "cargo install --path crates/oxie-cli (from the Oxie repository)"
+root_markers = ["Cargo.toml"]

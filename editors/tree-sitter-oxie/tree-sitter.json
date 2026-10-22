@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "oxie",
+      "camelcase": "Oxie",
+      "scope": "source.oxi",
+      "path": ".",
+      "file-types": ["oxi"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Oxie grammar for tree-sitter",
+    "links": {
+      "repository": "https://github.com/oxie-lang/tree-sitter-oxie"
+    }
+  }
+}

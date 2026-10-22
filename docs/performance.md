@@ -1,12 +1,12 @@
 # Performance
 
-brs programs perform exactly like the equivalent hand-written Rust, because they *are* that
-Rust: the brs compiler only translates syntax, and `rustc`/LLVM compile the result.
+Oxie programs perform exactly like the equivalent hand-written Rust, because they *are* that
+Rust: the Oxie compiler only translates syntax, and `rustc`/LLVM compile the result.
 
 ## Why there is no overhead
 
 * **No runtime.** The generated code uses only the standard library and your dependencies.
-  The small support module (`__brs`) holds a type alias, `#[inline(always)]` helpers for `?:`,
+  The small support module (`__oxie`) holds a type alias, `#[inline(always)]` helpers for `?:`,
   `.context()` and the error printer for `main() throws`.
 * **No hidden allocations, clones or boxing.** Every construct maps to the code you'd write:
   `data class` → struct + derives; `when` → `match`; templates → `format!` (spliced directly
@@ -15,7 +15,7 @@ Rust: the brs compiler only translates syntax, and `rustc`/LLVM compile the resu
   dispatch); `x in a..b` → two comparisons.
 * **Values keep Rust's representation.** `T?` is `Option<T>` (niche-optimized), classes are
   plain structs, enums are Rust enums, generics are monomorphized.
-* **Allocation only where you'd allocate anyway.** The implicit conversions brs adds where Rust
+* **Allocation only where you'd allocate anyway.** The implicit conversions Oxie adds where Rust
   would reject the code (a `&str` passed as a `String`, a lambda stored in a field) allocate
   exactly like the `.to_string()` / `Box::new` you would otherwise write.
 * **Optimizer-friendly defaults.** Declarations are `pub(crate)` unless marked `pub`, so the
@@ -23,17 +23,17 @@ Rust: the brs compiler only translates syntax, and `rustc`/LLVM compile the resu
 
 ## Benchmarks
 
-[`bench/`](../bench) implements seven workloads twice — idiomatic brs (`bench/src/lib.brs`)
+[`bench/`](../bench) implements seven workloads twice — idiomatic Oxie (`bench/src/lib.oxi`)
 and idiomatic Rust (`bench/src/rust_impl.rs`) — and times them with identical inputs, checking
 that both produce the same result:
 
 ```bash
-cargo run --release -p brs-bench
+cargo run --release -p oxie-bench
 ```
 
 Results (Apple Silicon, median of 15 runs, `--release`):
 
-| workload | what it exercises | brs | Rust | ratio |
+| workload | what it exercises | Oxie | Rust | ratio |
 |---|---|---|---|---|
 | n-body | `data class` with `var` fields, float math, nested loops | 5.28 ms | 5.28 ms | 0.999 |
 | word frequency | strings, `HashMap`, iterators | 11.34 ms | 11.51 ms | 0.986 |
@@ -47,11 +47,11 @@ All differences are within run-to-run noise (±2%).
 
 ## Seeing the code
 
-`brs emit file.brs` prints the Rust generated for a file. For the n-body inner loop it is
+`oxie emit file.oxi` prints the Rust generated for a file. For the n-body inner loop it is
 identical, token for token, to the hand-written version.
 
 ## Build times
 
 Translation takes a few milliseconds per file; build time is dominated by `rustc`, as for any
-Rust crate. The first build of a project also compiles the `brs-build` helper (a few seconds),
+Rust crate. The first build of a project also compiles the `oxie-build` helper (a few seconds),
 after which Cargo caches it.

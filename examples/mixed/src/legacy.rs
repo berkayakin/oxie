@@ -1,4 +1,4 @@
-//! Existing hand-written Rust code, used by the brs module.
+//! Existing hand-written Rust code, used by the Oxie module.
 
 pub const TAX_PERCENT: u64 = 20;
 

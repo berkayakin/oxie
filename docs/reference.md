@@ -1,8 +1,8 @@
-# brs language reference
+# Oxie language reference
 
-brs is a syntax for Rust. Every construct below lowers to ordinary Rust; the semantics
+Oxie is a syntax for Rust. Every construct below lowers to ordinary Rust; the semantics
 (ownership, borrowing, traits, generics, `Option`/`Result`, iterators, macros) are Rust's.
-`brs emit file.brs` prints the generated Rust for any file.
+`oxie emit file.oxi` prints the generated Rust for any file.
 
 Contents: [Lexical structure](#lexical-structure) · [Declarations](#declarations) ·
 [Functions](#functions) · [Types](#types) · [Classes](#classes) · [Enums](#enums) ·
@@ -30,7 +30,7 @@ Contents: [Lexical structure](#lexical-structure) · [Declarations](#declaration
       .sum::<f64>()
   ```
 
-* **Identifiers** are Rust identifiers. Rust keywords that brs does not reserve (`type`,
+* **Identifiers** are Rust identifiers. Rust keywords that Oxie does not reserve (`type`,
   `match`, `loop`, ...) can be field and method names; `r#name` works as in Rust.
 * **Numbers**: Rust literals (`1_000`, `0xff`, `1e-3`, `5u8`, `2.0f32`) plus Kotlin's `10L` (`i64`).
 * **Characters**: `'a'`, `'\n'`, `'\u{1F600}'`, byte `b'a'`.
@@ -39,7 +39,7 @@ Contents: [Lexical structure](#lexical-structure) · [Declarations](#declaration
 
 ## Declarations
 
-| brs | Rust |
+| Oxie | Rust |
 |---|---|
 | `val x = 1` | `let x = 1;` |
 | `var x = 1` | `let mut x = 1;` |
@@ -63,16 +63,16 @@ fun short(x: i32) = x * 2
 
 * **Return type**: `: T` (or Rust's `-> T`). Omitted means `()`, except for an expression
   body whose type is obvious (a literal, a template, arithmetic on typed values, a call to a
-  function with a declared type, a constructor, ...), which brs infers.
+  function with a declared type, a constructor, ...), which Oxie infers.
 * **Block value**: the last expression of a block is its value. In a function returning `()`
   the last expression is a statement.
 * **Default arguments** and **named arguments** (`f(x = 1)`) work for functions, methods and
-  constructors declared in brs; defaults are filled in at the call site.
+  constructors declared in Oxie; defaults are filled in at the call site.
 * **Generics and bounds** are Rust's: `<T: Display + Clone>`, `where T: Into<String>`,
   `<'a>`, `<const N: usize>`. Kotlin's `fun <T> name()` order is accepted too.
 * **Modifiers**: `async fun`, `unsafe fun`, `const fun`, `extern "C" fun`.
 * **Automatic lifetimes**: when a function returns a reference and Rust cannot infer which
-  parameter it borrows from, brs ties the result to all reference parameters
+  parameter it borrows from, Oxie ties the result to all reference parameters
   (`fun longest(a: &str, b: &str): &str` → `fn longest<'a>(a: &'a str, b: &'a str) -> &'a str`).
   With no reference parameters the result is `'static`. Types with lifetime parameters get
   `<'_>` in signatures.
@@ -84,7 +84,7 @@ fun short(x: i32) = x * 2
 
 ## Types
 
-| brs | Rust |
+| Oxie | Rust |
 |---|---|
 | `i32`, `u8`, `f64`, `bool`, `char`, `str`, `String`, ... | same |
 | `Int`, `Long`, `Short`, `Byte`, `UInt`, `ULong`, `Double`, `Float`, `Boolean`, `Char`, `Unit` | `i32`, `i64`, `i16`, `i8`, `u32`, `u64`, `f64`, `f32`, `bool`, `char`, `()` |
@@ -96,7 +96,7 @@ fun short(x: i32) = x * 2
 
 The standard traits used as types the same way are `Display`, `Debug`, `Error`, `Iterator`,
 `IntoIterator`, `Read`, `Write`, `BufRead`, `Future`, `Any`, `ToString` and every interface
-declared in brs.
+declared in Oxie.
 
 ## Classes
 
@@ -180,9 +180,9 @@ interface Named : Display {
   matching `impl Trait for Class` is generated. Methods named like the trait's (and `type`
   members) go to the right trait even without `override`.
 * Rust `impl Type { }` and `impl Trait for Type { }` blocks are supported, also for types not
-  declared in brs (`impl Display for Point { fun fmt(f: &mut Formatter): fmt::Result = ... }`).
+  declared in Oxie (`impl Display for Point { fun fmt(f: &mut Formatter): fmt::Result = ... }`).
   Inside, methods follow the same receiver rules and fields are available implicitly when the
-  type is a brs class.
+  type is an Oxie class.
 
 ## Extension functions
 
@@ -193,14 +193,14 @@ mut fun Vec<i32>.bump(by: i32) { for (x in self.iter_mut()) *x += by }
 ```
 
 Each becomes a trait with one method plus its `impl` for the receiver type; every file of the
-crate imports these traits automatically. Inside, `this`/`self` is the receiver; for brs
+crate imports these traits automatically. Inside, `this`/`self` is the receiver; for Oxie
 classes their fields can be used directly.
 
 ### Operators
 
 `operator fun` inside a class or enum implements a `std::ops` trait:
 
-| brs | trait | | brs | trait |
+| Oxie | trait | | Oxie | trait |
 |---|---|---|---|---|
 | `plus` | `Add` | | `plusAssign` | `AddAssign` |
 | `minus` | `Sub` | | `minusAssign` | `SubAssign` |
@@ -222,7 +222,7 @@ the right-hand side (`impl Mul<f64> for Vec2` for `operator fun times(k: f64)`).
 
 ## Expressions
 
-| brs | Rust |
+| Oxie | Rust |
 |---|---|
 | `a == b`, `a < b`, `a && b`, `a + b`, ... | same (Rust precedence) |
 | `x in coll` / `x !in coll` | `coll.contains(&x)` / `!coll.contains(&x)` |
@@ -300,13 +300,13 @@ the declared type of a variable, field, parameter or return value:
 
 See [Error handling](errors.md) for the full guide.
 
-| brs | Rust |
+| Oxie | Rust |
 |---|---|
 | `fun f(): T throws` | `-> Result<T, AnyError>` (`Box<dyn Error + Send + Sync>`) |
 | `fun f(): T throws E` | `-> Result<T, E>` |
 | `return v` / tail `v` in a throwing function | `return Ok(v)` / `Ok(v)` |
 | `throw e` | `return Err(e.into())` |
-| calling a throwing brs function as a statement or result | adds `?` |
+| calling a throwing Oxie function as a statement or result | adds `?` |
 | `try { a()?; b } catch (e: E) { c }` | labeled block; `?`/`throw` inside break out with `Err` |
 | `error enum E { V(f: T) = "msg $f" }` | enum + `Display` + `Error` (+ `source`) + `From` |
 | `error class E(f: T) = "msg $f"` | struct + `Display` + `Error` |
@@ -334,7 +334,7 @@ loop { }
 'outer: for (...) { break 'outer }
 ```
 
-* A statement `when` on literals doesn't need `else` (brs adds `_ => {}`); a `when` used as a
+* A statement `when` on literals doesn't need `else` (Oxie adds `_ => {}`); a `when` used as a
   value must be exhaustive, as in Rust.
 * `if`/`for`/`while` bodies can be a single statement without braces.
 
@@ -362,7 +362,7 @@ f(x) { trailing lambda }        // last argument outside the parentheses
 
 ## Collections
 
-| brs | Rust |
+| Oxie | Rust |
 |---|---|
 | `vec[1, 2, 3]`, `listOf(1, 2, 3)`, `mutableListOf()` | `vec![1, 2, 3]`, `Vec::new()` |
 | `vec[0; n]` | `vec![0; n]` |
@@ -375,8 +375,8 @@ All standard library types and methods are used with their Rust names.
 
 ## Modules and imports
 
-* Each `.brs` file under `src/` is a module: `src/util.brs` → `util`, `src/net/http.brs` →
-  `net::http`, `src/net/mod.brs` → `net`. `src/main.brs` (or `src/lib.brs`) is the crate root.
+* Each `.oxi` file under `src/` is a module: `src/util.oxi` → `util`, `src/net/http.oxi` →
+  `net::http`, `src/net/mod.oxi` → `net`. `src/main.oxi` (or `src/lib.oxi`) is the crate root.
 * `import a::b::C`, `import a.b.C`, `import a::b::{C, D as E}`, `import a::b::*`,
   `import { C, D } from a::b` (TypeScript), `use ...` (Rust). Paths that start with one of
   your modules are resolved from the crate root, so `import util::helper` works in every file.
@@ -387,7 +387,7 @@ All standard library types and methods are used with their Rust names.
 
 ## Visibility
 
-| brs | Rust |
+| Oxie | Rust |
 |---|---|
 | (default) | `pub(crate)` — visible in the whole project |
 | `pub` / `public` | `pub` — exported from a library |
@@ -402,7 +402,7 @@ optimizer treat them like private Rust functions; mark library APIs `pub`.
 
 `@name` and `@name(args)` become `#[name]` / `#[name(args)]`: `@derive(Serialize)`,
 `@serde(rename_all = "camelCase")`, `@inline`, `@cfg(test)`, `@tokio::main`, ... Rust's `#[...]`
-syntax works too. brs-specific: `@no_auto_derive` (classes/enums), `@from` (error enum cases).
+syntax works too. Oxie-specific: `@no_auto_derive` (classes/enums), `@from` (error enum cases).
 Crate-level `#![...]` attributes belong in `src/main.rs`/`src/lib.rs`.
 
 ## Tests
@@ -416,7 +416,7 @@ async test "needs tokio" { ... }      // add @tokio::test
 ```
 
 Tests go into a `#[cfg(test)]` module with `#[test]` functions named after the description.
-Run with `brs test` (or `cargo test`).
+Run with `oxie test` (or `cargo test`).
 
 ## Async
 
@@ -430,7 +430,7 @@ Use any runtime: `@tokio::main async fun main()`. A throwing async `main` works 
   Common std macros can also be called without `!` (`println(...)`, `assert_eq(...)`,
   `vec[...]`, `format(...)`, `panic(...)`, `todo()`, `dbg(...)`, `matches(...)`, ...).
 * `macro_rules!` definitions at top level.
-* Rust syntax that brs shares (`let`, `match` with `=>`, `impl`, `fn`, `|x|` closures,
+* Rust syntax that Oxie shares (`let`, `match` with `=>`, `impl`, `fn`, `|x|` closures,
   `::<T>` turbofish, `if let`, `while let`, `'label:` loops, `#[attr]`) is accepted directly.
 
 ## Keywords

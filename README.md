@@ -1,4 +1,4 @@
-# brs — Better Rust
+# Oxie
 
 **Kotlin/TypeScript-style syntax that compiles to plain Rust.**
 Every crate works, programs run exactly as fast as hand-written Rust, and you never write
@@ -33,7 +33,7 @@ fun main() throws {
 }
 ```
 
-It compiles to the Rust you would write yourself (`brs emit` shows it):
+It compiles to the Rust you would write yourself (`oxie emit` shows it):
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -58,11 +58,11 @@ pub(crate) fn parse_user(line: &str) -> Result<User, AnyError> {
 
 ## Why
 
-Rust is fast, safe and has a fantastic ecosystem, but its syntax is dense. brs keeps Rust's
+Rust is fast, safe and has a fantastic ecosystem, but its syntax is dense. Oxie keeps Rust's
 semantics — ownership, borrowing, traits, zero-cost abstractions — and gives it the syntax
 Kotlin and TypeScript developers already know:
 
-| You write (brs) | brs generates (Rust) |
+| You write (Oxie) | Oxie generates (Rust) |
 |---|---|
 | `val x = 1` / `var y = 2` | `let x = 1;` / `let mut y = 2;` |
 | `fun area(): f64 = w * h` | `fn area(&self) -> f64 { self.w * self.h }` |
@@ -86,17 +86,17 @@ reads takes `&self`, a function that returns `Self` without touching `self` is s
 Requirements: Rust 1.80+ (`rustup`).
 
 ```bash
-git clone <this repository> better-rust && cd better-rust
-cargo install --path crates/brs-cli
+git clone <this repository> oxie && cd oxie
+cargo install --path crates/oxie-cli
 ```
 
-This installs the `brs` command (compiler driver, formatter and language server).
+This installs the `oxie` command (compiler driver, formatter and language server).
 
 ## Quick start
 
 ```bash
-brs new hello && cd hello
-brs run
+oxie new hello && cd hello
+oxie run
 ```
 
 Or run a single file as a script, with crates declared in its header:
@@ -107,24 +107,24 @@ fun main() = println("dice: ${rand.random::<u8>() % 6 + 1}")
 ```
 
 ```bash
-brs run dice.brs
+oxie run dice.oxi
 ```
 
 | Command | What it does |
 |---|---|
-| `brs new <name> [--lib]` | Create a project (`Cargo.toml`, `build.rs`, `src/main.brs`) |
-| `brs run [file.brs] [-- args]` | Build and run the project or a script |
-| `brs build` / `brs check` | Build / type-check |
-| `brs test [name]` | Run `test "name" { }` blocks |
-| `brs fmt [--check]` | Format `.brs` files |
-| `brs emit file.brs` | Show the generated Rust |
-| `brs lsp` | Language server for editors |
+| `oxie new <name> [--lib]` | Create a project (`Cargo.toml`, `build.rs`, `src/main.oxi`) |
+| `oxie run [file.oxi] [-- args]` | Build and run the project or a script |
+| `oxie build` / `oxie check` | Build / type-check |
+| `oxie test [name]` | Run `test "name" { }` blocks |
+| `oxie fmt [--check]` | Format `.oxi` files |
+| `oxie emit file.oxi` | Show the generated Rust |
+| `oxie lsp` | Language server for editors |
 
-Compiler errors — brs's own and rustc's — point at your `.brs` lines:
+Compiler errors — Oxie's own and rustc's — point at your `.oxi` lines:
 
 ```
 error[E0308]: mismatched types
- --> src/main.brs:7:21
+ --> src/main.oxi:7:21
   |
 7 |     val s: String = add(1, 2)
   |                     ^^^^^^^^^ expected `String`, found `i32`
@@ -132,22 +132,22 @@ error[E0308]: mismatched types
 
 ## 100% Rust compatible
 
-A brs project *is* a Cargo crate. `build.rs` runs the brs compiler and `src/main.rs` includes
+An Oxie project *is* a Cargo crate. `build.rs` runs the Oxie compiler and `src/main.rs` includes
 the generated code, so `cargo build`, `cargo test`, `cargo doc`, rust-analyzer, clippy and
 every crate on crates.io work unchanged. You can:
 
 * use any crate: `import serde::{Serialize, Deserialize}` then `@derive(Serialize, Deserialize)`;
-* mix `.rs` and `.brs` files in one crate and call between them in both directions;
-* write a library in brs and use it from Rust (and vice versa);
+* mix `.rs` and `.oxi` files in one crate and call between them in both directions;
+* write a library in Oxie and use it from Rust (and vice versa);
 * drop down to Rust anywhere with `rust { ... }` blocks or `macro!(...)` calls.
 
 ## Performance
 
-brs adds no runtime and no hidden allocations or clones; each construct lowers to the Rust
-you would write by hand. The [`bench`](bench) crate implements the same workloads in brs and
-in idiomatic Rust (`cargo run --release -p brs-bench`):
+Oxie adds no runtime and no hidden allocations or clones; each construct lowers to the Rust
+you would write by hand. The [`bench`](bench) crate implements the same workloads in Oxie and
+in idiomatic Rust (`cargo run --release -p oxie-bench`):
 
-| workload | brs | Rust | ratio |
+| workload | Oxie | Rust | ratio |
 |---|---|---|---|
 | n-body | 5.28 ms | 5.28 ms | 0.999 |
 | word frequency (HashMap) | 11.34 ms | 11.51 ms | 0.986 |
@@ -161,19 +161,19 @@ Differences are within timing noise. See [docs/performance.md](docs/performance.
 
 ## Editor support
 
-* **Kuana**: the extension in [`editors/kuana-brs`](editors/kuana-brs) gives highlighting,
+* **Kuana**: the extension in [`editors/kuana-oxie`](editors/kuana-oxie) gives highlighting,
   outline, ▶ run/test buttons, snippets and the language server.
-* **Any LSP editor**: run `brs lsp` for diagnostics, completion, hover (with the generated Rust),
+* **Any LSP editor**: run `oxie lsp` for diagnostics, completion, hover (with the generated Rust),
   go to definition, references, rename, signature help, formatting, symbols and inlay hints.
-* **Tree-sitter**: the grammar is in [`editors/tree-sitter-brs`](editors/tree-sitter-brs).
+* **Tree-sitter**: the grammar is in [`editors/tree-sitter-oxie`](editors/tree-sitter-oxie).
 
 ## Documentation
 
-* [A tour of brs](docs/guide.md) — start here
+* [A tour of Oxie](docs/guide.md) — start here
 * [Language reference](docs/reference.md) — every construct and the Rust it becomes
 * [Error handling](docs/errors.md)
 * [Coming from Kotlin or TypeScript](docs/cheatsheet.md)
-* [Rust interop](docs/rust-interop.md) — crates, mixed projects, calling brs from Rust
+* [Rust interop](docs/rust-interop.md) — crates, mixed projects, calling Oxie from Rust
 * [Tooling](docs/tooling.md) — CLI, project layout, formatter, language server, editors
 * [Performance](docs/performance.md)
 * [Compiler internals](docs/internals.md) — for contributors
@@ -183,17 +183,17 @@ Differences are within timing noise. See [docs/performance.md](docs/performance.
 [`examples/`](examples) has complete programs: a calculator (lexer, recursive-descent parser,
 evaluator), a todo CLI with file storage, a bank with interfaces and typed errors, Game of
 Life, a word counter, async tasks with tokio, a JSON API with serde, a geometry library used
-from Rust, and a Rust program with brs modules.
+from Rust, and a Rust program with Oxie modules.
 
 ## Repository layout
 
 ```
-crates/brs-compiler   lexer, parser, semantic analysis, lowering to Rust, formatter
-crates/brs-build      build.rs helper used by brs projects
-crates/brs-cli        the `brs` command and language server
+crates/oxie-compiler   lexer, parser, semantic analysis, lowering to Rust, formatter
+crates/oxie-build      build.rs helper used by Oxie projects
+crates/oxie-cli        the `oxie` command and language server
 editors/              tree-sitter grammar and Kuana extension
 examples/             example projects (also run by the test suite)
-bench/                brs vs Rust benchmarks
+bench/                Oxie vs Rust benchmarks
 tests/                end-to-end and diagnostics tests
 docs/                 documentation
 ```

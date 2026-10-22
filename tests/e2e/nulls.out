@@ -1,7 +1,7 @@
 city: Some("London")
 bob city: None
 zed age: -1
-len: 3
+len: 4
 name: anonymous
 first even: Some(4)
 none even: None

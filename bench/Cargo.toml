@@ -1,12 +1,12 @@
 [package]
-name = "brs-bench"
+name = "oxie-bench"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 publish = false
-description = "The same workloads written in brs and in hand-written Rust, timed side by side"
+description = "The same workloads written in oxie and in hand-written Rust, timed side by side"
 
 [dependencies]
 
 [build-dependencies]
-brs-build = { path = "../crates/brs-build" }
+oxie-build = { path = "../crates/oxie-build" }

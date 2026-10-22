@@ -1,11 +1,11 @@
 # Compiler internals
 
-This document is for people working on brs itself.
+This document is for people working on Oxie itself.
 
 ## Pipeline
 
 ```
-.brs source
+.oxi source
   │ lexer.rs      tokens with byte spans; significant newlines; string interpolation parts
   ▼
   │ parser.rs     recursive descent → ast.rs; error recovery per statement
@@ -23,8 +23,8 @@ This document is for people working on brs itself.
 generated .rs files → rustc
 ```
 
-The compiler is a library (`brs-compiler`) with no dependencies. `brs-build` calls it from
-`build.rs`; `brs-cli` calls it for checking, `brs emit`, formatting and the language server.
+The compiler is a library (`oxie-compiler`) with no dependencies. `oxie-build` calls it from
+`build.rs`; `oxie-cli` calls it for checking, `oxie emit`, formatting and the language server.
 
 ## Lexer
 
@@ -101,19 +101,19 @@ Notable translations:
 Each generated file `x.rs` has `x.rs.map`:
 
 ```
-brs-sourcemap 1
-/abs/path/src/x.brs
+oxie-sourcemap 1
+/abs/path/src/x.oxi
 <gen line> <gen col> <src line> <src col>
 ...
 ```
 
-`brs-cli`'s `cargo.rs` runs cargo with `--message-format=json`, maps the primary span of each
-message (following macro expansions back to the call site) to the `.brs` file, and renders it
+`oxie-cli`'s `cargo.rs` runs cargo with `--message-format=json`, maps the primary span of each
+message (following macro expansions back to the call site) to the `.oxi` file, and renders it
 in rustc's format. The language server does the same with `cargo check`.
 
 ## Tree-sitter grammar
 
-`editors/tree-sitter-brs/grammar.js` is a separate, deliberately shallow grammar for editors:
+`editors/tree-sitter-oxie/grammar.js` is a separate, deliberately shallow grammar for editors:
 declarations, calls, member access, strings with interpolation; everything else is a token
 stream grouped by brackets. It parses all repository files without errors and is used for
 highlighting, outline, indentation, text objects and runnables.
@@ -121,11 +121,11 @@ highlighting, outline, indentation, text objects and runnables.
 
 ## Tests
 
-* `crates/brs-compiler` unit tests: lexer and formatter.
-* `crates/brs-cli/tests/e2e.rs`:
-  * `tests/e2e/*.brs` programs run and compared with `.out` files;
-  * `tests/diagnostics/*.brs` must fail with `// error: <line>: <text>` errors at the right lines;
+* `crates/oxie-compiler` unit tests: lexer and formatter.
+* `crates/oxie-cli/tests/e2e.rs`:
+  * `tests/e2e/*.oxi` programs run and compared with `.out` files;
+  * `tests/diagnostics/*.oxi` must fail with `// error: <line>: <text>` errors at the right lines;
   * every example in `examples/` runs (compared with `expected.txt`) and its tests pass;
   * every runnable code block in `README.md` and `docs/*.md` compiles and runs.
-* `crates/brs-cli/tests/lsp.rs` drives the language server over stdio.
+* `crates/oxie-cli/tests/lsp.rs` drives the language server over stdio.
 * `tests/run_e2e.sh` runs the e2e programs from the shell.

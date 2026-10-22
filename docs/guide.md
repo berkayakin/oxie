@@ -1,8 +1,8 @@
-# A tour of brs
+# A tour of Oxie
 
-This tour shows brs by example. Every program here runs as-is: save it as `tour.brs` and run
-`brs run tour.brs`. If you know Kotlin or TypeScript you can read most brs code already; the
-notes point out where brs follows Rust instead.
+This tour shows Oxie by example. Every program here runs as-is: save it as `tour.oxi` and run
+`oxie run tour.oxi`. If you know Kotlin or TypeScript you can read most Oxie code already; the
+notes point out where Oxie follows Rust instead.
 
 ## Hello, world
 
@@ -70,7 +70,7 @@ Parameters are written `name: Type`, the return type after `:` (Rust's `->` also
 
 ```kotlin
 fun main() {
-    val name = "brs"
+    val name = "Oxie"
     val version = 1.25
     println("$name ${version:.1}")       // format spec after `:` (Rust format syntax)
     println("next: ${version + 0.75}")
@@ -243,7 +243,7 @@ fun main() {
 * Constructor parameters are fields. Call the constructor like a function: `Counter()`.
 * Inside methods, fields and methods are used without `this.` (write `this.x` when a parameter
   has the same name).
-* brs decides how each method receives the object: `&self` if it only reads, `&mut self` if it
+* Oxie decides how each method receives the object: `&self` if it only reads, `&mut self` if it
   assigns a field or calls something that does, and static if it never uses the object and
   returns `Self`. Write `mut fun`, `static fun` or an explicit `self` parameter to choose.
 * `data class` derives `Debug`, `Clone`, `PartialEq` — plus `Copy`, `Eq` and `Hash` when all
@@ -306,7 +306,7 @@ fun main() {
 
 An interface is a Rust trait. Used as a type it becomes a trait object behind a reference or
 `Box` (`&Animal` → `&dyn Animal`), or `impl Animal` for a parameter passed by value. `: Display`
-or any other trait works the same way; for derivable traits (`: Hash`, `: Ord`, ...) brs adds
+or any other trait works the same way; for derivable traits (`: Hash`, `: Ord`, ...) Oxie adds
 a derive. Rust's `impl Trait for Type { }` blocks work too.
 
 ## Extension functions and operators
@@ -361,7 +361,7 @@ returns an error, and `?` propagates one. Read [Error handling](errors.md) for `
 
 ## Modules and visibility
 
-Every `.brs` file in `src/` is a module named after the file (`src/net/http.brs` is
+Every `.oxi` file in `src/` is a module named after the file (`src/net/http.oxi` is
 `net::http`). Import with `import`:
 
 ```kotlin
@@ -376,7 +376,7 @@ their file, or `pub` to export them from a library. Members of a `pub` class are
 
 ## Ownership
 
-brs keeps Rust's ownership model, so `&`, `&mut`, moves and `clone()` work exactly as in Rust:
+Oxie keeps Rust's ownership model, so `&`, `&mut`, moves and `clone()` work exactly as in Rust:
 
 ```kotlin
 fun total(xs: &[i32]): i32 = xs.iter().sum()
@@ -392,7 +392,7 @@ fun main() {
 }
 ```
 
-What brs removes is the bookkeeping around it: lifetimes are filled in when Rust can't infer
+What Oxie removes is the bookkeeping around it: lifetimes are filled in when Rust can't infer
 them (a function returning a reference gets one lifetime tied to its reference parameters),
 `&self`/`&mut self` are inferred, and closures that modify captured variables are declared
 `mut` for you.
@@ -414,7 +414,7 @@ test "parsing fails on letters" throws {
 fun main() = println(add(1, 1))
 ```
 
-`brs test` runs them (`brs test "adds numbers"` runs one).
+`oxie test` runs them (`oxie test "adds numbers"` runs one).
 
 ## Async
 
@@ -437,9 +437,9 @@ async fun main() {
 }
 ```
 
-## Rust inside brs
+## Rust inside Oxie
 
-Any Rust syntax brs doesn't cover is still available:
+Any Rust syntax Oxie doesn't cover is still available:
 
 ```kotlin
 macro_rules! square {

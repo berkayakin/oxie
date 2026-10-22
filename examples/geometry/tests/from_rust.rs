@@ -1,8 +1,8 @@
-//! The brs library used from plain Rust: generated items are ordinary Rust items.
+//! The Oxie library used from plain Rust: generated items are ordinary Rust items.
 use geometry::{total_area, Circle, Point, Polygon, Shape};
 
 #[test]
-fn rust_can_use_brs_types() {
+fn rust_can_use_oxie_types() {
     let c = Circle::new(Point::new(0.0, 0.0), 1.0);
     let tri = Polygon::new(vec![Point::new(0.0, 0.0), Point::new(4.0, 0.0), Point::new(0.0, 3.0)]);
     assert_eq!(tri.area(), 6.0);

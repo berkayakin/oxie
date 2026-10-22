@@ -1,11 +1,11 @@
-//! A Rust program where some modules are written in brs.
-//! `mod.rs` declares every src/*.brs file as a module of this crate.
-include!(concat!(env!("OUT_DIR"), "/brs/mod.rs"));
+//! A Rust program where some modules are written in Oxie.
+//! `mod.rs` declares every src/*.oxi file as a module of this crate.
+include!(concat!(env!("OUT_DIR"), "/oxie/mod.rs"));
 
 mod legacy;
 
 fn main() {
-    // call brs code from Rust
+    // call Oxie code from Rust
     let report = pricing::Invoice::new("ACME".to_string(), vec![
         pricing::Line::new("widget".to_string(), 3, 250),
         pricing::Line::new("gadget".to_string(), 1, 1200),

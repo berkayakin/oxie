@@ -1,11 +1,11 @@
 # Coming from Kotlin or TypeScript
 
-brs reads like Kotlin with a few TypeScript conveniences, and runs as Rust. This page maps
-what you know to brs, and lists the Rust ideas you still need.
+Oxie reads like Kotlin with a few TypeScript conveniences, and runs as Rust. This page maps
+what you know to Oxie, and lists the Rust ideas you still need.
 
 ## Side by side
 
-| | Kotlin | TypeScript | brs |
+| | Kotlin | TypeScript | Oxie |
 |---|---|---|---|
 | immutable | `val x = 1` | `const x = 1` | `val x = 1` |
 | mutable | `var x = 1` | `let x = 1` | `var x = 1` |
@@ -38,7 +38,7 @@ what you know to brs, and lists the Rust ideas you still need.
 
 ## What is different from Kotlin and TypeScript
 
-These come from Rust and are what makes brs as fast as Rust.
+These come from Rust and are what makes Oxie as fast as Rust.
 
 **Values have one owner.** Assigning a `String`, `Vec` or class instance *moves* it; the old
 variable can't be used afterwards. Pass a reference (`&value`) to let a function read it, or
@@ -61,14 +61,14 @@ Small value types (numbers, `bool`, `char`, and `data class`es made only of thos
 instead of moved.
 
 **Mutability is declared on the variable.** `var c = Counter()` can call methods that change
-`c`; `val c = Counter()` can't. brs works out which methods change their object.
+`c`; `val c = Counter()` can't. Oxie works out which methods change their object.
 
 **Numbers have sizes.** `i32`, `i64`, `u8`, `usize` (for lengths and indexes), `f64`, ... and
 don't convert silently: write `x as f64`. (`Int`, `Long`, `Double` are accepted as names for
 `i32`, `i64`, `f64`.)
 
 **Two string types.** `&str` is borrowed text (literals, slices); `String` owns its text.
-brs converts literals and `&str` arguments to `String` where one is required.
+Oxie converts literals and `&str` arguments to `String` where one is required.
 
 **Errors are values.** A failing function returns `Result`; `throws`, `throw`, `?` and
 `try`/`catch` make that read like exceptions, but nothing is thrown at runtime and every error
@@ -106,4 +106,4 @@ each type it's used with — no boxing, no runtime type checks. Interfaces used 
   `if let`, macros), so you can mix styles while learning.
 * Differences: `?.` is Kotlin's safe call on optional values (and error propagation on
   `Result`s); strings use `$name` templates; default visibility is `pub(crate)`.
-* `brs emit file.brs` shows exactly what your code becomes.
+* `oxie emit file.oxi` shows exactly what your code becomes.
