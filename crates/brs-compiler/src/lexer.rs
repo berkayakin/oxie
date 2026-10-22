@@ -163,7 +163,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '\'' => self.quote(),
-                'r' if self.rest().starts_with("r#") && self.peek_at(2).map_or(false, is_ident_start) => {
+                'r' if self.rest().starts_with("r#") && self.peek_at(2).is_some_and(is_ident_start) => {
                     self.pos += 2;
                     let name = self.ident_text();
                     self.push(Tok::RawIdent(name), start);
@@ -260,7 +260,7 @@ impl<'a> Lexer<'a> {
             }
         } else {
             self.digits();
-            if !after_dot && self.peek() == Some('.') && self.peek_at(1).map_or(false, |c| c.is_ascii_digit()) {
+            if !after_dot && self.peek() == Some('.') && self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) {
                 is_float = true;
                 self.pos += 1;
                 self.digits();
@@ -271,7 +271,7 @@ impl<'a> Lexer<'a> {
                 if matches!(self.peek(), Some('+') | Some('-')) {
                     self.pos += 1;
                 }
-                if self.peek().map_or(false, |c| c.is_ascii_digit()) {
+                if self.peek().is_some_and(|c| c.is_ascii_digit()) {
                     is_float = true;
                     self.digits();
                 } else {
@@ -318,7 +318,7 @@ impl<'a> Lexer<'a> {
             self.char_body(start);
             let text = self.src[start..self.pos].to_string();
             self.push(Tok::Char(text), start);
-        } else if c1.map_or(false, is_ident_start) {
+        } else if c1.is_some_and(is_ident_start) {
             self.pos += 1;
             let name = self.ident_text();
             self.push(Tok::Lifetime(name), start);
@@ -533,7 +533,7 @@ impl<'a> Lexer<'a> {
             parts.push(StrPart::Interp { src: expr.to_string(), offset: self.base + open, spec });
             self.pos = i + 1;
             true
-        } else if next.map_or(false, |c| is_ident_start(c) || c.is_ascii_digit()) {
+        } else if next.is_some_and(|c| is_ident_start(c) || c.is_ascii_digit()) {
             let s = self.pos + 1;
             let mut e = s;
             if next.unwrap().is_ascii_digit() {

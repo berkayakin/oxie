@@ -8,7 +8,7 @@ use crate::sema::{ParamInfo, Recv, VariantShape};
 use crate::visit;
 
 fn is_const_like(s: &str) -> bool {
-    s.len() > 1 && s.chars().next().map_or(false, |c| c.is_uppercase()) && s.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
+    s.len() > 1 && s.chars().next().is_some_and(|c| c.is_uppercase()) && s.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
 }
 
 /// Methods whose return type is inferred from the expected type; `.into()` would break that.
@@ -126,7 +126,7 @@ impl<'a> Lowerer<'a> {
             }
         }
         self.e.w(&format!("let {}", p));
-        let fn_lambda = matches!(ty, Some(Type::Fn { .. })) && init.map_or(false, |e| matches!(e.kind, ExprKind::Lambda { .. } | ExprKind::Path { .. }));
+        let fn_lambda = matches!(ty, Some(Type::Fn { .. })) && init.is_some_and(|e| matches!(e.kind, ExprKind::Lambda { .. } | ExprKind::Path { .. }));
         if let Some(t) = ty {
             if !fn_lambda {
                 let tt = self.ty(t, TyPos::Local);
@@ -269,7 +269,7 @@ impl<'a> Lowerer<'a> {
     fn tail(&mut self, e: &Expr, t: &Target) {
         // `return x` as the last statement is just the value
         if let ExprKind::Return(Some(v)) = &e.kind {
-            if self.fns.last().map_or(false, |f| !f.is_lambda) && self.fns.last().map_or(false, |f| f.tries.is_empty()) && !v.diverges() {
+            if self.fns.last().is_some_and(|f| !f.is_lambda) && self.fns.last().is_some_and(|f| f.tries.is_empty()) && !v.diverges() {
                 self.tail(v, t);
                 return;
             }
@@ -364,7 +364,7 @@ impl<'a> Lowerer<'a> {
                     self.expr(e, P_LOWEST);
                 }
             }
-            Type::Path { segs, .. } if segs.len() == 1 && segs[0].name == "Vec" && segs[0].generics.as_ref().map_or(false, |g| g.len() == 1) => {
+            Type::Path { segs, .. } if segs.len() == 1 && segs[0].name == "Vec" && segs[0].generics.as_ref().is_some_and(|g| g.len() == 1) => {
                 let elem = match &segs[0].generics.as_ref().unwrap()[0] {
                     GenericArg::Type(t) => Some(t.clone()),
                     _ => None,
@@ -406,25 +406,25 @@ impl<'a> Lowerer<'a> {
                     if let Some(m) = self.class.as_ref().and_then(|c| c.methods.get(n)) {
                         return m.throws;
                     }
-                    return self.k.funs.get(n).map_or(false, |f| f.throws) && !self.k.ambiguous.contains(n);
+                    return self.k.funs.get(n).is_some_and(|f| f.throws) && !self.k.ambiguous.contains(n);
                 }
                 false
             }
             ExprKind::MethodCall { recv, name, safe: false, .. } => {
                 if matches!(recv.kind, ExprKind::SelfValue) {
-                    return self.class.as_ref().and_then(|c| c.methods.get(name)).map_or(false, |m| m.throws);
+                    return self.class.as_ref().and_then(|c| c.methods.get(name)).is_some_and(|m| m.throws);
                 }
                 if let Some((p, _)) = self.as_path(recv) {
                     let owner = p.last().cloned().unwrap_or_default();
                     let owner = if owner == "Self" { self.class.as_ref().map(|c| c.name.clone()).unwrap_or_default() } else { owner };
-                    return self.k.class(&owner).and_then(|c| c.methods.get(name)).map_or(false, |m| m.throws);
+                    return self.k.class(&owner).and_then(|c| c.methods.get(name)).is_some_and(|m| m.throws);
                 }
                 let owner = match self.infer_type(recv) {
                     Some(Type::Ref { inner, .. }) => inner.single_name().map(|s| s.to_string()),
                     Some(t) => t.single_name().map(|s| s.to_string()),
                     None => None,
                 };
-                owner.and_then(|o| self.k.class(&o).and_then(|c| c.methods.get(name)).cloned()).map_or(false, |m| m.throws)
+                owner.and_then(|o| self.k.class(&o).and_then(|c| c.methods.get(name)).cloned()).is_some_and(|m| m.throws)
             }
             ExprKind::Await(x) => self.is_throwing_call(x),
             _ => false,
@@ -432,7 +432,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn in_throwing_fn(&self) -> bool {
-        self.fns.last().map_or(false, |f| f.throws && !f.is_lambda)
+        self.fns.last().is_some_and(|f| f.throws && !f.is_lambda)
     }
 
     fn is_value_like(&self, e: &Expr) -> bool {
@@ -530,7 +530,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn in_try_block(&self) -> bool {
-        self.fns.last().map_or(false, |f| !f.tries.is_empty())
+        self.fns.last().is_some_and(|f| !f.tries.is_empty())
     }
 
     pub(crate) fn expr(&mut self, e: &Expr, min: u8) {
@@ -1125,7 +1125,7 @@ impl<'a> Lowerer<'a> {
     // ------------------------------------------------------------------ calls
 
     pub(crate) fn is_builtin_call(&self, name: &str) -> bool {
-        !self.is_local(name) && !self.k.funs.contains_key(name) && self.class.as_ref().map_or(true, |c| !c.methods.contains_key(name))
+        !self.is_local(name) && !self.k.funs.contains_key(name) && self.class.as_ref().is_none_or(|c| !c.methods.contains_key(name))
     }
 
     fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) {
@@ -1827,12 +1827,12 @@ impl<'a> Lowerer<'a> {
             };
             match &mut node.kind {
                 ExprKind::Field { recv, safe: s, .. } | ExprKind::MethodCall { recv, safe: s, .. } => {
-                    *recv = Box::new(new_recv);
+                    **recv = new_recv;
                     if make_try {
                         *s = false;
                     }
                 }
-                ExprKind::Index(recv, _) => *recv = Box::new(new_recv),
+                ExprKind::Index(recv, _) => **recv = new_recv,
                 _ => {}
             }
             if safe && !make_try {
@@ -1860,7 +1860,7 @@ impl<'a> Lowerer<'a> {
     fn can_propagate(&self) -> bool {
         match self.fns.last() {
             Some(f) if !f.tries.is_empty() => true,
-            Some(f) if !f.is_lambda => f.throws || f.ret.as_ref().map_or(false, |t| t.last_name() == Some("Result")),
+            Some(f) if !f.is_lambda => f.throws || f.ret.as_ref().is_some_and(|t| t.last_name() == Some("Result")),
             _ => false,
         }
     }
@@ -1954,9 +1954,9 @@ impl<'a> Lowerer<'a> {
             any
         };
         let mut opt = false;
-        for (i, l) in seg.iter().enumerate() {
+        for (_i, l) in seg.iter().enumerate() {
             match &l.kind {
-                ExprKind::Field { name, .. } => opt = (i == 0 || !opt) && field_opt(name) || (opt && false),
+                ExprKind::Field { name, .. } => opt = field_opt(name),
                 ExprKind::MethodCall { name, .. } => {
                     if opt {
                         // these keep an Option an Option
@@ -2110,7 +2110,7 @@ impl<'a> Lowerer<'a> {
         self.e.w("return");
         match ctx {
             Some(f) if !f.is_lambda => {
-                let wrap = f.throws && !v.map_or(false, is_ok_err_call) && !v.map_or(false, |x| x.diverges());
+                let wrap = f.throws && !v.is_some_and(is_ok_err_call) && !v.is_some_and(|x| x.diverges());
                 match v {
                     Some(x) if wrap && self.is_throwing_call(x) => {
                         self.e.w(" Ok(");

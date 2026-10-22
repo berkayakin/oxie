@@ -33,7 +33,7 @@ impl Attr {
     pub fn name(&self) -> &str {
         match self {
             Attr::Brs { name, .. } => name,
-            Attr::Raw(s) => s.split(|c: char| c == '(' || c == ' ' || c == '=').next().unwrap_or(""),
+            Attr::Raw(s) => s.split(['(', ' ', '=']).next().unwrap_or(""),
         }
     }
 }

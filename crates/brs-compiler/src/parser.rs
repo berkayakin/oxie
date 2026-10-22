@@ -175,7 +175,7 @@ impl<'a> Parser<'a> {
         // if the offending token is on a later line, point at the end of the previous one
         if self.pos > 0 {
             let prev = self.prev_span();
-            if (prev.end as usize) <= (sp.start as usize) && self.src.get(prev.end as usize..sp.start as usize).map_or(false, |gap| gap.contains('\n')) {
+            if (prev.end as usize) <= (sp.start as usize) && self.src.get(prev.end as usize..sp.start as usize).is_some_and(|gap| gap.contains('\n')) {
                 sp = Span::empty_at(prev.end);
             }
         }
@@ -1055,10 +1055,8 @@ impl<'a> Parser<'a> {
         let global = self.eat_punct("::");
         let mut segs = vec![self.path_seg(false)?];
         loop {
-            if self.is_punct("::") {
-                self.bump();
-                segs.push(self.path_seg(true)?);
-            } else if dots && self.is_punct(".") && matches!(self.tok_at(1), Tok::Ident(_)) && !self.is_punct_at(2, "(") {
+            let dot_path = dots && self.is_punct(".") && matches!(self.tok_at(1), Tok::Ident(_)) && !self.is_punct_at(2, "(");
+            if self.is_punct("::") || dot_path {
                 self.bump();
                 segs.push(self.path_seg(true)?);
             } else {
@@ -1597,7 +1595,7 @@ impl<'a> Parser<'a> {
             // import { x } from "./module" or "std/collections"
             self.bump();
             let s: String = parts.iter().map(|p| if let StrPart::Lit(s) = p { s.clone() } else { String::new() }).collect();
-            for seg in s.split(|c| c == '/' || c == ':' || c == '.') {
+            for seg in s.split(['/', ':', '.']) {
                 if !seg.is_empty() {
                     segs.push(seg.to_string());
                 }
@@ -3077,7 +3075,7 @@ impl<'a> Parser<'a> {
         let start = self.bump().span;
         let saved = self.no_struct;
         self.no_struct = true;
-        let subject = if self.is_punct("(") && self.matching_close(self.pos).map_or(false, |c| matches!(self.toks[c + 1].tok, Tok::Punct("{") | Tok::Newline)) {
+        let subject = if self.is_punct("(") && self.matching_close(self.pos).is_some_and(|c| matches!(self.toks[c + 1].tok, Tok::Punct("{") | Tok::Newline)) {
             self.bump();
             self.no_struct = false;
             let e = self.expr();
@@ -3404,7 +3402,7 @@ fn bin(op: BinOp, l: Expr, r: Expr) -> Expr {
 /// Which expressions may take a trailing lambda without parentheses: `foo { }`, `a.b { }`.
 fn is_lambda_callee(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Path { segs, .. } => segs.last().map_or(false, |s| !is_type_like(s)),
+        ExprKind::Path { segs, .. } => segs.last().is_some_and(|s| !is_type_like(s)),
         _ => false,
     }
 }
@@ -3426,10 +3424,10 @@ fn dedent_raw(s: &str) -> String {
             out.push(l[min.min(l.len())..].to_string());
         }
     }
-    while out.first().map_or(false, |l| l.is_empty()) {
+    while out.first().is_some_and(|l| l.is_empty()) {
         out.remove(0);
     }
-    while out.last().map_or(false, |l| l.is_empty()) {
+    while out.last().is_some_and(|l| l.is_empty()) {
         out.pop();
     }
     out.join("\n")

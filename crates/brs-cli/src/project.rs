@@ -172,7 +172,7 @@ pub fn script_project(file: &Path) -> std::io::Result<Project> {
     let abs = std::fs::canonicalize(file)?;
     let src = std::fs::read_to_string(&abs)?;
     let stem = abs.file_stem().unwrap().to_string_lossy().replace(|c: char| !c.is_alphanumeric(), "_");
-    let stem = if stem.chars().next().map_or(true, |c| c.is_ascii_digit()) { format!("script_{}", stem) } else { stem };
+    let stem = if stem.chars().next().is_none_or(|c| c.is_ascii_digit()) { format!("script_{}", stem) } else { stem };
     let dir = cache_dir().join("scripts").join(format!("{}-{:x}", stem, hash(&abs.display().to_string())));
     std::fs::create_dir_all(dir.join("src"))?;
     let deps = script_deps(&src).join("\n");

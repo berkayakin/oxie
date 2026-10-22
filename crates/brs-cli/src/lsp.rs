@@ -342,7 +342,7 @@ fn word_at(text: &str, offset: usize) -> Option<(String, usize, usize)> {
 
 /// For `recv.na|`, returns the receiver text before the dot.
 fn receiver_before(text: &str, word_start: usize) -> Option<String> {
-    let before = text[..word_start].trim_end_matches(|c: char| c == ' ');
+    let before = text[..word_start].trim_end_matches(' ');
     let before = before.strip_suffix('.').or_else(|| before.strip_suffix("?."))?;
     let b = before.trim_end();
     if b.ends_with(')') || b.ends_with(']') {
@@ -475,7 +475,7 @@ fn resolve(a: &Analysis, f: &FileData, offset: usize) -> Vec<(PathBuf, Symbol)> 
         // member access: prefer the receiver's declared type
         let owner: Option<String> = if r == "this" || r == "self" {
             symbols::enclosing_type(&f.ast, offset as u32).map(|t| t.name.clone())
-        } else if r.chars().next().map_or(false, |c| c.is_uppercase()) {
+        } else if r.chars().next().is_some_and(|c| c.is_uppercase()) {
             Some(r.clone())
         } else {
             symbols::locals_at(&f.ast, offset as u32)
@@ -626,7 +626,7 @@ fn handle(server: &mut Server, method: &str, params: &Value) -> Result<Value, St
             let Some(f) = a.file(&path) else { return Ok(Value::Null) };
             let off = f.idx.offset(&f.text, line as usize, ch as usize);
             let Some((word, _, _)) = word_at(&f.text, off) else { return Ok(json!([])) };
-            let is_local = resolve(&a, f, off).first().map_or(false, |(_, s)| matches!(s.kind, SymKind::Variable | SymKind::Parameter));
+            let is_local = resolve(&a, f, off).first().is_some_and(|(_, s)| matches!(s.kind, SymKind::Variable | SymKind::Parameter));
             let mut locs = Vec::new();
             for fd in &a.files {
                 if is_local && fd.path != f.path {
@@ -900,16 +900,16 @@ fn completion(server: &Server, params: &Value) -> Result<Value, String> {
         // member completion
         let owner: Option<String> = if r == "this" || r == "self" {
             symbols::enclosing_type(&f.ast, off as u32).map(|t| t.name.clone())
-        } else if r.chars().next().map_or(false, |c| c.is_uppercase()) {
+        } else if r.chars().next().is_some_and(|c| c.is_uppercase()) {
             Some(r.clone())
         } else {
             symbols::locals_at(&f.ast, off as u32).into_iter().rev().find(|l| l.name == r).and_then(|l| l.ty).and_then(|t| type_owner(&t))
         };
-        let statik = r.chars().next().map_or(false, |c| c.is_uppercase());
+        let statik = r.chars().next().is_some_and(|c| c.is_uppercase());
         for fd in &a.files {
             for s in symbols::flatten(&fd.symbols) {
                 let Some(c) = &s.container else { continue };
-                if owner.as_deref().map_or(true, |o| o == c) {
+                if owner.as_deref().is_none_or(|o| o == c) {
                     let is_static = s.detail.starts_with("static ") || s.kind == SymKind::Variant || (s.kind == SymKind::Method && method_is_static(&a.krate, c, &s.name));
                     if owner.is_some() && statik != is_static && s.kind != SymKind::Const {
                         continue;
@@ -968,7 +968,7 @@ fn completion(server: &Server, params: &Value) -> Result<Value, String> {
 }
 
 fn method_is_static(k: &Crate, owner: &str, name: &str) -> bool {
-    k.classes.get(owner).and_then(|c| c.methods.get(name)).or_else(|| k.enums.get(owner).and_then(|e| e.methods.get(name))).map_or(false, |m| m.recv == Recv::Static)
+    k.classes.get(owner).and_then(|c| c.methods.get(name)).or_else(|| k.enums.get(owner).and_then(|e| e.methods.get(name))).is_some_and(|m| m.recv == Recv::Static)
 }
 
 fn signature_help(server: &Server, params: &Value) -> Result<Value, String> {

@@ -402,7 +402,7 @@ impl<'a> Lowerer<'a> {
         match tree {
             UseTree::Path { segments, alias } => {
                 let name = alias.clone().unwrap_or_else(|| segments.last().cloned().unwrap_or_default());
-                if !name.is_empty() && !is_type_like(&name) && name.chars().next().map_or(false, |c| c.is_lowercase()) {
+                if !name.is_empty() && !is_type_like(&name) && name.chars().next().is_some_and(|c| c.is_lowercase()) {
                     self.path_roots.insert(name);
                 }
             }
@@ -1144,8 +1144,8 @@ impl<'a> Lowerer<'a> {
             let mut pat = self.pat(&p.pat);
             let mut pos = TyPos::Param;
             if fn_typed {
-                let captured = p.name().map_or(false, |n| f.body.as_ref().map_or(false, |b| visit::ident_in_lambda(b, n)));
-                let called = p.name().map_or(false, |n| f.body.as_ref().map_or(false, |b| visit::calls_ident(b, n)));
+                let captured = p.name().is_some_and(|n| f.body.as_ref().is_some_and(|b| visit::ident_in_lambda(b, n)));
+                let called = p.name().is_some_and(|n| f.body.as_ref().is_some_and(|b| visit::calls_ident(b, n)));
                 if captured {
                     // used from a closure: `impl Fn` keeps that closure callable without `mut`
                     pos = TyPos::Ret;
@@ -1488,7 +1488,7 @@ impl<'a> Lowerer<'a> {
         let info = self.k.class(&t.name).cloned();
 
         // inherent impl: constructor + methods
-        let needs_new = t.kind != TypeKind::TupleStruct && !info.as_ref().map_or(false, |c| c.user_new);
+        let needs_new = t.kind != TypeKind::TupleStruct && !info.as_ref().is_some_and(|c| c.user_new);
         let has_inherent = needs_new || !inherent.is_empty();
         let ops: Vec<&Item> = t.members.iter().filter(|m| matches!(&m.kind, ItemKind::Fun(f) if f.mods.is_operator)).collect();
         if has_inherent {
@@ -1996,7 +1996,7 @@ impl<'a> Lowerer<'a> {
 
     fn error_enum_impls(&mut self, t: &TypeDecl, g: &str, self_ty: &str, wc: &str) {
         // which variants wrap a source error
-        let wraps_error = |ty: &Type| ty.last_name().map_or(false, |n| n.ends_with("Error") && n != "AnyError");
+        let wraps_error = |ty: &Type| ty.last_name().is_some_and(|n| n.ends_with("Error") && n != "AnyError");
         let mut from_counts: HashMap<String, usize> = HashMap::new();
         for v in &t.variants {
             if let VariantFields::Tuple(ts) = &v.fields {
@@ -2090,7 +2090,7 @@ impl<'a> Lowerer<'a> {
                     VariantFields::Named(fs) => fs
                         .iter()
                         .find(|f| f.name == "source" || f.name == "cause")
-                        .filter(|f| f.ty.last_name().map_or(false, |n| n != "AnyError" && n != "Box"))
+                        .filter(|f| f.ty.last_name().is_some_and(|n| n != "AnyError" && n != "Box"))
                         .map(|f| (format!("Self::{} {{ {}: e, .. }}", v.name, esc(&f.name)), "e".to_string())),
                     _ => None,
                 }
@@ -2266,12 +2266,7 @@ pub(crate) fn infer_lit_type(e: &Expr) -> Option<String> {
 }
 
 pub(crate) fn int_suffix(s: &str) -> Option<&'static str> {
-    for suf in ["i128", "u128", "isize", "usize", "i64", "u64", "i32", "u32", "i16", "u16", "i8", "u8", "f32", "f64"] {
-        if s.ends_with(suf) && !s.starts_with("0x") {
-            return Some(suf);
-        }
-    }
-    None
+    ["i128", "u128", "isize", "usize", "i64", "u64", "i32", "u32", "i16", "u16", "i8", "u8", "f32", "f64"].into_iter().find(|&suf| s.ends_with(suf) && !s.starts_with("0x")).map(|v| v as _)
 }
 
 fn infer_field_type(e: &Expr) -> Option<Type> {

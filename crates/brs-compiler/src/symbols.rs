@@ -412,7 +412,7 @@ pub struct Local {
 }
 
 /// The innermost function (or test/init block) containing `offset`, with the class that owns it.
-pub fn enclosing_fun<'a>(file: &'a File, offset: u32) -> Option<(Option<&'a TypeDecl>, &'a FunDecl)> {
+pub fn enclosing_fun(file: &File, offset: u32) -> Option<(Option<&TypeDecl>, &FunDecl)> {
     fn in_items<'a>(items: &'a [Item], offset: u32, owner: Option<&'a TypeDecl>) -> Option<(Option<&'a TypeDecl>, &'a FunDecl)> {
         for it in items {
             if !(it.span.start <= offset && offset <= it.span.end) {
@@ -450,7 +450,7 @@ pub fn enclosing_fun<'a>(file: &'a File, offset: u32) -> Option<(Option<&'a Type
 
 /// The class/enum declaration containing `offset`.
 pub fn enclosing_type(file: &File, offset: u32) -> Option<&TypeDecl> {
-    fn go<'a>(items: &'a [Item], offset: u32) -> Option<&'a TypeDecl> {
+    fn go(items: &[Item], offset: u32) -> Option<&TypeDecl> {
         for it in items {
             if it.span.start <= offset && offset <= it.span.end {
                 match &it.kind {

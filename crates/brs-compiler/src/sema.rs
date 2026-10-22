@@ -263,11 +263,11 @@ fn compute_derives(k: &mut Crate, units: &[SourceUnit]) {
                 continue;
             }
             let fts = field_types(t);
-            if !copy.contains(&t.name) && fts.iter().all(|ft| is_copy_simple(ft, k, &copy)) {
+            if !copy.contains(&t.name) && fts.iter().all(|ft| is_copy_simple(ft, &copy)) {
                 copy.insert(t.name.clone());
                 changed = true;
             }
-            if !hash.contains(&t.name) && fts.iter().all(|ft| is_hash_simple(ft, k, &hash)) {
+            if !hash.contains(&t.name) && fts.iter().all(|ft| is_hash_simple(ft, &hash)) {
                 hash.insert(t.name.clone());
                 changed = true;
             }
@@ -572,7 +572,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             let fields: HashSet<String> = k.classes.get(&m.owner).map(|c| c.fields.iter().map(|f| f.name.clone()).collect()).unwrap_or_default();
             let recvs: HashMap<String, Recv> = decided.iter().filter(|((o, _), _)| *o == m.owner).map(|((_, n), r)| (n.clone(), *r)).collect();
             let facts = analyze_fun(m.fun, &fields, &recvs);
-            let returns_self = m.fun.ret.as_ref().map_or(false, |t| t.single_name() == Some("Self") || t.single_name() == Some(m.owner.as_str()));
+            let returns_self = m.fun.ret.as_ref().is_some_and(|t| t.single_name() == Some("Self") || t.single_name() == Some(m.owner.as_str()));
             let recv = if facts.mutates_self {
                 Recv::RefMut
             } else if !facts.uses_self && returns_self && m.trait_recv.is_none() && m.implements.is_none() {
@@ -688,7 +688,7 @@ impl<'a> Walker<'a> {
                 ExprKind::Paren(r) => cur = r,
                 ExprKind::SelfValue => return true,
                 ExprKind::Path { .. } => {
-                    return cur.ident().map_or(false, |n| !self.is_local(n) && self.fields.contains(n));
+                    return cur.ident().is_some_and(|n| !self.is_local(n) && self.fields.contains(n));
                 }
                 _ => return false,
             }
@@ -937,7 +937,7 @@ pub fn contains_word(text: &str, word: &str) -> bool {
 const INTS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "Int", "Long", "Short", "Byte", "UInt", "ULong", "UByte", "UShort"];
 
 /// Copy-able without knowing user types.
-pub fn is_copy_simple(t: &Type, k: &Crate, copy_types: &HashSet<String>) -> bool {
+pub fn is_copy_simple(t: &Type, copy_types: &HashSet<String>) -> bool {
     match t {
         Type::Path { segs, .. } if segs.len() == 1 => {
             let n = segs[0].name.as_str();
@@ -946,25 +946,25 @@ pub fn is_copy_simple(t: &Type, k: &Crate, copy_types: &HashSet<String>) -> bool
             }
             if n == "Option" {
                 if let Some(g) = &segs[0].generics {
-                    return g.iter().all(|a| matches!(a, GenericArg::Type(t) if is_copy_simple(t, k, copy_types)));
+                    return g.iter().all(|a| matches!(a, GenericArg::Type(t) if is_copy_simple(t, copy_types)));
                 }
             }
             segs[0].generics.is_none() && copy_types.contains(n)
         }
-        Type::Option(inner) => is_copy_simple(inner, k, copy_types),
-        Type::Tuple(v) => v.iter().all(|t| is_copy_simple(t, k, copy_types)),
-        Type::Array(inner, _) => is_copy_simple(inner, k, copy_types),
+        Type::Option(inner) => is_copy_simple(inner, copy_types),
+        Type::Tuple(v) => v.iter().all(|t| is_copy_simple(t, copy_types)),
+        Type::Array(inner, _) => is_copy_simple(inner, copy_types),
         Type::Ref { mutable: false, lifetime: Some(l), .. } if l == "static" => true,
         _ => false,
     }
 }
 
 /// Eq + Hash-able without knowing user types.
-pub fn is_hash_simple(t: &Type, k: &Crate, hash_types: &HashSet<String>) -> bool {
+pub fn is_hash_simple(t: &Type, hash_types: &HashSet<String>) -> bool {
     match t {
         Type::Path { segs, .. } if segs.len() == 1 => {
             let n = segs[0].name.as_str();
-            let args_ok = |seg: &PathSeg| seg.generics.as_ref().map_or(true, |g| g.iter().all(|a| matches!(a, GenericArg::Type(t) if is_hash_simple(t, k, hash_types))));
+            let args_ok = |seg: &PathSeg| seg.generics.as_ref().is_none_or(|g| g.iter().all(|a| matches!(a, GenericArg::Type(t) if is_hash_simple(t, hash_types))));
             if INTS.contains(&n) || matches!(n, "bool" | "char" | "String" | "Boolean" | "Char") {
                 return segs[0].generics.is_none();
             }
@@ -973,10 +973,10 @@ pub fn is_hash_simple(t: &Type, k: &Crate, hash_types: &HashSet<String>) -> bool
             }
             segs[0].generics.is_none() && hash_types.contains(n)
         }
-        Type::Option(inner) => is_hash_simple(inner, k, hash_types),
-        Type::Tuple(v) => v.iter().all(|t| is_hash_simple(t, k, hash_types)),
-        Type::Array(inner, _) | Type::Slice(inner) => is_hash_simple(inner, k, hash_types),
-        Type::Ref { mutable: false, inner, .. } => matches!(inner.single_name(), Some("str")) || is_hash_simple(inner, k, hash_types),
+        Type::Option(inner) => is_hash_simple(inner, hash_types),
+        Type::Tuple(v) => v.iter().all(|t| is_hash_simple(t, hash_types)),
+        Type::Array(inner, _) | Type::Slice(inner) => is_hash_simple(inner, hash_types),
+        Type::Ref { mutable: false, inner, .. } => matches!(inner.single_name(), Some("str")) || is_hash_simple(inner, hash_types),
         _ => false,
     }
 }

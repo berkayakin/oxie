@@ -208,7 +208,7 @@ fn cmd_run(args: &[String]) -> R {
     let exe = r
         .executables
         .iter()
-        .find(|e| e.file_stem().map_or(false, |s| s.to_string_lossy() == proj.name.replace('-', "_") || s.to_string_lossy() == proj.name))
+        .find(|e| e.file_stem().is_some_and(|s| s.to_string_lossy() == proj.name.replace('-', "_") || s.to_string_lossy() == proj.name))
         .or(r.executables.last())
         .cloned()
         .ok_or("no executable was built (is this a library? try `brs test`)")?;
@@ -275,7 +275,7 @@ fn test_filter(name: &str) -> String {
 
 fn collect_brs(path: &Path, out: &mut Vec<PathBuf>) {
     if path.is_dir() {
-        if path.file_name().map_or(false, |n| n == "target" || n.to_string_lossy().starts_with('.')) {
+        if path.file_name().is_some_and(|n| n == "target" || n.to_string_lossy().starts_with('.')) {
             return;
         }
         if let Ok(rd) = std::fs::read_dir(path) {
@@ -285,7 +285,7 @@ fn collect_brs(path: &Path, out: &mut Vec<PathBuf>) {
                 collect_brs(&p, out);
             }
         }
-    } else if path.extension().map_or(false, |e| e == "brs") {
+    } else if path.extension().is_some_and(|e| e == "brs") {
         out.push(path.to_path_buf());
     }
 }

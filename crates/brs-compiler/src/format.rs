@@ -290,7 +290,7 @@ fn space_code(code: &str, prev_tail: Option<&str>, next_head: Option<&str>, flag
             continue;
         }
         let prev = out.iter().rev().find(|x| !is_space(x)).cloned().or_else(|| prev_tail.map(|s| s.to_string()));
-        let had_space = out.last().map_or(prev_tail.map_or(false, |p| p.ends_with(' ')), |x| is_space(x));
+        let had_space = out.last().map_or(prev_tail.is_some_and(|p| p.ends_with(' ')), |x| is_space(x));
         let t = t.as_str();
         let at_top = depth == 0;
         match t {
@@ -315,16 +315,16 @@ fn space_code(code: &str, prev_tail: Option<&str>, next_head: Option<&str>, flag
             out.pop();
         }
         let need_space_before = SPACED_OPS.contains(&t)
-            || (t == "{" && prev.as_deref().map_or(false, |p| !matches!(p, "(" | "[" | "{" | "$" | "!" | "#" | "::")))
+            || (t == "{" && prev.as_deref().is_some_and(|p| !matches!(p, "(" | "[" | "{" | "$" | "!" | "#" | "::")))
             || (t == "(" && matches!(prev.as_deref(), Some("if") | Some("for") | Some("while") | Some("when") | Some("catch")));
-        let has_space_now = out.last().map_or(prev_tail.map_or(true, |p| p.is_empty() || p.ends_with(' ')), |x| is_space(x));
+        let has_space_now = out.last().map_or(prev_tail.is_none_or(|p| p.is_empty() || p.ends_with(' ')), |x| is_space(x));
         if need_space_before && !has_space_now && (!out.is_empty() || prev_tail.is_some()) {
             out.push(" ".into());
         }
         out.push(t.to_string());
         // space after
         let next = toks[idx + 1..].iter().find(|x| !is_space(x)).map(|s| s.as_str()).or(next_head);
-        let next_is_space = toks.get(idx + 1).map_or(false, |x| is_space(x));
+        let next_is_space = toks.get(idx + 1).is_some_and(|x| is_space(x));
         let want_after = (matches!(t, "," | ";") && !matches!(next, Some(")") | Some("]") | Some("}") | None))
             || (t == ":" && next.is_some() && !matches!(next, Some(":")))
             || SPACED_OPS.contains(&t)
@@ -430,7 +430,7 @@ fn format_inner(src: &str) -> String {
         let trimmed_first = text.trim_start();
         if trimmed_first.is_empty() {
             // blank line: collapse runs and drop blank lines after an opening bracket
-            if out.last().map_or(true, |l| l.trim().is_empty()) || prev_open {
+            if out.last().is_none_or(|l| l.trim().is_empty()) || prev_open {
                 continue;
             }
             out.push(String::new());
@@ -445,12 +445,12 @@ fn format_inner(src: &str) -> String {
                 _ => break,
             }
         }
-        let first_seg_code = line.segs.iter().find(|(_, s)| !s.trim().is_empty()).map_or(true, |(k, _)| *k == Seg::Code);
+        let first_seg_code = line.segs.iter().find(|(_, s)| !s.trim().is_empty()).is_none_or(|(k, _)| *k == Seg::Code);
         let cont = (first_seg_code && starts_with_continuation(trimmed_first)) || (prev_continues && lead_close == 0);
         let still_open = &open[..open.len().saturating_sub(lead_close as usize)];
         let level = distinct(still_open) + if cont { 1 } else { 0 };
         // drop a blank line right before a closing bracket
-        if lead_close > 0 && out.last().map_or(false, |l| l.trim().is_empty()) {
+        if lead_close > 0 && out.last().is_some_and(|l| l.trim().is_empty()) {
             out.pop();
         }
         // format segments
@@ -484,7 +484,7 @@ fn format_inner(src: &str) -> String {
         prev_continues = ends_with_continuation(&code_only) && !code_only.trim_end().ends_with('(') && !code_only.trim_end().ends_with('[') && !code_only.trim_end().ends_with(',');
         prev_open = body.ends_with('{') || body.ends_with('(') || body.ends_with('[');
     }
-    while out.last().map_or(false, |l| l.trim().is_empty()) {
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
         out.pop();
     }
     let mut s = out.join("\n");

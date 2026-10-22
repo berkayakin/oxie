@@ -127,7 +127,7 @@ impl<'a> Lowerer<'a> {
             Block(b) => self.infer_block(b),
             StructLit { path, generics: None, .. } => {
                 let n = path.last()?;
-                if path.len() == 1 && is_type_like(n) && self.k.class(n).map_or(false, |c| !c.has_generics) {
+                if path.len() == 1 && is_type_like(n) && self.k.class(n).is_some_and(|c| !c.has_generics) {
                     Some(ty(n))
                 } else {
                     None

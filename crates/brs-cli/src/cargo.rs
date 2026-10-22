@@ -185,7 +185,7 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
             Some("compiler-message") => {
                 // only diagnostics for the user's package (not path dependencies like brs-build)
                 let manifest = v.get("manifest_path").and_then(|m| m.as_str()).map(PathBuf::from);
-                if manifest.as_deref().map_or(false, |m| m.parent() != Some(root)) {
+                if manifest.as_deref().is_some_and(|m| m.parent() != Some(root)) {
                     continue;
                 }
                 let Some(msg) = v.get("message") else { continue };
@@ -198,7 +198,7 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
                     Some(_) | None => {
                         let r = msg.get("rendered").and_then(|r| r.as_str()).unwrap_or("").to_string();
                         // summary lines like "aborting due to ..." have no spans
-                        if msg.get("spans").and_then(|s| s.as_array()).map_or(true, |s| s.is_empty()) {
+                        if msg.get("spans").and_then(|s| s.as_array()).is_none_or(|s| s.is_empty()) {
                             let m = msg.get("message").and_then(|m| m.as_str()).unwrap_or("");
                             if m.starts_with("aborting due to") || m.contains("warnings emitted") || m.contains("warning emitted") {
                                 continue;
@@ -250,7 +250,7 @@ pub fn check_collect(root: &Path) -> std::io::Result<Vec<MappedDiag>> {
             continue;
         }
         let manifest = v.get("manifest_path").and_then(|m| m.as_str()).map(PathBuf::from);
-        if manifest.as_deref().map_or(false, |m| m.parent() != Some(root)) {
+        if manifest.as_deref().is_some_and(|m| m.parent() != Some(root)) {
             continue;
         }
         if let Some(msg) = v.get("message") {
