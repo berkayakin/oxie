@@ -1811,10 +1811,11 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
+    /// Are tokens at offsets `a` and `b` from the current one touching? (`usize::MAX` = previous token)
     fn adjacent(&self, a: usize, b: usize) -> bool {
-        let i = self.pos + a;
+        let i = if a == usize::MAX { self.pos.wrapping_sub(1) } else { self.pos + a };
         let j = self.pos + b;
-        j < self.toks.len() && self.toks[i].span.end == self.toks[j].span.start
+        i < self.toks.len() && j < self.toks.len() && self.toks[i].span.end == self.toks[j].span.start
     }
 
     // ------------------------------------------------------------------ expressions
@@ -2648,6 +2649,17 @@ impl<'a> Parser<'a> {
                         segs.push(self.member_name()?);
                     }
                 }
+                _ => {
+                    self.pos = save;
+                    self.diags.truncate(nd);
+                }
+            }
+        } else if generics.is_none() && self.is_punct("<") && self.adjacent(usize::MAX, 0) {
+            // TypeScript/Kotlin generic call: `mutableListOf<i32>()`, `parse<T>(x)`
+            let save = self.pos;
+            let nd = self.diags.len();
+            match self.generic_args() {
+                Ok(g) if self.is_punct("(") => generics = Some(g),
                 _ => {
                     self.pos = save;
                     self.diags.truncate(nd);

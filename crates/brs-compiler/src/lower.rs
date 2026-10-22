@@ -628,6 +628,9 @@ impl<'a> Lowerer<'a> {
     }
 
     fn path_ty(&self, global: bool, segs: &[PathSeg], pos: TyPos) -> String {
+        if segs.len() > 1 && self.k.nested.get(&segs[0].name).is_some_and(|inner| inner.contains(&segs[1].name)) {
+            return self.path_ty(global, &segs[1..], pos);
+        }
         let mut s = String::new();
         if global {
             s.push_str("::");
@@ -905,6 +908,10 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn join_path(&self, segs: &[String]) -> String {
+        // `Outer.Inner` refers to a type declared inside a class, which brs hoists next to it
+        if segs.len() > 1 && self.k.nested.get(&segs[0]).is_some_and(|inner| inner.contains(&segs[1])) {
+            return self.join_path(&segs[1..]);
+        }
         let mut s = String::new();
         if segs.len() > 1 && self.k.modules.contains(&segs[0]) && !self.is_local(&segs[0]) {
             if self.k.has_lib && self.is_root && self.module.is_empty() && self.is_main_file() {
@@ -1436,6 +1443,7 @@ impl<'a> Lowerer<'a> {
 
         // which supertypes become derives
         let (derived, impl_traits, members_by_trait, inherent) = self.split_members(t);
+        let (nested, inherent): (Vec<&Item>, Vec<&Item>) = inherent.into_iter().partition(|m| matches!(m.kind, ItemKind::Type(_) | ItemKind::Trait(_)));
         let mut derives: Vec<String> = self.k.derives.get(&t.name).cloned().unwrap_or_default();
         for d in derived {
             if !derives.contains(&d) {
@@ -1532,6 +1540,11 @@ impl<'a> Lowerer<'a> {
         }
         self.class = saved_class;
         self.members_pub = saved_members_pub;
+        // nested classes, enums and interfaces live next to their outer class
+        for m in nested {
+            self.e.nl();
+            self.item(m, ctx);
+        }
     }
 
     pub(crate) fn recv_of(&self, owner: &str, f: &FunDecl) -> Recv {

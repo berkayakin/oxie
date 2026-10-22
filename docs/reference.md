@@ -139,6 +139,8 @@ class Name<T>(val a: A, var b: B = default, private c: C) : Interface, Hash {
   structs `struct Marker` are supported.
 * `object Name { ... }` is a namespace (a Rust module) of constants and functions:
   `Name.function()`.
+* Classes, enums and interfaces declared inside a class body are placed next to the class;
+  refer to them as `Inner` or `Outer.Inner`.
 
 ## Enums
 
@@ -236,6 +238,7 @@ the right-hand side (`impl Mul<f64> for Vec2` for `operator fun times(k: f64)`).
 | `a?.b` | safe navigation or error propagation; see [Null safety](#null-safety) |
 | `await f()` / `f().await` | `f().await` |
 | `Type.member`, `module.item` | `Type::member`, `module::item` |
+| `f<T>(x)`, `mutableListOf<i32>()` | `f::<T>(x)`, `Vec::<i32>::new()` |
 | `Point { x: 1, y: 2 }` | struct literal (with `..base`) |
 | `x.let { it + 1 }` | `{ let it = x; it + 1 }` |
 | `p.copy(x = 1)` | clone with `x` replaced |

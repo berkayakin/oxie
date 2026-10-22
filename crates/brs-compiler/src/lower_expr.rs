@@ -1163,6 +1163,20 @@ impl<'a> Lowerer<'a> {
                         self.macro_call(&name, args, span);
                         return;
                     }
+                    // `mutableListOf<T>()`, `mapOf<K, V>()`: empty collections with explicit types
+                    if let Some(g) = generics.as_ref().filter(|_| args.is_empty()) {
+                        let ty = match name.as_str() {
+                            "listOf" | "mutableListOf" | "arrayListOf" | "vecOf" => Some("Vec"),
+                            "mapOf" | "mutableMapOf" | "hashMapOf" => Some("::std::collections::HashMap"),
+                            "setOf" | "mutableSetOf" | "hashSetOf" => Some("::std::collections::HashSet"),
+                            _ => None,
+                        };
+                        if let Some(ty) = ty {
+                            let gt = self.generic_args_text(g);
+                            self.e.w(&format!("{}::{}::new()", ty, gt));
+                            return;
+                        }
+                    }
                     if self.builtin_fn(&name, args, span) {
                         return;
                     }
@@ -1211,6 +1225,17 @@ impl<'a> Lowerer<'a> {
 
     /// Call through a path: `Shape::Circle(1.0)`, `Point.origin()`, `std.mem.swap(a, b)`.
     fn path_call(&mut self, segs: &[String], generics: Option<&Vec<GenericArg>>, args: &[Arg], span: Span) {
+        // `Outer.Inner(...)`: a type declared inside a class (hoisted next to it)
+        if segs.len() > 1 && self.k.nested.get(&segs[0]).is_some_and(|inner| inner.contains(&segs[1])) {
+            let rest = segs[1..].to_vec();
+            if rest.len() == 1 {
+                let callee = Expr::new(ExprKind::Path { segs: rest, generics: generics.cloned(), global: false }, span);
+                self.call(&callee, args, span);
+            } else {
+                self.path_call(&rest, generics, args, span);
+            }
+            return;
+        }
         let n = segs.len();
         if n >= 2 {
             let owner = if segs[n - 2] == "Self" {

@@ -126,6 +126,8 @@ pub struct Crate {
     pub has_lib: bool,
     /// Automatic derives per type (data classes and enums).
     pub derives: HashMap<String, Vec<String>>,
+    /// Types declared inside a class body (hoisted to the module): outer name -> inner names.
+    pub nested: HashMap<String, Vec<String>>,
 }
 
 pub const STATIC_METHOD_NAMES: &[&str] = &["new", "default", "from", "from_str", "try_from", "from_iter"];
@@ -230,7 +232,10 @@ fn compute_derives(k: &mut Crate, units: &[SourceUnit]) {
     fn gather<'a>(items: &'a [Item], out: &mut Vec<(&'a TypeDecl, &'a [Attr])>) {
         for it in items {
             match &it.kind {
-                ItemKind::Type(t) => out.push((t, &it.attrs)),
+                ItemKind::Type(t) => {
+                    out.push((t, &it.attrs));
+                    gather(&t.members, out);
+                }
                 ItemKind::Mod { items, .. } => gather(items, out),
                 _ => {}
             }
@@ -371,6 +376,22 @@ fn method_info_explicit(f: &FunDecl, trait_recv: Option<Recv>) -> Option<MethodI
 
 fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
     for it in items {
+        if let ItemKind::Type(t) = &it.kind {
+            let inner: Vec<&Item> = t.members.iter().filter(|m| matches!(m.kind, ItemKind::Type(_) | ItemKind::Trait(_))).collect();
+            if !inner.is_empty() {
+                let names: Vec<String> = inner
+                    .iter()
+                    .filter_map(|m| match &m.kind {
+                        ItemKind::Type(x) => Some(x.name.clone()),
+                        ItemKind::Trait(x) => Some(x.name.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                k.nested.insert(t.name.clone(), names);
+                let owned: Vec<Item> = inner.into_iter().cloned().collect();
+                collect_items(k, module, &owned);
+            }
+        }
         match &it.kind {
             ItemKind::Fun(f) if f.receiver.is_none() => {
                 let info = FunInfo { module: module.to_vec(), params: params_info(f), throws: !matches!(f.throws, Throws::No), ret: f.ret.clone() };
@@ -512,6 +533,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
         for it in items {
             match &it.kind {
                 ItemKind::Type(t) => {
+                    gather(k, &t.members, out);
                     for m in &t.members {
                         if let ItemKind::Fun(f) = &m.kind {
                             // methods implementing a brs interface take its receiver
