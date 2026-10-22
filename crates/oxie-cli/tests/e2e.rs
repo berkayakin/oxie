@@ -114,7 +114,7 @@ fn examples_run_and_test() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
-/// Every ```kotlin block with `fun main` in README.md and docs/*.md must compile and run.
+/// Every ```oxie block with `fun main` in README.md and docs/*.md must compile and run.
 #[test]
 fn documentation_examples_run() {
     let root = repo();
@@ -132,7 +132,7 @@ fn documentation_examples_run() {
         let mut block = String::new();
         let mut start_line = 0;
         for (i, line) in text.lines().enumerate() {
-            if !in_block && line.trim_start().starts_with("```kotlin") {
+            if !in_block && line.trim_start().starts_with("```oxie") {
                 in_block = true;
                 block.clear();
                 start_line = i + 2;

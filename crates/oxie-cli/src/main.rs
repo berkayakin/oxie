@@ -10,7 +10,7 @@ use std::process::{Command, ExitCode};
 use oxie_compiler::{diag, Severity};
 use project::Project;
 
-const HELP: &str = "oxie - Kotlin/TypeScript-style syntax that compiles to Rust
+const HELP: &str = "oxie - a concise, familiar syntax that compiles to plain Rust
 
 USAGE:
     oxie <command> [options]

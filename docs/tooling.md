@@ -49,7 +49,7 @@ Each generated file has a source map next to it (`main.rs.map`) used for the tra
 
 A `.oxi` file outside a project runs as a script. Its dependencies go in header comments:
 
-```kotlin
+```oxie
 // dep: rand = "0.8"
 // dep: serde = { version = "1", features = ["derive"] }
 fun main() = println(rand.random::<u32>())

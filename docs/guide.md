@@ -6,7 +6,7 @@ notes point out where Oxie follows Rust instead.
 
 ## Hello, world
 
-```kotlin
+```oxie
 fun main() {
     val name = "World"
     println("Hello, $name!")
@@ -17,7 +17,7 @@ fun main() {
 
 ## Variables and types
 
-```kotlin
+```oxie
 fun main() {
     val answer = 42              // immutable (Rust `let`)
     var count = 0                // mutable (Rust `let mut`)
@@ -39,7 +39,7 @@ Integer literals default to `i32`, floats to `f64`, as in Rust.
 
 ## Functions
 
-```kotlin
+```oxie
 fun add(a: i32, b: i32): i32 {
     return a + b
 }
@@ -68,7 +68,7 @@ Parameters are written `name: Type`, the return type after `:` (Rust's `->` also
 
 ## Strings
 
-```kotlin
+```oxie
 fun main() {
     val name = "Oxie"
     val version = 1.25
@@ -95,7 +95,7 @@ String literals are `&str` (borrowed, free). Templates and `+` produce `String`.
 
 `if` and `when` are expressions.
 
-```kotlin
+```oxie
 fun describe(n: i32): &str = when {
     n < 0 -> "negative"
     n == 0 -> "zero"
@@ -142,7 +142,7 @@ written in parentheses as in Kotlin; Rust's style without them works too.
 
 ## Collections and lambdas
 
-```kotlin
+```oxie
 import std::collections::HashMap
 
 fun main() {
@@ -175,7 +175,7 @@ their Rust names.
 
 `T?` is `Option<T>`; `null` is `None`.
 
-```kotlin
+```oxie
 data class Address(city: String)
 data class Person(name: String, address: Address?)
 
@@ -207,7 +207,7 @@ fun main() {
 
 ## Classes
 
-```kotlin
+```oxie
 class Counter(var count: i32 = 0, step: i32 = 1) {
     var history: Vec<i32> = vec[]
 
@@ -252,7 +252,7 @@ fun main() {
 
 ## Enums
 
-```kotlin
+```oxie
 enum Shape {
     Circle(radius: f64)
     Rect(w: f64, h: f64)
@@ -279,7 +279,7 @@ nothing. Enums derive `Debug`, `Clone`, `PartialEq` (and `Copy`/`Eq`/`Hash` when
 
 ## Interfaces
 
-```kotlin
+```oxie
 interface Animal {
     fun name(): String
     fun sound(): String
@@ -311,7 +311,7 @@ a derive. Rust's `impl Trait for Type { }` blocks work too.
 
 ## Extension functions and operators
 
-```kotlin
+```oxie
 fun str.shout(): String = self.to_uppercase() + "!"
 fun i32.is_even(): bool = this % 2 == 0
 
@@ -333,7 +333,7 @@ Operator names follow Kotlin: `plus`, `minus`, `times`, `div`, `rem`, `unaryMinu
 
 ## Errors
 
-```kotlin
+```oxie
 error enum ConfigError {
     Missing(key: String) = "missing key: $key"
     Invalid(key: String, value: String) = "invalid value '$value' for $key"
@@ -364,7 +364,7 @@ returns an error, and `?` propagates one. Read [Error handling](errors.md) for `
 Every `.oxi` file in `src/` is a module named after the file (`src/net/http.oxi` is
 `net::http`). Import with `import`:
 
-```kotlin
+```oxie
 import std::collections::{HashMap, HashSet}
 import std.fs                     // dots work in paths too
 import { Deserialize, Serialize } from serde
@@ -378,7 +378,7 @@ their file, or `pub` to export them from a library. Members of a `pub` class are
 
 Oxie keeps Rust's ownership model, so `&`, `&mut`, moves and `clone()` work exactly as in Rust:
 
-```kotlin
+```oxie
 fun total(xs: &[i32]): i32 = xs.iter().sum()
 fun add_one(xs: &mut Vec<i32>) = xs.push(1)
 
@@ -399,7 +399,7 @@ them (a function returning a reference gets one lifetime tied to its reference p
 
 ## Tests
 
-```kotlin
+```oxie
 fun add(a: i32, b: i32) = a + b
 
 test "adds numbers" {
@@ -418,7 +418,7 @@ fun main() = println(add(1, 1))
 
 ## Async
 
-```kotlin
+```oxie
 // dep: tokio = { version = "1", features = ["full"] }
 import std::time::Duration
 
@@ -441,7 +441,7 @@ async fun main() {
 
 Any Rust syntax Oxie doesn't cover is still available:
 
-```kotlin
+```oxie
 macro_rules! square {
     ($x:expr) => { $x * $x };
 }

@@ -22,7 +22,7 @@ on it. `oxie run`/`oxie build` call cargo and translate error locations to `.oxi
 Add dependencies to `Cargo.toml` as usual (`cargo add serde --features derive` works) and use
 them:
 
-```kotlin
+```oxie
 // dep: serde = { version = "1", features = ["derive"] }
 // dep: serde_json = "1"
 import serde::{Deserialize, Serialize}
@@ -48,7 +48,7 @@ fun main() throws {
 Hand-written Rust modules can live in the same crate. In an Oxie project, declare them from a
 `.oxi` file:
 
-```kotlin
+```oxie
 // not-runnable: needs src/legacy.rs next to this file
 mod legacy                 // src/legacy.rs
 
@@ -93,7 +93,7 @@ What the generated Rust looks like:
 Use `oxie new mylib --lib` (root `src/lib.oxi`). Mark the public API `pub`; members of a `pub`
 class are public automatically:
 
-```kotlin
+```oxie
 // not-runnable: library code
 pub data class Point(x: f64, y: f64) {
     fun distance(o: Point): f64 = ((x - o.x).powi(2) + (y - o.y).powi(2)).sqrt()

@@ -1,11 +1,11 @@
 # Oxie
 
-**Kotlin/TypeScript-style syntax that compiles to plain Rust.**
+**A concise, familiar syntax for Rust. Oxie code compiles to plain Rust.**
 Every crate works, programs run exactly as fast as hand-written Rust, and you never write
 `let mut`, `impl` blocks, `Ok(...)`, `.to_string()` on literals or `#[derive(...)]` boilerplate
 unless you want to.
 
-```kotlin
+```oxie
 import std::collections::HashMap
 
 data class User(name: String, age: u32, email: String? = null)
@@ -101,7 +101,7 @@ oxie run
 
 Or run a single file as a script, with crates declared in its header:
 
-```kotlin
+```oxie
 // dep: rand = "0.8"
 fun main() = println("dice: ${rand.random::<u8>() % 6 + 1}")
 ```

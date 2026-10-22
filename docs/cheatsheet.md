@@ -44,7 +44,7 @@ These come from Rust and are what makes Oxie as fast as Rust.
 variable can't be used afterwards. Pass a reference (`&value`) to let a function read it, or
 `&mut value` to let it change it. Call `.clone()` when you really want a copy.
 
-```kotlin
+```oxie
 fun show(names: &Vec<String>) = println("${names.len()} names")
 
 fun main() {

@@ -8,7 +8,7 @@ ordinary `Result` code.
 
 A function that can fail declares `throws`:
 
-```kotlin
+```oxie
 fun parse_age(text: &str): u32 throws {
     val age: u32 = text.trim().parse()?          // `?` passes a failure on to the caller
     if (age > 150) throw "age $age is not realistic"
@@ -37,7 +37,7 @@ and so do strings, so `throw "message"` and `throw "value $x is bad"` work.
 Calling another Oxie function that `throws` from a throwing function propagates its error
 automatically when you use the call as a statement or return value — like an exception would:
 
-```kotlin
+```oxie
 fun check(x: i32) throws {
     if (x < 0) throw "negative: $x"
 }
@@ -59,7 +59,7 @@ When you assign the result instead (`val r = check(5)`), you get the `Result` to
 `error enum` declares an error type with a message per case. Oxie implements `Display`,
 `std::error::Error` and `Debug` for it:
 
-```kotlin
+```oxie
 import std::num::ParseIntError
 
 error enum ConfigError {
@@ -94,7 +94,7 @@ fun main() {
 
 A single error type can be a class:
 
-```kotlin
+```oxie
 error class TooBig(value: i64, limit: i64) = "$value exceeds the limit of $limit"
 
 fun check(v: i64): i64 throws TooBig {
@@ -113,7 +113,7 @@ fun main() {
 `try { }` runs a block in which `?` and `throw` jump to `catch` instead of leaving the
 function:
 
-```kotlin
+```oxie
 fun main() {
     val total = try {
         val a: i32 = "10".parse()?
@@ -138,7 +138,7 @@ fun main() {
 
 `?:` gives a value when a `Result` is an error (or an `Option` is `None`):
 
-```kotlin
+```oxie
 fun main() {
     val n = "abc".parse::<i32>() ?: 0
     val m = "7".parse::<i32>() ?: 0
@@ -154,7 +154,7 @@ or `?: return`.
 `.context("...")` wraps an error (or a missing `Option` value) with a message, keeping the
 original as its cause:
 
-```kotlin
+```oxie
 import std::fs
 
 fun load(path: &str): String throws {
@@ -179,7 +179,7 @@ fun main() {
 
 A throwing `main` prints the error and its causes and exits with status 1:
 
-```kotlin
+```oxie
 import std::fs
 
 fun main() throws {

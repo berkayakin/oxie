@@ -23,7 +23,7 @@ Contents: [Lexical structure](#lexical-structure) · [Declarations](#declaration
   when it ends with an operator, `,`, `.`, `(`, `[` or `{`, when the next line starts with
   `.`, `?.`, `?:`, `&&` or `||`, and everywhere inside `(...)` and `[...]`:
 
-  ```kotlin
+  ```oxie
   val total = items
       .iter()
       .map { it.price }
@@ -54,7 +54,7 @@ Contents: [Lexical structure](#lexical-structure) · [Declarations](#declaration
 
 ## Functions
 
-```kotlin
+```oxie
 fun name<T: Bound>(param: Type, other: Type = default): ReturnType throws Error where T: Other {
     body
 }
@@ -100,7 +100,7 @@ declared in Oxie.
 
 ## Classes
 
-```kotlin
+```oxie
 class Name<T>(val a: A, var b: B = default, private c: C) : Interface, Hash {
     var d: D = default            // body property (needs a default)
     init { ... }                  // runs in the constructor after fields are set
@@ -146,7 +146,7 @@ class Name<T>(val a: A, var b: B = default, private c: C) : Interface, Hash {
 
 ## Enums
 
-```kotlin
+```oxie
 enum Shape : Display {
     Circle(radius: f64)          // named fields → Circle { radius: f64 }
     Pair(i32, i32)               // positional fields
@@ -167,7 +167,7 @@ enum Shape : Display {
 
 ## Interfaces and impl blocks
 
-```kotlin
+```oxie
 interface Named : Display {
     fun name(): String                 // required
     fun greet(): String = "hi ${name()}" // default
@@ -190,7 +190,7 @@ interface Named : Display {
 
 ## Extension functions
 
-```kotlin
+```oxie
 fun String.shout(): String = self.to_uppercase()
 fun <T: Clone> Vec<T>.second(): T? = self.get(1).cloned()
 mut fun Vec<i32>.bump(by: i32) { for (x in self.iter_mut()) *x += by }
@@ -265,7 +265,7 @@ the declared type of a variable, field, parameter or return value:
 
 ## Strings
 
-```kotlin
+```oxie
 "Hello, $name!"            // format!("Hello, {name}!")
 "sum: ${a + b}"            // format!("sum: {}", a + b)
 "${value:.2} ${list:?}"    // format specs after `:` (Rust's format syntax)
@@ -320,7 +320,7 @@ See [Error handling](errors.md) for the full guide.
 
 ## Control flow
 
-```kotlin
+```oxie
 if (cond) a else b                  // also `if cond { }` (Rust style)
 if (val x = opt) { } else { }
 if (val x = opt && x > 0 && val y = f(x)) { }   // let chain (any Rust edition)
@@ -350,7 +350,7 @@ val n = const { SIZE * 2 }                      // evaluated at compile time
 
 ## Lambdas
 
-```kotlin
+```oxie
 { it * 2 }                      // one implicit parameter `it`
 { a, b -> a + b }               // Kotlin style
 { (key, value) -> key }         // destructuring
@@ -426,7 +426,7 @@ Attributes also work on statements (see [Statements](#statements)).
 
 ## Tests
 
-```kotlin
+```oxie
 test "addition works" {
     assert_eq(1 + 1, 2)
 }
