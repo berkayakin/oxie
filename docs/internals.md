@@ -99,6 +99,24 @@ Notable translations:
   module declaration, because the generated root is `include!`d and can't hold `#![...]`.
 * **Extension functions** become a trait per function; every file imports all of them as
   `_`.
+* **Automatic borrowing** (`coerce` with a `&T`/`&mut T` parameter type): value arguments get
+  `&`/`&mut`; references (`&x`, reference-typed locals, `self`, string literals, untyped
+  lambda parameters) don't. Receiver inference (`sema.rs`) treats a field passed to a `&mut`
+  parameter as a mutation of `self`.
+* **Inferred bounds** (`bounds.rs`): before a function or method signature is emitted, its
+  body is scanned for uses of values of a type parameter (parameters typed `T`/`&T`, elements of
+  `&[T]`/`Vec<T>` in `for` loops, lambdas over such collections, `val y = x` aliases) and the
+  matching `where` predicates are added.
+* **Collection operations** are the `ListOps` trait in the runtime module, implemented for
+  `[T]` and imported as `_` everywhere, so `xs.map { }` lowers to `xs.map(|it| ..)` unchanged.
+  Untyped parameters of predicate lambdas (`filter`, `find`, `any`, ...) compared with a scalar
+  literal are read with `crate::__oxie::val(it)` (the `Val` trait strips any number of
+  references from numbers, `bool` and `char`).
+* **Shared classes** (`shared.rs`): the class is lowered as `{Name}Data`, then the handle
+  (`Rc<RefCell<..>>` or `Arc<Mutex<..>>`), forwarding methods, getters, setters and identity
+  `PartialEq`/`Hash` are emitted. Expression lowering routes `obj.field` reads, assignments
+  and calls on fields of known shared types through getters, setters or a single borrow,
+  evaluating arguments before a mutable borrow; shared places used by value get `.clone()`.
 
 ## Source maps and diagnostics
 
@@ -113,7 +131,16 @@ oxie-sourcemap 1
 
 `oxie-cli`'s `cargo.rs` runs cargo with `--message-format=json`, maps the primary span of each
 message (following macro expansions back to the call site) to the `.oxi` file, and renders it
-in rustc's format. The language server does the same with `cargo check`.
+in rustc's format. Secondary labels are mapped too; those that don't map exactly (the generated
+text between the nearest mark and the span differs from the source) are dropped unless an
+explanation places them. rustc suggestions whose spans map exactly are kept as edits.
+
+`explain.rs` then rewrites the common errors (moves, `val` mutation, borrow conflicts, `&`
+parameters, closures outliving their scope, missing `throws`, `Display`, bounds and imports,
+Kotlin method names) in Oxie terms and computes fixes as text edits on the `.oxi` source,
+found from the source text and the mapped spans. The CLI prints the fixes with a preview of
+the changed line; the language server attaches them to the diagnostic (`data.fixes`) and
+returns them from `textDocument/codeAction`.
 
 ## Tree-sitter grammar
 

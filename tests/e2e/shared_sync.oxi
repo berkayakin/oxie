@@ -1,0 +1,16 @@
+// `@sync shared class` can be used from several threads.
+
+@sync
+shared class Counter(var count: i64 = 0) {
+    fun add(n: i64) { count += n }
+}
+
+fun main() {
+    val counter = Counter()
+    val handles: Vec<_> = (0..4).map {
+        val c = counter.clone()
+        std::thread::spawn(move { repeat(1000) { c.add(1) } })
+    }.collect()
+    for (h in handles) h.join().unwrap()
+    println("count = ${counter.count}")
+}

@@ -49,13 +49,42 @@ Arguments after `--` go to the program (`run`) or to cargo (`build`, `check`, `t
 rewrites rustc's messages so they point at `.oxi` lines, including warnings:
 
 ```
-error[E0382]: borrow of moved value: `v`
+error[E0382]: `v` was moved, so it can't be used anymore
  --> src/main.oxi:6:13
   |
+5 |     consume(v)
+  |             - `v` moved into `consume()` here
 6 |     println(v.len())
-  |             ^ value borrowed here after move
-  = note: move occurs because `v` has type `Vec<i32>`, which does not implement the `Copy` trait
+  |             ^ used here after the move
+  = help: giving a value to a function or another variable moves it: `consume` owns it now,
+    and `v` can't be used afterwards. Pass a copy with `v.clone()`, or let `consume` borrow
+    the value instead.
+  = fix: pass a copy of `v`: `consume(v.clone())`
+  = fix: let `consume` borrow it (parameter type `&[i32]`): `fun consume(v: &[i32]) {}`
+  = rustc: borrow of moved value: `v`
 ```
+
+All labeled spans of a message are shown on their `.oxi` lines ("moved here", "borrowed
+here", "still used here"). The errors newcomers meet most are rewritten in Oxie terms, with
+fixes:
+
+| rustc error | Oxie explanation and fix |
+|---|---|
+| use of moved value (E0382) | where it moved; pass a copy, or let the function borrow |
+| assign twice / borrow as mutable (E0384, E0596) | it's a `val`; declare it with `var` |
+| behind a `&` reference (E0596) | the parameter needs `&mut` (callers updated) |
+| borrow conflicts (E0499, E0502, E0505, E0506) | where it's borrowed and still used; copy instead of borrowing |
+| lambda may outlive (E0373) | make it a `move` lambda |
+| `?` without `Result` (E0277) | add `throws` to the function |
+| no `Display` (E0277) | print with `:?`, or add `toString` |
+| missing trait bound (E0277) | `require T: Bound` |
+| no method `size`, `toUpperCase`, ... (E0599) | the Rust name (`len`, `to_uppercase`) |
+| trait / type not imported (E0599, E0433, E0412) | `import` the suggested path |
+| unused `var` | declare it with `val` |
+
+rustc's own suggestions are kept as fixes when they map exactly onto the `.oxi` source, and
+the original message is shown last (`rustc: ...`) so it can still be searched for. In editors
+the fixes are code actions (quick fixes).
 
 Each generated file has a source map next to it (`main.rs.map`) used for the translation.
 
@@ -163,7 +192,8 @@ if a file would change (useful in CI).
 
 | Feature | Details |
 |---|---|
-| Diagnostics | Oxie errors on every keystroke; rustc errors and warnings (mapped to `.oxi`) after `cargo check` on open and save |
+| Diagnostics | Oxie errors on every keystroke; rustc errors and warnings (mapped to `.oxi`, explained in Oxie terms, with related locations) after `cargo check` on open and save |
+| Quick fixes | code actions for the fixes listed under [Diagnostics](#diagnostics) (`var` instead of `val`, `.clone()`, `&mut` parameters, imports, `move` lambdas, `throws`, ...) |
 | Completion | locals, members after `.` (using declared types), project declarations, keywords, snippets, std types, builtins; module names in `import` lines |
 | Hover | Oxie signature, doc comment, and the generated Rust signature |
 | Go to definition / declaration | functions, classes, enums, variants, fields, methods, locals and parameters, across files |

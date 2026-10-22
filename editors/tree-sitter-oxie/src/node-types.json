@@ -2790,6 +2790,10 @@
     "named": false
   },
   {
+    "type": "shared class",
+    "named": false
+  },
+  {
     "type": "simple_interpolation",
     "named": true
   },

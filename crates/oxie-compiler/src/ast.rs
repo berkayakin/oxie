@@ -222,6 +222,8 @@ pub struct TypeDecl {
     pub init: Option<Block>,
     /// `error class X(...) = "message"`
     pub message: Option<Expr>,
+    /// `shared class`: values are shared handles (`Rc<RefCell<..>>`, or `Arc<Mutex<..>>` with `@sync`).
+    pub shared: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -449,6 +451,8 @@ pub enum WhenCond {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WhenArm {
+    /// Attributes on the arm (`@allow(unreachable_patterns) _ -> ...`), as Rust attribute contents.
+    pub attrs: Vec<String>,
     pub conds: Vec<WhenCond>,
     pub guard: Option<Expr>,
     pub body: Expr,
@@ -579,6 +583,9 @@ pub enum ExprKind {
     While { label: Option<String>, cond: Box<Cond>, body: Block },
     DoWhile { label: Option<String>, body: Block, cond: Box<Expr> },
     For { label: Option<String>, pat: Pat, iter: Box<Expr>, body: Block },
+    /// `implicit_it`: a brace lambda written without parameters (`{ it * 2 }`), whose `it` is its
+    /// parameter. Closures with an explicit empty list (`|| it + 1`, `() => it`) capture an outer
+    /// `it` instead.
     Lambda { params: Vec<LambdaParam>, ret: Option<Type>, body: Box<Expr>, is_move: bool, implicit_it: bool, is_async: bool },
     Return(Option<Box<Expr>>),
     Break { label: Option<String>, value: Option<Box<Expr>> },

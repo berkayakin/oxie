@@ -167,7 +167,7 @@ module.exports = grammar({
         prec.right(
           seq(
             repeat($.modifier),
-            choice('class', 'struct', 'union', kw2('data', 'class'), kw2('error', 'class'), kw2('sealed', 'class'), kw2('value', 'class')),
+            choice('class', 'struct', 'union', kw2('data', 'class'), kw2('error', 'class'), kw2('sealed', 'class'), kw2('value', 'class'), kw2('shared', 'class')),
             field('name', $.type_identifier),
             optional($.type_parameters),
             optional(field('parameters', $.class_parameters)),

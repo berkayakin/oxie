@@ -4,6 +4,7 @@
 //! would write by hand, so programs keep Rust's performance and use any crate directly.
 
 pub mod ast;
+pub mod bounds;
 pub mod compile;
 pub mod diag;
 pub mod emit;

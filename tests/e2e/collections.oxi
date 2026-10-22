@@ -1,0 +1,39 @@
+// Kotlin-style collection operations on lists, and predicates comparing elements with literals.
+
+data class User(name: String, age: u32, city: String)
+
+fun main() {
+    predicates()
+    val nums = vec[5, 3, 8, 1, 9, 2]
+    println(nums.filter { it > 2 }.map { it * 10 }.join_to_string(", "))
+    println("sum ${nums.sum()} max ${nums.max_of { it }:?} big ${nums.count { it >= 5 }}")
+    println("${nums.sorted():?} ${nums.sorted_descending():?} ${nums.reversed():?}")
+    println("${nums.any { it == 9 }} ${nums.all { it > 0 }} ${nums.none { it < 0 }}")
+    val users = vec[User("Ada", 36, "London"), User("Linus", 28, "Helsinki"), User("Grace", 45, "London")]
+    println(users.map { it.name.clone() }.join_to_string(", "))
+    println(users.sorted_by { it.age }.join_with(" < ") { it.name.as_str() })
+    println("total age ${users.sum_of { it.age }}")
+    println("oldest ${users.max_by_key { it.age }?.name ?: "nobody"}")
+    val by_city = users.group_by { it.city.clone() }
+    println("London: ${by_city["London"].len()}")
+    val (young, old) = users.partition { it.age < 40 }
+    println("${young.len()} young, ${old.len()} old")
+    println("${vec[1, 1, 2, 3, 3].distinct():?} ${nums.chunked(4):?}")
+    println(users.find { it.city == "Helsinki" }?.name ?: "none")
+    nums.for_each_indexed { i, n -> if (i < 2) println("$i: $n") }
+    val words = vec["apple", "kiwi", "banana"]
+    println(words.filter { it.len() > 4 }.join_to_string("/"))
+    val chars = "hello".chars().filter { it == 'l' }.count()
+    println("$chars ${nums.iter().filter { it > 4 }.count()}")
+    println(nums.map_indexed { i, n -> i as i32 * n }.sum())
+}
+
+fun predicates() {
+    val evens = (1..10).filter { it % 2 == 0 }.count()
+    val big = vec[1, 5, 9].iter().filter { it > 4 }.count()
+    val squares: Vec<i32> = (1..=4).map { it * it }.collect()
+    val nums = vec[5, 3, 8]
+    println("$evens $big ${squares:?} ${nums.filter { it % 2 == 1 }:?} ${nums.count { it > 4 }} ${nums.any { it == 8 }}")
+    val first_big = nums.iter().position { it > 6 }
+    println("${first_big:?} ${"a-b".chars().filter { it != '-' }.count()}")
+}

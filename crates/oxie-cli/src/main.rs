@@ -1,6 +1,7 @@
 //! The `oxie` command line tool.
 
 mod cargo;
+mod explain;
 mod from_rust;
 mod lsp;
 mod project;

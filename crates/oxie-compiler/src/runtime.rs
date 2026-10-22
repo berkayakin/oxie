@@ -13,6 +13,7 @@ pub type AnyError = ::std::boxed::Box<dyn ::std::error::Error + ::std::marker::S
 pub mod prelude {
     pub use super::AnyError;
     pub use super::Context as _;
+    pub use super::ListOps as _;
 }
 
 /// Support for `a ?: b` when `b` is not a literal.
@@ -117,6 +118,333 @@ impl<E> ElvisOr<&'static str> for ::std::result::Result<String, E> {
             Ok(v) => v,
             Err(_) => String::from(default),
         }
+    }
+}
+
+/// Reads a number, `bool` or `char` through any number of references (`&&i32` -> `i32`), so
+/// lambda parameters compare with literals: `filter { it > 2 }`.
+pub trait Val {
+    type Out;
+    fn val(&self) -> Self::Out;
+}
+
+impl<'a, T: Val + ?Sized> Val for &'a T {
+    type Out = T::Out;
+    #[inline(always)]
+    fn val(&self) -> T::Out {
+        (**self).val()
+    }
+}
+
+impl<'a, T: Val + ?Sized> Val for &'a mut T {
+    type Out = T::Out;
+    #[inline(always)]
+    fn val(&self) -> T::Out {
+        (**self).val()
+    }
+}
+
+macro_rules! val_copy {
+    ($($t:ty)*) => {$(
+        impl Val for $t {
+            type Out = $t;
+            #[inline(always)]
+            fn val(&self) -> $t {
+                *self
+            }
+        }
+    )*};
+}
+
+val_copy!(i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char);
+
+#[inline(always)]
+pub fn val<V: Val>(v: V) -> V::Out {
+    v.val()
+}
+
+/// Kotlin-style operations on lists, arrays and slices. Each one is the iterator chain you
+/// would write by hand; operations that return a new list of the same elements copy them
+/// (`T: Clone`), like `iter().filter(..).cloned().collect()`.
+pub trait ListOps<'a, T: 'a> {
+    fn map<U, F: FnMut(&'a T) -> U>(&'a self, f: F) -> Vec<U>;
+    fn map_indexed<U, F: FnMut(usize, &'a T) -> U>(&'a self, f: F) -> Vec<U>;
+    fn filter<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> Vec<T>
+    where
+        T: Clone;
+    fn filter_not<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> Vec<T>
+    where
+        T: Clone;
+    fn filter_map<U, F: FnMut(&'a T) -> Option<U>>(&'a self, f: F) -> Vec<U>;
+    fn flat_map<I: IntoIterator, F: FnMut(&'a T) -> I>(&'a self, f: F) -> Vec<I::Item>;
+    fn for_each<F: FnMut(&'a T)>(&'a self, f: F);
+    fn for_each_indexed<F: FnMut(usize, &'a T)>(&'a self, f: F);
+    fn find<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> Option<&'a T>;
+    fn find_last<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> Option<&'a T>;
+    fn index_of_first<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> Option<usize>;
+    fn any<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> bool;
+    fn all<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> bool;
+    fn none<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> bool;
+    fn count<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> usize;
+    fn sum(&self) -> T
+    where
+        T: for<'s> ::std::iter::Sum<&'s T>;
+    fn sum_of<S: ::std::iter::Sum<S>, F: FnMut(&'a T) -> S>(&'a self, f: F) -> S;
+    fn max_of<S: PartialOrd, F: FnMut(&'a T) -> S>(&'a self, f: F) -> Option<S>;
+    fn min_of<S: PartialOrd, F: FnMut(&'a T) -> S>(&'a self, f: F) -> Option<S>;
+    fn max_by_key<K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, f: F) -> Option<&'a T>;
+    fn min_by_key<K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, f: F) -> Option<&'a T>;
+    fn sorted(&self) -> Vec<T>
+    where
+        T: Ord + Clone;
+    fn sorted_descending(&self) -> Vec<T>
+    where
+        T: Ord + Clone;
+    fn sorted_by<K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, f: F) -> Vec<T>
+    where
+        T: Clone;
+    fn sorted_by_descending<K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, f: F) -> Vec<T>
+    where
+        T: Clone;
+    fn reversed(&self) -> Vec<T>
+    where
+        T: Clone;
+    fn distinct(&self) -> Vec<T>
+    where
+        T: Eq + ::std::hash::Hash + Clone;
+    fn distinct_by<K: Eq + ::std::hash::Hash, F: FnMut(&'a T) -> K>(&'a self, f: F) -> Vec<T>
+    where
+        T: Clone;
+    fn group_by<K: Eq + ::std::hash::Hash, F: FnMut(&'a T) -> K>(&'a self, f: F) -> ::std::collections::HashMap<K, Vec<T>>
+    where
+        T: Clone;
+    fn associate_by<K: Eq + ::std::hash::Hash, F: FnMut(&'a T) -> K>(&'a self, f: F) -> ::std::collections::HashMap<K, T>
+    where
+        T: Clone;
+    fn partition<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> (Vec<T>, Vec<T>)
+    where
+        T: Clone;
+    fn chunked(&self, size: usize) -> Vec<Vec<T>>
+    where
+        T: Clone;
+    fn join_to_string(&self, separator: &str) -> String
+    where
+        T: fmt::Display;
+    fn join_with<D: fmt::Display, F: FnMut(&'a T) -> D>(&'a self, separator: &str, f: F) -> String;
+    fn is_not_empty(&self) -> bool;
+}
+
+fn by_partial<K: PartialOrd>(a: &K, b: &K) -> ::std::cmp::Ordering {
+    a.partial_cmp(b).unwrap_or(::std::cmp::Ordering::Equal)
+}
+
+impl<'a, T: 'a> ListOps<'a, T> for [T] {
+    #[inline]
+    fn map<U, F: FnMut(&'a T) -> U>(&'a self, f: F) -> Vec<U> {
+        self.iter().map(f).collect()
+    }
+    #[inline]
+    fn map_indexed<U, F: FnMut(usize, &'a T) -> U>(&'a self, mut f: F) -> Vec<U> {
+        self.iter().enumerate().map(|(i, x)| f(i, x)).collect()
+    }
+    #[inline]
+    fn filter<F: FnMut(&'a T) -> bool>(&'a self, mut f: F) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.iter().filter(|x| f(*x)).cloned().collect()
+    }
+    #[inline]
+    fn filter_not<F: FnMut(&'a T) -> bool>(&'a self, mut f: F) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.iter().filter(|x| !f(*x)).cloned().collect()
+    }
+    #[inline]
+    fn filter_map<U, F: FnMut(&'a T) -> Option<U>>(&'a self, f: F) -> Vec<U> {
+        self.iter().filter_map(f).collect()
+    }
+    #[inline]
+    fn flat_map<I: IntoIterator, F: FnMut(&'a T) -> I>(&'a self, f: F) -> Vec<I::Item> {
+        self.iter().flat_map(f).collect()
+    }
+    #[inline]
+    fn for_each<F: FnMut(&'a T)>(&'a self, f: F) {
+        self.iter().for_each(f)
+    }
+    #[inline]
+    fn for_each_indexed<F: FnMut(usize, &'a T)>(&'a self, mut f: F) {
+        self.iter().enumerate().for_each(|(i, x)| f(i, x))
+    }
+    #[inline]
+    fn find<F: FnMut(&'a T) -> bool>(&'a self, mut f: F) -> Option<&'a T> {
+        self.iter().find(|x| f(*x))
+    }
+    #[inline]
+    fn find_last<F: FnMut(&'a T) -> bool>(&'a self, mut f: F) -> Option<&'a T> {
+        self.iter().rev().find(|x| f(*x))
+    }
+    #[inline]
+    fn index_of_first<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> Option<usize> {
+        self.iter().position(f)
+    }
+    #[inline]
+    fn any<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> bool {
+        self.iter().any(f)
+    }
+    #[inline]
+    fn all<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> bool {
+        self.iter().all(f)
+    }
+    #[inline]
+    fn none<F: FnMut(&'a T) -> bool>(&'a self, f: F) -> bool {
+        !self.iter().any(f)
+    }
+    #[inline]
+    fn count<F: FnMut(&'a T) -> bool>(&'a self, mut f: F) -> usize {
+        self.iter().filter(|x| f(*x)).count()
+    }
+    #[inline]
+    fn sum(&self) -> T
+    where
+        T: for<'s> ::std::iter::Sum<&'s T>,
+    {
+        self.iter().sum()
+    }
+    #[inline]
+    fn sum_of<S: ::std::iter::Sum<S>, F: FnMut(&'a T) -> S>(&'a self, f: F) -> S {
+        self.iter().map(f).sum()
+    }
+    #[inline]
+    fn max_of<S: PartialOrd, F: FnMut(&'a T) -> S>(&'a self, f: F) -> Option<S> {
+        self.iter().map(f).max_by(by_partial)
+    }
+    #[inline]
+    fn min_of<S: PartialOrd, F: FnMut(&'a T) -> S>(&'a self, f: F) -> Option<S> {
+        self.iter().map(f).min_by(by_partial)
+    }
+    #[inline]
+    fn max_by_key<K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, mut f: F) -> Option<&'a T> {
+        self.iter().map(|x| (f(x), x)).max_by(|a, b| by_partial(&a.0, &b.0)).map(|p| p.1)
+    }
+    #[inline]
+    fn min_by_key<K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, mut f: F) -> Option<&'a T> {
+        self.iter().map(|x| (f(x), x)).min_by(|a, b| by_partial(&a.0, &b.0)).map(|p| p.1)
+    }
+    #[inline]
+    fn sorted(&self) -> Vec<T>
+    where
+        T: Ord + Clone,
+    {
+        let mut v = self.to_vec();
+        v.sort();
+        v
+    }
+    #[inline]
+    fn sorted_descending(&self) -> Vec<T>
+    where
+        T: Ord + Clone,
+    {
+        let mut v = self.to_vec();
+        v.sort_by(|a, b| b.cmp(a));
+        v
+    }
+    #[inline]
+    fn sorted_by<K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, mut f: F) -> Vec<T>
+    where
+        T: Clone,
+    {
+        let mut v: Vec<&'a T> = self.iter().collect();
+        v.sort_by(|a, b| by_partial(&f(*a), &f(*b)));
+        v.into_iter().cloned().collect()
+    }
+    #[inline]
+    fn sorted_by_descending<K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, mut f: F) -> Vec<T>
+    where
+        T: Clone,
+    {
+        let mut v: Vec<&'a T> = self.iter().collect();
+        v.sort_by(|a, b| by_partial(&f(*b), &f(*a)));
+        v.into_iter().cloned().collect()
+    }
+    #[inline]
+    fn reversed(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.iter().rev().cloned().collect()
+    }
+    #[inline]
+    fn distinct(&self) -> Vec<T>
+    where
+        T: Eq + ::std::hash::Hash + Clone,
+    {
+        let mut seen = ::std::collections::HashSet::new();
+        self.iter().filter(|x| seen.insert(*x)).cloned().collect()
+    }
+    #[inline]
+    fn distinct_by<K: Eq + ::std::hash::Hash, F: FnMut(&'a T) -> K>(&'a self, mut f: F) -> Vec<T>
+    where
+        T: Clone,
+    {
+        let mut seen = ::std::collections::HashSet::new();
+        self.iter().filter(|x| seen.insert(f(*x))).cloned().collect()
+    }
+    #[inline]
+    fn group_by<K: Eq + ::std::hash::Hash, F: FnMut(&'a T) -> K>(&'a self, mut f: F) -> ::std::collections::HashMap<K, Vec<T>>
+    where
+        T: Clone,
+    {
+        let mut groups: ::std::collections::HashMap<K, Vec<T>> = ::std::collections::HashMap::new();
+        for x in self {
+            groups.entry(f(x)).or_default().push(x.clone());
+        }
+        groups
+    }
+    #[inline]
+    fn associate_by<K: Eq + ::std::hash::Hash, F: FnMut(&'a T) -> K>(&'a self, mut f: F) -> ::std::collections::HashMap<K, T>
+    where
+        T: Clone,
+    {
+        self.iter().map(|x| (f(x), x.clone())).collect()
+    }
+    #[inline]
+    fn partition<F: FnMut(&'a T) -> bool>(&'a self, mut f: F) -> (Vec<T>, Vec<T>)
+    where
+        T: Clone,
+    {
+        let (yes, no): (Vec<&'a T>, Vec<&'a T>) = self.iter().partition(|x| f(*x));
+        (yes.into_iter().cloned().collect(), no.into_iter().cloned().collect())
+    }
+    #[inline]
+    fn chunked(&self, size: usize) -> Vec<Vec<T>>
+    where
+        T: Clone,
+    {
+        self.chunks(size).map(|c| c.to_vec()).collect()
+    }
+    #[inline]
+    fn join_to_string(&self, separator: &str) -> String
+    where
+        T: fmt::Display,
+    {
+        self.join_with(separator, |x| x)
+    }
+    fn join_with<D: fmt::Display, F: FnMut(&'a T) -> D>(&'a self, separator: &str, mut f: F) -> String {
+        use ::std::fmt::Write;
+        let mut out = String::new();
+        for (i, x) in self.iter().enumerate() {
+            if i > 0 {
+                out.push_str(separator);
+            }
+            let _ = write!(out, "{}", f(x));
+        }
+        out
+    }
+    #[inline]
+    fn is_not_empty(&self) -> bool {
+        !self.is_empty()
     }
 }
 

@@ -1,0 +1,43 @@
+// Trait bounds of type parameters are inferred from how the body uses them.
+
+import std::collections::HashSet
+
+fun show<T>(x: T): String = "<$x>"
+fun larger<T>(a: T, b: T): T = if (a > b) a else b
+fun sum_all<T>(xs: &[T], zero: T): T {
+    var total = zero
+    for (x in xs) total = total + *x
+    total
+}
+fun count_unique<T>(xs: &[T]): usize {
+    var seen = HashSet()
+    for (x in xs) seen.insert(x)
+    seen.len()
+}
+fun labels<T>(xs: &[T]): Vec<String> = xs.map { "[$it]" }
+fun biggest<T>(xs: &[T]): T? {
+    var best: T? = null
+    for (x in xs) {
+        if (best == null || x > best.as_ref().unwrap()) best = x.clone()
+    }
+    best
+}
+
+class Box<T>(value: T) {
+    fun describe(): String = "Box($value)"
+    fun same(other: &T): bool = value == *other
+}
+
+fun main() {
+    println(show(42))
+    println(show("hi"))
+    println(larger(3, 7))
+    println(larger("pear", "apple"))
+    println(sum_all(vec[1, 2, 3], 0))
+    println(sum_all(vec[1.5, 2.5], 0.0))
+    println(count_unique(vec[1, 2, 2, 3]))
+    println(labels(vec['a', 'b']).join(", "))
+    println(biggest(vec[3, 9, 4]) ?: 0)
+    val b = Box(5)
+    println("${b.describe()} ${b.same(5)} ${b.same(6)}")
+}

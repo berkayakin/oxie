@@ -159,8 +159,8 @@ pub fn uses_it(body: &Expr) -> bool {
                 found = true;
                 false
             }
-            // nested lambdas without explicit params have their own `it`
-            ExprKind::Lambda { params, .. } if params.is_empty() => false,
+            // nested brace lambdas without params have their own `it`
+            ExprKind::Lambda { params, implicit_it: true, .. } if params.is_empty() => false,
             ExprKind::Lambda { params, .. } => !params.iter().any(|p| matches!(&p.pat, Pat::Ident { name, .. } if name == "it")),
             ExprKind::Template(parts) => {
                 for p in parts {

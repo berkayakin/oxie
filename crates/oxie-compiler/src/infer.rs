@@ -46,7 +46,8 @@ impl<'a> Lowerer<'a> {
                 _ => self.infer_type(l).filter(|t| !matches!(t, Type::Ref { .. })).or_else(|| self.infer_type(r)),
             },
             Unary(UnOp::Neg, x) | Unary(UnOp::Not, x) => self.infer_type(x),
-            Unary(UnOp::Ref, x) => self.infer_type(x).map(|t| Type::Ref { lifetime: None, mutable: false, inner: Box::new(t) }),
+            Unary(UnOp::Ref, x) => Some(Type::Ref { lifetime: None, mutable: false, inner: Box::new(self.infer_type(x).unwrap_or(Type::Infer)) }),
+            Unary(UnOp::RefMut, x) => Some(Type::Ref { lifetime: None, mutable: true, inner: Box::new(self.infer_type(x).unwrap_or(Type::Infer)) }),
             Unary(UnOp::Deref, x) => match self.infer_type(x)? {
                 Type::Ref { inner, .. } => Some(*inner),
                 _ => None,
@@ -134,6 +135,21 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Tuple(items) => items.iter().map(|x| self.infer_type(x)).collect::<Option<Vec<_>>>().map(Type::Tuple),
+            // `xs[i]` of a `Vec<T>`, `[T]` or `[T; N]` (ranges index slices, so only plain indices)
+            Index(c, i) if !matches!(i.kind, Range { .. }) => {
+                let t = match self.infer_type(c)? {
+                    Type::Ref { inner, .. } => *inner,
+                    t => t,
+                };
+                match t {
+                    Type::Slice(inner) | Type::Array(inner, _) => Some(*inner),
+                    Type::Path { segs, .. } if segs.len() == 1 && matches!(segs[0].name.as_str(), "Vec" | "VecDeque") => match segs[0].generics.as_deref() {
+                        Some([GenericArg::Type(inner)]) => Some(inner.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
             VecLit(items) if !items.is_empty() => {
                 let t = self.infer_type(&items[0])?;
                 Some(Type::Path { global: false, segs: vec![PathSeg { name: "Vec".into(), generics: Some(vec![GenericArg::Type(t)]), fn_sugar: None }], span: Default::default() })

@@ -19,12 +19,15 @@ compiles to Rust. This page maps what you know to Oxie, and lists the Rust ideas
 | class | `class P(val x: Int)` | `class P { constructor(public x: number) {} }` | `class P(x: i32)` |
 | data class | `data class P(val x: Int)` | — | `data class P(x: i32)` |
 | copy | `p.copy(x = 1)` | `{ ...p, x: 1 }` | `p.copy(x = 1)` |
+| shared object | any class | any class | `shared class P(var x: i32)` |
 | interface | `interface A { fun f(): Int }` | `interface A { f(): number }` | `interface A { fun f(): i32 }` |
 | implement | `class B : A { override fun f() = 1 }` | `class B implements A` | `class B : A { override fun f() = 1 }` |
 | enum with data | `sealed class` | union types | `enum Shape { Circle(r: f64) }` |
 | switch | `when (x) { 1 -> ...; else -> ... }` | `switch` | `when (x) { 1 -> ...; else -> ... }` |
 | lambda | `{ x -> x * 2 }`, `{ it * 2 }` | `x => x * 2` | all three styles |
 | list | `listOf(1, 2)` | `[1, 2]` | `listOf(1, 2)` / `vec[1, 2]` |
+| list operations | `xs.filter { it > 1 }.map { it * 2 }` | `xs.filter(x => x > 1).map(x => x * 2)` | `xs.filter { it > 1 }.map { it * 2 }` |
+| sum / sort / group | `sumOf { }`, `sortedBy { }`, `groupBy { }` | `reduce`, `sort`, — | `sum_of { }`, `sorted_by { }`, `group_by { }` |
 | map | `mapOf("a" to 1)` | `new Map([["a", 1]])` | `mapOf("a" to 1)` |
 | range | `0 until n`, `1..n` | — | `0 until n`, `1..=n` (Rust: `..` excludes the end) |
 | loop | `for (i in xs)` | `for (const i of xs)` | `for (i in xs)` |
@@ -41,8 +44,9 @@ compiles to Rust. This page maps what you know to Oxie, and lists the Rust ideas
 These come from Rust and are what makes Oxie as fast as Rust.
 
 **Values have one owner.** Assigning a `String`, `Vec` or class instance *moves* it; the old
-variable can't be used afterwards. Pass a reference (`&value`) to let a function read it, or
-`&mut value` to let it change it. Call `.clone()` when you really want a copy.
+variable can't be used afterwards. A function that only needs to read or change a value takes
+a reference (`&T` or `&mut T`); Oxie lends the argument for you (`show(names)` passes
+`&names`). Call `.clone()` when you really want a copy.
 
 ```oxie
 fun show(names: &Vec<String>) = println("${names.len()} names")
@@ -59,6 +63,22 @@ fun main() {
 
 Small value types (numbers, `bool`, `char`, and `data class`es made only of those) are copied
 instead of moved.
+
+**Objects aren't shared by default.** In Kotlin and TypeScript every object is a reference that
+many variables can point to. In Oxie that's opt-in: declare the class `shared` and copies of a
+variable refer to the same object (a reference-counted handle, `Rc<RefCell<..>>`). Use it for
+graphs, shared state and observers; plain classes are faster and need no bookkeeping.
+
+```oxie
+shared class Player(var name: String, var score: i32 = 0)
+
+fun main() {
+    val p = Player("Ada")
+    val team = vec[p]       // the list holds the same player
+    team[0].score += 10
+    println("${p.name}: ${p.score}")
+}
+```
 
 **Mutability is declared on the variable.** `var c = Counter()` can call methods that change
 `c`; `val c = Counter()` can't. Oxie works out which methods change their object.

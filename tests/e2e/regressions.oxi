@@ -1,0 +1,89 @@
+// Compiler bugs found by translating Rust programs with `oxie from-rust`.
+
+import std::fs::{self, File}
+import std::io::Write
+
+// `return` inside a value branch leaves the function
+fun pick(n: i32): i32? {
+    val x: i32? = when (n) {
+        1 -> Some(10)
+        else -> return null
+    }
+    println("reached the end with $n")
+    x
+}
+
+fun first_even(xs: &[i32]): i32 {
+    val e = if (xs.is_empty()) return -1 else xs[0]
+    var found: i32
+    found = when {
+        e % 2 == 0 -> e
+        else -> { println("odd start"); return e }
+    }
+    found
+}
+
+// turbofish on a type in a path
+struct Bag<T> { items: Vec<T> }
+impl<T> Bag<T> {
+    fun new(): Self = Bag { items: Vec.new() }
+}
+
+// struct literal of an enum variant through a dot path
+enum Shape { Rect(w: f64, h: f64) }
+
+// parenthesized `dyn` types
+fun first_source(e: &dyn std::error::Error): Option<&(dyn std::error::Error + 'static)> = e.source()
+
+// calling a function stored in a field
+class Button(label: String, on_click: Box<dyn Fn(&str) -> String>) {
+    fun click(): String = (self.on_click)(&label)
+}
+
+// a glob import ends its line
+enum Op { Add, Sub }
+fun op_name(o: Op): &str {
+    import Op::*
+    when (o) {
+        Add -> "add"
+        Sub -> "sub"
+    }
+}
+
+fun main() throws {
+    println("${pick(1):?} ${pick(2):?}")
+    println("${first_even(&[])} ${first_even(&[4])} ${first_even(&[3])}")
+
+    val a = Vec::<i32>::new()
+    val b = Bag::<String>::new()
+    val c = std.collections.HashMap::<String, i32>.new()
+    println("${a:?} ${b.items:?} ${c:?}")
+
+    val r = Shape.Rect { w: 1.0, h: 2.0 }
+    println("${r:?}")
+
+    // a Rust-style closure captures an outer `it`
+    val it = 7
+    val f = || it + 1
+    println(f())
+
+    val err = "x".parse::<i32>().unwrap_err()
+    println(first_source(&err).is_none())
+
+    println(Button("ok", Box.new { l: &str -> "clicked $l" }).click())
+    println(op_name(Op.Sub))
+
+    // `self` in an import group imports the module
+    val path = std::env::temp_dir().join("oxie_regressions_fs_self.txt")
+    var file = File.create(&path)?
+    file.write_all(b"written")?
+    println(fs.read_to_string(&path)?)
+    fs.remove_file(&path)?
+
+    // attributes on `when` arms
+    when (3) {
+        1 -> println("one")
+        @allow(unreachable_patterns)
+        _ -> println("other")
+    }
+}

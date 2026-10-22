@@ -268,7 +268,7 @@ struct LineFlags {
 fn line_flags(text: &str) -> LineFlags {
     let mut words = text.split_whitespace().peekable();
     let mut first = words.next().unwrap_or("");
-    while matches!(first, "pub" | "private" | "internal" | "public" | "data" | "error" | "open" | "sealed" | "abstract" | "unsafe") {
+    while matches!(first, "pub" | "private" | "internal" | "public" | "data" | "error" | "shared" | "open" | "sealed" | "abstract" | "unsafe") {
         first = words.next().unwrap_or("");
     }
     LineFlags {

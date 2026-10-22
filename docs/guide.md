@@ -147,10 +147,10 @@ import std::collections::HashMap
 
 fun main() {
     val nums = listOf(5, 3, 8, 1)              // Vec<i32>; `vec[5, 3, 8, 1]` is the same
-    val doubled: Vec<i32> = nums.iter().map { it * 2 }.collect()
-    val big = nums.iter().filter { **it > 3 }.count()
+    val doubled = nums.map { it * 2 }          // a new list: [10, 6, 16, 2]
+    val big = nums.count { it > 3 }
     val sum = nums.iter().fold(0) { acc, x -> acc + x }
-    println("${doubled:?} $big $sum")
+    println("${doubled:?} $big $sum ${nums.sorted():?}")
 
     val ages = mapOf("ada" to 36, "bob" to 25)  // HashMap
     println("ada is ${ages["ada"]}")
@@ -168,8 +168,31 @@ fun main() {
 ```
 
 A lambda without parameters can use `it`. A lambda as the last argument goes outside the
-parentheses (`xs.fold(0) { acc, x -> ... }`). All Rust iterator methods are available, with
-their Rust names.
+parentheses (`xs.fold(0) { acc, x -> ... }`).
+
+Lists, arrays and slices have Kotlin's collection operations, each returning a new collection:
+`map`, `filter`, `filter_map`, `flat_map`, `sorted`, `sorted_by`, `reversed`, `distinct`,
+`group_by`, `associate_by`, `partition`, `chunked`, `sum`, `sum_of`, `max_of`, `count`, `any`,
+`all`, `none`, `find`, `join_to_string` and more (Rust names, so `sumOf` is `sum_of`). They
+compile to the iterator chain you would write by hand, such as `iter().map(..).collect()`.
+For longer pipelines, Rust's iterators are there too: `nums.iter().filter { it > 3 }.map { it * 10 }`.
+
+```oxie
+data class User(name: String, age: u32, city: String)
+
+fun main() {
+    val users = vec[User("Ada", 36, "London"), User("Linus", 28, "Helsinki"), User("Grace", 45, "London")]
+    println(users.filter { it.age > 30 }.map { it.name.clone() }.join_to_string(", "))
+    println("total age ${users.sum_of { it.age }}, oldest ${users.max_by_key { it.age }?.name ?: "-"}")
+    println(users.sorted_by { it.age }.join_with(" < ") { it.name.as_str() })
+    val by_city = users.group_by { it.city.clone() }
+    println("London: ${by_city["London"].len()}")
+}
+```
+
+In `filter`, `find`, `any`, `count` and the other predicates, the element is a reference, as in
+Rust; comparing it with a literal (`it > 3`, `it == 'a'`, `it % 2 == 0`) reads the value for
+you.
 
 ## Null safety
 
@@ -249,6 +272,43 @@ fun main() {
 * `data class` derives `Debug`, `Clone`, `PartialEq` — plus `Copy`, `Eq` and `Hash` when all
   fields allow it — and has `copy(field = value)`.
 * `init { }` runs after the fields are set; body properties need a default value.
+
+### Shared classes
+
+A plain class value has one owner, like every Rust value. When several parts of a program need
+the *same* object — a graph node, an account two customers share, application state — declare
+it `shared`. Copying a shared value copies a handle to the object, as in Kotlin, Java or
+TypeScript:
+
+```oxie
+shared class Account(var owner: String, var balance: i64 = 0) {
+    var history: Vec<i64> = vec[]
+
+    fun deposit(amount: i64) {
+        balance += amount
+        history.push(amount)
+    }
+}
+
+fun main() {
+    val a = Account("Ada")
+    val b = a                  // the same account
+    b.deposit(50)
+    a.balance += 5             // fields can be read and changed through any handle
+    a.history.push(5)
+    println("${a.balance} ${b.history:?} ${a == b}")
+}
+```
+
+* A shared class is a `Rc<RefCell<..>>` handle; `@sync shared class` uses `Arc<Mutex<..>>` so
+  handles can be sent to other threads.
+* Methods and handles never need `var`: changes go to the shared object.
+* `==` compares identity (the same object), and handles work as `HashMap` keys.
+* Reading a whole field (`val h = a.history`) copies it; `a.history.len()` and
+  `a.history.push(x)` work on the object itself.
+* Each method call borrows the object once for the whole call, so methods can call each
+  other freely. A method that reaches the *same* object again through another handle (a node
+  whose `next` is itself) panics with "already borrowed" instead of corrupting memory.
 
 ## Enums
 
@@ -384,18 +444,43 @@ fun add_one(xs: &mut Vec<i32>) = xs.push(1)
 
 fun main() {
     var v = vec[1, 2, 3]
-    add_one(&mut v)
-    println(total(&v))
+    add_one(v)            // the parameter is `&mut`, so `v` is lent mutably: add_one(&mut v)
+    println(total(v))     // ... and here lent for reading: total(&v)
     val w = v.clone()     // explicit copy
     val moved = v         // `v` can't be used after this
     println("${w:?} ${moved:?}")
 }
 ```
 
-What Oxie removes is the bookkeeping around it: lifetimes are filled in when Rust can't infer
-them (a function returning a reference gets one lifetime tied to its reference parameters),
-`&self`/`&mut self` are inferred, and closures that modify captured variables are declared
-`mut` for you.
+What Oxie removes is the bookkeeping around it:
+
+* arguments for `&T` and `&mut T` parameters of Oxie functions are borrowed for you (writing
+  `&v` yourself works too);
+* lifetimes are filled in when Rust can't infer them (a function returning a reference gets one
+  lifetime tied to its reference parameters);
+* `&self`/`&mut self` are inferred, and closures that modify captured variables are declared
+  `mut` for you;
+* trait bounds on type parameters are inferred from the body: `fun show<T>(x: T) = "<$x>"`
+  becomes `fn show<T>(x: T) -> String where T: Display`.
+
+When the borrow checker still says no, the error is explained in Oxie terms, with fixes:
+
+```
+error[E0382]: `nums` was moved, so it can't be used anymore
+ --> main.oxi:6:19
+  |
+5 |     val n = consume(nums)
+  |                     ---- `nums` moved into `consume()` here
+6 |     println("$n ${nums.len()}")
+  |                   ^^^^ used here after the move
+  = help: giving a value to a function or another variable moves it: `consume` owns it now,
+    and `nums` can't be used afterwards. Pass a copy with `nums.clone()`, or let `consume`
+    borrow the value instead.
+  = fix: pass a copy of `nums`: `val n = consume(nums.clone())`
+  = fix: let `consume` borrow it (parameter type `&[i32]`): `fun consume(v: &[i32]): usize = v.len()`
+```
+
+In the editor the fixes are quick fixes (code actions).
 
 ## Tests
 

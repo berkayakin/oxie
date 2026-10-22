@@ -10,6 +10,9 @@ use crate::parser::is_type_like;
 use crate::sema::{self, Crate, MethodInfo, Recv, VariantShape};
 use crate::visit;
 
+#[path = "shared.rs"]
+mod shared;
+
 // Rust output precedence levels.
 pub(crate) const P_LOWEST: u8 = 0;
 pub(crate) const P_RANGE: u8 = 1;
@@ -170,6 +173,11 @@ pub(crate) struct ClassCtx {
     pub(crate) methods: HashMap<String, MethodInfo>,
     pub(crate) self_name: String,
     pub(crate) is_static: bool,
+    /// Type parameters of the class or impl block (methods get inferred bounds for them).
+    pub(crate) generics: Vec<GenericParam>,
+    /// Methods of implemented interfaces: their signatures follow the interface, so no bounds
+    /// are inferred for them. `None` inside interfaces and trait impls (never inferred).
+    pub(crate) trait_methods: Option<HashSet<String>>,
 }
 
 #[derive(Clone)]
@@ -191,14 +199,18 @@ pub(crate) struct Target {
     pub(crate) ty: Option<Type>,
     /// Wrap the tail value, e.g. `Ok` or `Ok::<_, E>`.
     pub(crate) wrap: Option<String>,
+    /// The value is the function's result, so `return x` in tail position is just `x`.
+    /// (Not for initializers: in `val x = when (..) { else -> return null }` the `return` leaves
+    /// the function.)
+    pub(crate) fn_result: bool,
 }
 
 impl Target {
     pub(crate) fn none() -> Target {
-        Target { ty: None, wrap: None }
+        Target { ty: None, wrap: None, fn_result: false }
     }
     pub(crate) fn ty(t: &Type) -> Target {
-        Target { ty: Some(t.clone()), wrap: None }
+        Target { ty: Some(t.clone()), wrap: None, fn_result: false }
     }
 }
 
@@ -235,6 +247,11 @@ pub struct Lowerer<'a> {
     pub crate_attrs_allowed: bool,
     /// Lint attributes from `#![...]` in the crate root, applied to every item and module.
     pub root_lints: Vec<String>,
+    /// Lambda parameters without a known type: (scope depth, name). Rust passes collection
+    /// elements by reference, so comparisons of these with literals read the value first.
+    pub(crate) lambda_params: Vec<(usize, String)>,
+    /// The next lambda lowered is a predicate whose parameters are element references.
+    pub(crate) next_lambda_refs: bool,
 }
 
 pub fn esc(name: &str) -> String {
@@ -299,6 +316,8 @@ impl<'a> Lowerer<'a> {
             src_dir: None,
             crate_attrs_allowed: false,
             root_lints: Vec::new(),
+            lambda_params: Vec::new(),
+            next_lambda_refs: false,
         }
     }
 
@@ -332,6 +351,11 @@ impl<'a> Lowerer<'a> {
         for n in names {
             self.bind_name(&n, None);
         }
+    }
+    /// Is `name` an untyped lambda parameter (and not shadowed by a later binding)?
+    pub(crate) fn is_untyped_lambda_param(&self, name: &str) -> bool {
+        let Some(depth) = self.scopes.iter().rposition(|s| s.contains_key(name)) else { return false };
+        self.lambda_params.iter().any(|(d, n)| *d == depth && n == name)
     }
     pub(crate) fn local(&self, name: &str) -> Option<&Option<Type>> {
         for s in self.scopes.iter().rev() {
@@ -447,9 +471,18 @@ impl<'a> Lowerer<'a> {
                     self.path_roots.insert(name);
                 }
             }
-            UseTree::Group { items, .. } => {
+            UseTree::Group { segments, items } => {
                 for i in items {
-                    self.note_import(i);
+                    match i {
+                        // `import std::fs::{self, File}` imports the module `fs`
+                        UseTree::Path { segments: s, alias } if s.len() == 1 && s[0] == "self" => {
+                            let name = alias.clone().or_else(|| segments.last().cloned()).unwrap_or_default();
+                            if !name.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase()) {
+                                self.path_roots.insert(name);
+                            }
+                        }
+                        _ => self.note_import(i),
+                    }
                 }
             }
             UseTree::Glob { .. } => {}
@@ -624,10 +657,10 @@ impl<'a> Lowerer<'a> {
                 if *mutable {
                     s.push_str("mut ");
                 }
-                s.push_str(&self.ty(inner, TyPos::Container));
+                s.push_str(&self.pointee(inner));
                 s
             }
-            Type::Ptr { mutable, inner } => format!("*{} {}", if *mutable { "mut" } else { "const" }, self.ty(inner, TyPos::Container)),
+            Type::Ptr { mutable, inner } => format!("*{} {}", if *mutable { "mut" } else { "const" }, self.pointee(inner)),
             Type::Tuple(v) => {
                 if v.len() == 1 {
                     format!("({},)", self.ty(&v[0], TyPos::Generic))
@@ -708,7 +741,16 @@ impl<'a> Lowerer<'a> {
         s
     }
 
-    fn seg(&self, seg: &PathSeg, _pos: TyPos) -> String {
+    /// The type behind `&` or `*`: `dyn A + B` needs parentheses there (`&(dyn Error + 'static)`).
+    fn pointee(&self, inner: &Type) -> String {
+        let t = self.ty(inner, TyPos::Container);
+        match inner {
+            Type::Dyn(b) | Type::Impl(b) | Type::Bounds(b) if b.len() > 1 => format!("({})", t),
+            _ => t,
+        }
+    }
+
+    pub(crate) fn seg(&self, seg: &PathSeg, _pos: TyPos) -> String {
         let mut s = esc(&seg.name);
         let container = CONTAINERS.contains(&seg.name.as_str());
         if let Some(g) = &seg.generics {
@@ -1232,6 +1274,7 @@ impl<'a> Lowerer<'a> {
 
     fn free_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
         let f = &auto_lifetimes(&self.with_inferred_ret(f, None), false);
+        let f = &crate::bounds::with_inferred_bounds(f, &[], &[]);
         let is_main = f.name == "main" && ctx == ItemCtx::Top && self.is_root && self.module.is_empty();
         let wrap_main = is_main && !matches!(f.throws, Throws::No);
         self.docs(&it.docs);
@@ -1298,7 +1341,7 @@ impl<'a> Lowerer<'a> {
         self.push_scope();
         match ret {
             Some(t) => {
-                let target = Target { ty: Some(t.clone()), wrap: if throws { Some("Ok".into()) } else { None } };
+                let target = Target { ty: Some(t.clone()), wrap: if throws { Some("Ok".into()) } else { None }, fn_result: true };
                 self.stmts_with_tail(&b.stmts, Some(&target));
             }
             None => {
@@ -1318,6 +1361,7 @@ impl<'a> Lowerer<'a> {
     fn ext_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
         let by_ref = !matches!(f.self_param, Some(SelfParam::Value { .. }) | Some(SelfParam::Typed(_)));
         let f = &auto_lifetimes(&self.with_inferred_ret(f, None), by_ref);
+        let f = &crate::bounds::with_inferred_bounds(f, &[], &[]);
         let recv_ty = f.receiver.as_ref().unwrap();
         let tname = sema::ext_trait_name(&self.module, &f.name);
         let recv = match &f.self_param {
@@ -1384,6 +1428,13 @@ impl<'a> Lowerer<'a> {
             None => matches!(recv, Recv::Ref | Recv::RefMut),
         };
         let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), by_ref);
+        let f = &match self.class.as_ref() {
+            Some(c) if !f.mods.is_override && c.trait_methods.as_ref().is_some_and(|t| !t.contains(&f.name)) => {
+                let fields: Vec<(String, Type)> = c.fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
+                crate::bounds::with_inferred_bounds(f, &c.generics, &fields)
+            }
+            _ => f.clone(),
+        };
         self.e.mark(it.span);
         self.docs(&it.docs);
         let attrs: Vec<Attr> = it.attrs.clone();
@@ -1447,17 +1498,19 @@ impl<'a> Lowerer<'a> {
         // methods inherited from interfaces (default methods) are callable without `this.`
         let mut stack: Vec<String> = supertypes.iter().filter_map(|t| t.last_name().map(|s| s.to_string())).collect();
         let mut seen = std::collections::HashSet::new();
+        let mut trait_methods = HashSet::new();
         while let Some(tn) = stack.pop() {
             if !seen.insert(tn.clone()) {
                 continue;
             }
             if let Some(ti) = self.k.traits.get(&tn) {
                 for (n, m) in &ti.methods {
+                    trait_methods.insert(n.clone());
                     methods.entry(n.clone()).or_insert_with(|| m.clone());
                 }
             }
         }
-        ClassCtx { name: name.to_string(), fields, methods, self_name: "self".into(), is_static: false }
+        ClassCtx { name: name.to_string(), fields, methods, self_name: "self".into(), is_static: false, generics: Vec::new(), trait_methods: Some(trait_methods) }
     }
 
     fn field_type(&mut self, f: &Field) -> Type {
@@ -1480,7 +1533,9 @@ impl<'a> Lowerer<'a> {
         let g = self.generics_decl(&t.generics);
         let gn = self.generics_names(&t.generics);
         let wc = self.where_clause(&t.generics);
-        let self_ty = format!("{}{}", t.name, gn);
+        // a shared class is emitted as `{Name}Data` plus a handle named `Name`
+        let data_name = if t.shared { Self::shared_data_name(&t.name) } else { t.name.clone() };
+        let self_ty = format!("{}{}", data_name, gn);
 
         // which supertypes become derives
         let (derived, impl_traits, members_by_trait, inherent) = self.split_members(t);
@@ -1491,30 +1546,33 @@ impl<'a> Lowerer<'a> {
                 derives.push(d);
             }
         }
-        self.docs(&it.docs);
-        self.attrs(&it.attrs, &derives);
+        if !t.shared {
+            self.docs(&it.docs);
+        }
+        let attrs: Vec<Attr> = it.attrs.iter().filter(|a| !(t.shared && a.name() == "sync")).cloned().collect();
+        self.attrs(&attrs, &derives);
         let fields: Vec<(Field, Type)> = t.fields.iter().map(|f| (f.clone(), self.field_type(f))).collect();
         match t.kind {
             TypeKind::TupleStruct => {
                 if t.tuple_fields.is_empty() {
-                    self.e.w(&format!("{}struct {}{}{};", vis, t.name, g, wc));
+                    self.e.w(&format!("{}struct {}{}{};", vis, data_name, g, wc));
                 } else {
                     let parts: Vec<String> = t
                         .tuple_fields
                         .iter()
                         .map(|(v, ty)| format!("{}{}", self.vis(v, ItemCtx::Top), self.ty(ty, TyPos::Field)))
                         .collect();
-                    self.e.w(&format!("{}struct {}{}({}){};", vis, t.name, g, parts.join(", "), wc));
+                    self.e.w(&format!("{}struct {}{}({}){};", vis, data_name, g, parts.join(", "), wc));
                 }
                 self.e.nl();
             }
             _ => {
                 let kw = if t.kind == TypeKind::Union { "union" } else { "struct" };
                 if fields.is_empty() {
-                    self.e.w(&format!("{}{} {}{}{};", vis, kw, t.name, g, wc));
+                    self.e.w(&format!("{}{} {}{}{};", vis, kw, data_name, g, wc));
                     self.e.nl();
                 } else {
-                    self.e.w(&format!("{}{} {}{}{} {{", vis, kw, t.name, g, wc));
+                    self.e.w(&format!("{}{} {}{}{} {{", vis, kw, data_name, g, wc));
                     self.e.indent();
                     for (f, ty) in &fields {
                         self.e.nl();
@@ -1535,6 +1593,9 @@ impl<'a> Lowerer<'a> {
 
         let saved_class = self.class.take();
         self.class = Some(self.class_ctx_for(&t.name, &t.fields, &t.supertypes));
+        if let Some(c) = self.class.as_mut() {
+            c.generics = t.generics.params.clone();
+        }
         let info = self.k.class(&t.name).cloned();
 
         // inherent impl: constructor + methods
@@ -1554,8 +1615,12 @@ impl<'a> Lowerer<'a> {
                     if f.mods.is_operator {
                         continue;
                     }
-                    self.e.nl();
                     let recv = self.recv_of(&t.name, f);
+                    if t.shared && recv == Recv::Static {
+                        // static methods of a shared class live on the handle
+                        continue;
+                    }
+                    self.e.nl();
                     self.method(m, f, recv, true, None);
                 } else {
                     self.e.nl();
@@ -1579,6 +1644,20 @@ impl<'a> Lowerer<'a> {
         // error class
         if t.is_error {
             self.error_class_impls(t, &g, &self_ty, &wc);
+        }
+        if t.shared {
+            let statics: Vec<&Item> = inherent
+                .iter()
+                .copied()
+                .filter(|m| matches!(&m.kind, ItemKind::Fun(f) if !f.mods.is_operator && self.recv_of(&t.name, f) == Recv::Static))
+                .collect();
+            let forwarded: Vec<(Type, Vec<&Item>)> = impl_traits
+                .iter()
+                .cloned()
+                .zip(members_by_trait.iter().cloned())
+                .filter(|(tr, _)| tr.last_name().is_some_and(|n| n != "__Display" && self.k.traits.contains_key(n)))
+                .collect();
+            self.shared_handle(it, t, &fields, &statics, &forwarded, &derives, &g, &gn, &wc);
         }
         self.class = saved_class;
         self.members_pub = saved_members_pub;
@@ -2018,6 +2097,9 @@ impl<'a> Lowerer<'a> {
 
         let saved_class = self.class.take();
         self.class = Some(self.class_ctx_for(&t.name, &[], &t.supertypes));
+        if let Some(c) = self.class.as_mut() {
+            c.generics = t.generics.params.clone();
+        }
         if !inherent.is_empty() {
             self.e.nl();
             self.e.w(&format!("impl{} {}{} {{", g, self_ty, wc));
@@ -2223,7 +2305,15 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        self.class = Some(ClassCtx { name: t.name.clone(), fields: HashMap::new(), methods: tmethods, self_name: "self".into(), is_static: false });
+        self.class = Some(ClassCtx {
+            name: t.name.clone(),
+            fields: HashMap::new(),
+            methods: tmethods,
+            self_name: "self".into(),
+            is_static: false,
+            generics: Vec::new(),
+            trait_methods: None,
+        });
         for m in &t.members {
             self.e.nl();
             match &m.kind {
@@ -2272,6 +2362,12 @@ impl<'a> Lowerer<'a> {
         let decl_fields: Vec<Field> = Vec::new();
         let supers: Vec<Type> = imp.trait_.iter().cloned().collect();
         self.class = Some(self.class_ctx_for(&owner, &decl_fields, &supers));
+        if let Some(c) = self.class.as_mut() {
+            c.generics = imp.generics.params.clone();
+            if imp.trait_.is_some() {
+                c.trait_methods = None;
+            }
+        }
         let tinfo = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| self.k.traits.get(n)).cloned();
         for m in &imp.members {
             self.e.nl();

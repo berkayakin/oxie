@@ -1,0 +1,47 @@
+// Values passed to `&T` / `&mut T` parameters are borrowed automatically.
+
+data class User(name: String, age: u32)
+
+fun total(v: &[i32]): i32 = v.iter().sum()
+fun greet(name: &str): String = "hi $name"
+fun describe(u: &User): String = "${u.name} (${u.age})"
+fun add_one(v: &mut Vec<i32>) { v.push(1) }
+fun longest(a: &str, b: &str): &str = if (a.len() >= b.len()) a else b
+fun show<T: std::fmt::Display>(x: &T): String = "<$x>"
+
+class Bag(var items: Vec<i32> = vec[]) {
+    fun fill() { add_one(items) }
+    fun sum(): i32 = total(items)
+}
+
+fun forward(v: &mut Vec<i32>) { add_one(v) }
+fun forward_ref(u: &User): String = describe(u)
+
+fun main() {
+    var nums = vec[1, 2, 3]
+    println(total(nums))
+    add_one(nums)
+    println(total(nums))
+    val name = "Ada".to_string()
+    println(greet(name))
+    println(greet("literal"))
+    println(greet("$name!"))
+    val u = User("Linus", 28)
+    println(describe(u))
+    println(forward_ref(u))
+    println(u.name)
+    forward(nums)
+    println(nums.len())
+    val r = &mut nums
+    add_one(r)
+    println(longest(name, "Bob"))
+    println(show(5))
+    println(show(name))
+    var bag = Bag()
+    bag.fill()
+    println(bag.sum())
+    val users = vec[u.clone(), User("Grace", 45)]
+    for (x in &users) println(describe(x))
+    println(users.map { describe(it) }.join_to_string(", "))
+    println(total(vec[4, 5]))
+}

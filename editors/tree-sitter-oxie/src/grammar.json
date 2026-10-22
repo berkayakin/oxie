@@ -1211,6 +1211,31 @@
                   },
                   "named": false,
                   "value": "value class"
+                },
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "TOKEN",
+                    "content": {
+                      "type": "SEQ",
+                      "members": [
+                        {
+                          "type": "STRING",
+                          "value": "shared"
+                        },
+                        {
+                          "type": "PATTERN",
+                          "value": "\\s+"
+                        },
+                        {
+                          "type": "STRING",
+                          "value": "class"
+                        }
+                      ]
+                    }
+                  },
+                  "named": false,
+                  "value": "shared class"
                 }
               ]
             },

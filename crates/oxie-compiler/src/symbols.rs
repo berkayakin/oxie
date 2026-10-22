@@ -232,6 +232,7 @@ fn type_decl_signature(t: &TypeDecl) -> String {
         (_, true) => "error class",
         (TypeKind::Data, _) => "data class",
         (TypeKind::TupleStruct, _) => "struct",
+        (TypeKind::Class, _) if t.shared => "shared class",
         (TypeKind::Class, _) => "class",
         (TypeKind::Union, _) => "union",
     };

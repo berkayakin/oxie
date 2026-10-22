@@ -390,7 +390,7 @@ impl<'a> Parser<'a> {
             matches!(p.tok_at(n), Tok::Ident(s) if matches!(s.as_str(),
                 "fun" | "fn" | "val" | "var" | "class" | "data" | "struct" | "enum" | "interface" | "trait" | "const"
                 | "static" | "typealias" | "type" | "mod" | "object" | "import" | "use" | "async" | "unsafe"
-                | "override" | "operator" | "mut" | "error" | "open" | "abstract" | "sealed" | "inline"))
+                | "override" | "operator" | "mut" | "error" | "open" | "abstract" | "sealed" | "inline" | "shared"))
                 || matches!(p.tok_at(n), Tok::Ident(_)) && matches!(p.tok_at(n + 1), Tok::Punct(":"))
         };
         for (kw, vis) in [("private", Vis::Private), ("internal", Vis::Internal), ("public", Vis::Public), ("protected", Vis::Internal)] {
@@ -436,6 +436,11 @@ impl<'a> Parser<'a> {
         } else if self.is_kw("data") && self.is_kw_at(1, "class") {
             self.bump();
             ItemKind::Type(self.class_decl(true, false)?)
+        } else if self.is_kw("shared") && self.is_kw_at(1, "class") {
+            self.bump();
+            let mut decl = self.class_decl(false, false)?;
+            decl.shared = true;
+            ItemKind::Type(decl)
         } else if self.is_kw("error") && self.is_kw_at(1, "class") {
             self.bump();
             ItemKind::Type(self.class_decl(false, true)?)
@@ -1182,6 +1187,7 @@ impl<'a> Parser<'a> {
             members: Vec::new(),
             init: None,
             message: None,
+            shared: false,
         };
         if self.is_punct("(") {
             // Kotlin primary constructor or Rust tuple struct
@@ -1385,6 +1391,7 @@ impl<'a> Parser<'a> {
             members: Vec::new(),
             init: None,
             message: None,
+            shared: false,
         };
         self.skip_nl_only();
         self.expect_punct("{")?;
@@ -1744,6 +1751,7 @@ impl<'a> Parser<'a> {
                 "union" => self.is_ident_at(1),
                 "enum" => self.is_ident_at(1),
                 "data" | "error" => self.is_kw_at(1, "class") || self.is_kw_at(1, "enum"),
+                "shared" => self.is_kw_at(1, "class"),
                 "static" => self.is_ident_at(1) || self.is_kw_at(1, "mut"),
                 "type" => self.is_ident_at(1) && (self.is_punct_at(2, "=") || self.is_punct_at(2, "<")),
                 "object" => self.is_ident_at(1) && self.is_punct_at(2, "{"),
@@ -1754,6 +1762,23 @@ impl<'a> Parser<'a> {
             Tok::DocOuter(_) => true,
             _ => false,
         }
+    }
+
+    /// Attributes before a `when` arm, as Rust attribute contents.
+    fn arm_attrs(&mut self) -> PResult<Vec<String>> {
+        if !(self.is_punct("@") || (self.is_punct("#") && self.is_punct_at(1, "["))) {
+            return Ok(Vec::new());
+        }
+        let (_, attrs) = self.docs_and_attrs()?;
+        self.skip_nl_only();
+        Ok(attrs
+            .iter()
+            .map(|a| match a {
+                Attr::Oxie { name, args: Some(a), .. } => format!("{}({})", name, a),
+                Attr::Oxie { name, args: None, .. } => name.clone(),
+                Attr::Raw(r) => r.clone(),
+            })
+            .collect())
     }
 
     fn stmt(&mut self) -> PResult<Stmt> {
@@ -2207,7 +2232,17 @@ impl<'a> Parser<'a> {
                             }
                         }
                     }
-                    if self.is_punct("(") {
+                    // `Shape.Rect { w: 1.0, h: 2.0 }`: a struct literal of a variant or nested type
+                    let struct_path = if !safe && is_type_like(&name) && self.is_punct("{") && !self.no_struct && self.looks_like_struct_lit() && !self.braces_have_arrow() {
+                        dot_path(&e)
+                    } else {
+                        None
+                    };
+                    if let Some(mut path) = struct_path {
+                        path.push(name);
+                        let start = e.span;
+                        e = self.struct_lit(path, generics, start)?;
+                    } else if self.is_punct("(") {
                         let mut args = self.call_args()?;
                         if self.trailing_lambda_ok() {
                             args.push(Arg { name: None, value: self.lambda_braces()? });
@@ -2218,6 +2253,11 @@ impl<'a> Parser<'a> {
                         let lam = self.lambda_braces()?;
                         let sp = e.span.to(lam.span);
                         e = Expr::new(ExprKind::MethodCall { recv: Box::new(e), name, generics, args: vec![Arg { name: None, value: lam }], safe }, sp);
+                    } else if let (Some(g), Some(mut segs)) = (generics.clone(), dot_path(&e)) {
+                        // `std.collections.HashMap::<K, V>.new()`: a type path with arguments
+                        segs.push(name);
+                        let sp = e.span.to(self.prev_span());
+                        e = Expr::new(ExprKind::Path { segs, generics: Some(g), global: false }, sp);
                     } else {
                         let sp = e.span.to(self.prev_span());
                         e = Expr::new(ExprKind::Field { recv: Box::new(e), name, safe }, sp);
@@ -2729,7 +2769,25 @@ impl<'a> Parser<'a> {
         loop {
             if self.is_punct("::") && self.is_punct_at(1, "<") {
                 self.bump();
-                generics = Some(self.generic_args()?);
+                let g = self.generic_args()?;
+                // `Vec::<i32>::new`: the arguments belong to `Vec`, so this is `<Vec<i32>>::new`
+                if self.is_punct("::") && !self.is_punct_at(1, "<") {
+                    let mut type_segs: Vec<PathSeg> = segs.iter().map(PathSeg::plain).collect();
+                    type_segs.last_mut().unwrap().generics = Some(g);
+                    let mut rest = Vec::new();
+                    while self.is_punct("::") {
+                        self.bump();
+                        rest.push(PathSeg::plain(self.member_name()?));
+                        if self.is_punct("::") && self.is_punct_at(1, "<") {
+                            self.bump();
+                            rest.last_mut().unwrap().generics = Some(self.generic_args()?);
+                        }
+                    }
+                    let ty = Type::Path { global, segs: type_segs, span: start.to(self.prev_span()) };
+                    let t = Type::Qualified { ty: Box::new(ty), trait_: None, rest };
+                    return Ok(Expr::new(ExprKind::QualifiedPath(t), start.to(self.prev_span())));
+                }
+                generics = Some(g);
                 continue;
             }
             if self.is_punct("::") {
@@ -2807,6 +2865,27 @@ impl<'a> Parser<'a> {
             return self.struct_lit(segs, generics, sp);
         }
         Ok(Expr::new(ExprKind::Path { segs, generics, global }, sp))
+    }
+
+    /// Does the `{ ... }` at the current token contain a top-level `->` (a lambda with parameters)?
+    fn braces_have_arrow(&self) -> bool {
+        let mut depth = 0;
+        let mut i = 0;
+        loop {
+            match self.tok_at(i) {
+                Tok::Punct("{") | Tok::Punct("(") | Tok::Punct("[") => depth += 1,
+                Tok::Punct("}") | Tok::Punct(")") | Tok::Punct("]") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return false;
+                    }
+                }
+                Tok::Punct("->") if depth == 1 => return true,
+                Tok::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
     }
 
     fn looks_like_struct_lit(&self) -> bool {
@@ -3029,8 +3108,7 @@ impl<'a> Parser<'a> {
         } else {
             Expr::new(ExprKind::Block(Block { stmts, span: sp }), sp)
         };
-        let _ = has_params;
-        Ok(Expr::new(ExprKind::Lambda { params, ret: None, body: Box::new(body), is_move: false, implicit_it: false, is_async: false }, sp))
+        Ok(Expr::new(ExprKind::Lambda { params, ret: None, body: Box::new(body), is_move: false, implicit_it: !has_params, is_async: false }, sp))
     }
 
     fn if_expr(&mut self) -> PResult<Expr> {
@@ -3124,6 +3202,7 @@ impl<'a> Parser<'a> {
             }
             let astart = self.span();
             let r: PResult<WhenArm> = (|| {
+                let attrs = self.arm_attrs()?;
                 let mut conds = Vec::new();
                 loop {
                     if self.eat_kw("else") {
@@ -3160,7 +3239,7 @@ impl<'a> Parser<'a> {
                 } else {
                     self.expr_stmt_like()?
                 };
-                Ok(WhenArm { conds, guard, body, span: astart.to(self.prev_span()) })
+                Ok(WhenArm { attrs, conds, guard, body, span: astart.to(self.prev_span()) })
             })();
             match r {
                 Ok(arm) => arms.push(arm),
@@ -3217,6 +3296,7 @@ impl<'a> Parser<'a> {
             }
             let astart = self.span();
             let r: PResult<WhenArm> = (|| {
+                let attrs = self.arm_attrs()?;
                 let pat = if self.eat_kw("else") { None } else { Some(self.pattern()?) };
                 let guard = if self.eat_kw("if") { Some(self.when_cond_expr()?) } else { None };
                 if !self.eat_punct("=>") && !self.eat_punct("->") {
@@ -3234,7 +3314,7 @@ impl<'a> Parser<'a> {
                     Some(p) => WhenCond::Pat(p),
                     None => WhenCond::Else,
                 }];
-                Ok(WhenArm { conds, guard, body, span: astart.to(self.prev_span()) })
+                Ok(WhenArm { attrs, conds, guard, body, span: astart.to(self.prev_span()) })
             })();
             match r {
                 Ok(a) => arms.push(a),
@@ -3545,4 +3625,17 @@ fn dedent_raw(s: &str) -> String {
         out.pop();
     }
     out.join("\n")
+}
+
+/// `a.b.c` written with dots (identifiers only), as path segments.
+fn dot_path(e: &Expr) -> Option<Vec<String>> {
+    match &e.kind {
+        ExprKind::Path { segs, generics: None, global: false } => Some(segs.clone()),
+        ExprKind::Field { recv, name, safe: false } => {
+            let mut v = dot_path(recv)?;
+            v.push(name.clone());
+            Some(v)
+        }
+        _ => None,
+    }
 }

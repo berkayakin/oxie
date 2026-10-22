@@ -1,0 +1,20 @@
+// Borrow-checker errors come with Oxie explanations and fixes.
+
+fun consume(v: Vec<i32>): usize = v.len()
+
+fun main() {
+    val count = 0
+    count += 1 // error: 7: fix: declare `count` with `var`: `var count = 0`
+    val list = mutableListOf<i32>()
+    list.push(1) // error: 9: `list` is a `val`, so it can't be changed
+    val nums = vec[1, 2, 3]
+    val n = consume(nums)
+    println("$n ${nums.len()}") // error: 12: fix: pass a copy of `nums`: `val n = consume(nums.clone())`
+    var names = vec["a".to_string()]
+    val first = &names[0]
+    names.push("b".to_string()) // error: 15: fix: copy the value instead of borrowing it: `val first = names[0].clone()`
+    println("$first $count ${list.len()}")
+    val name = "worker".to_string()
+    val h = std::thread::spawn { println("$name") } // error: 18: fix: make it a `move` lambda
+    h.join().unwrap()
+}

@@ -134,13 +134,19 @@ Kotlin and TypeScript developers already know:
 | `try { ... } catch (e) { ... }` | a labeled block with `?` turned into `break` |
 | `error enum E { NotFound(p: String) = "no $p" }` | enum + `Display` + `Error` + `From` impls |
 | `when (x) { 1, 2 -> a; in 3..=9 -> b; else -> c }` | `match` |
-| `xs.map { it * 2 }` | `xs.map(\|it\| it * 2)` |
+| `xs.filter { it > 2 }.sum_of { it.price }` | `xs.iter().filter(..).cloned().collect()`, `iter().map(..).sum()` |
+| `total(nums)` with `fun total(xs: &[i32])` | `total(&nums)` (arguments are borrowed for you) |
+| `fun show<T>(x: T) = "<$x>"` | `fn show<T>(x: T) -> String where T: Display` |
+| `shared class Node(var next: Node?)` | `Rc<RefCell<..>>` handle with getters, setters and forwarding methods |
 | `interface Shape { fun area(): f64 }` | `trait Shape { fn area(&self) -> f64; }` |
 | `fun String.shout() = ...` | an extension trait, imported everywhere automatically |
 | `operator fun plus(o: V): V` | `impl Add for V` |
 
 Method receivers are inferred: a method that changes a field takes `&mut self`, one that only
 reads takes `&self`, a function that returns `Self` without touching `self` is static.
+
+When the borrow checker objects, the error says what happened in Oxie terms ("`nums` was moved
+into `consume()` on line 5") and offers fixes your editor can apply.
 
 ## Install
 

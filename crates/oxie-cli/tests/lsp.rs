@@ -16,9 +16,16 @@ struct Client {
 
 impl Client {
     fn start() -> Client {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_oxie"))
+        Client::start_with(true)
+    }
+
+    fn start_with(no_check: bool) -> Client {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxie"));
+        if no_check {
+            cmd.env("OXIE_LSP_NO_CHECK", "1");
+        }
+        let mut child = cmd
             .arg("lsp")
-            .env("OXIE_LSP_NO_CHECK", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -180,6 +187,51 @@ fn language_server_features() {
     let diags = c.wait_diagnostics(&uri);
     assert!(!diags.as_array().unwrap().is_empty());
     assert_eq!(diags[0]["source"], "oxie");
+
+    let _ = c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const MOVED: &str = r#"fun consume(v: Vec<i32>): usize = v.len()
+
+fun main() {
+    val nums = vec[1, 2, 3]
+    val n = consume(nums)
+    println("$n ${nums.len()}")
+}
+"#;
+
+/// rustc errors arrive with Oxie explanations, related locations and quick fixes.
+#[test]
+fn borrow_errors_have_quick_fixes() {
+    let dir = std::env::temp_dir().join(format!("oxie-lsp-fix-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file: PathBuf = dir.join("moved.oxi");
+    std::fs::write(&file, MOVED).unwrap();
+    let uri = format!("file://{}", std::fs::canonicalize(&file).unwrap().display());
+
+    let mut c = Client::start_with(false);
+    let init = c.request("initialize", json!({"rootUri": format!("file://{}", dir.display()), "capabilities": {}}));
+    assert!(init["capabilities"]["codeActionProvider"].is_object());
+    c.notify("initialized", json!({}));
+    c.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "oxie", "version": 1, "text": MOVED}}));
+    let diag = loop {
+        let diags = c.wait_diagnostics(&uri);
+        if let Some(d) = diags.as_array().unwrap().iter().find(|d| d["source"] == "rustc") {
+            break d.clone();
+        }
+    };
+    assert!(diag["message"].as_str().unwrap().starts_with("`nums` was moved"), "{diag}");
+    assert_eq!(diag["range"]["start"]["line"], 5, "{diag}");
+    assert_eq!(diag["relatedInformation"][0]["location"]["range"]["start"], json!({"line": 4, "character": 20}), "{diag}");
+
+    let actions = c.request("textDocument/codeAction", json!({"textDocument": {"uri": uri}, "range": diag["range"], "context": {"diagnostics": [diag]}}));
+    let titles: Vec<&str> = actions.as_array().unwrap().iter().map(|a| a["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["Pass a copy of `nums`", "Let `consume` borrow it (parameter type `&[i32]`)"], "{actions}");
+    let edit = &actions[0]["edit"]["changes"][&uri][0];
+    assert_eq!(edit["range"]["start"], json!({"line": 4, "character": 24}), "{edit}");
+    assert_eq!(edit["newText"], ".clone()");
 
     let _ = c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);

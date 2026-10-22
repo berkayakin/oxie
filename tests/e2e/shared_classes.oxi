@@ -1,0 +1,82 @@
+// Shared classes: handles to one object, like classes in Kotlin.
+
+import std::collections::HashMap
+
+interface Named {
+    fun label(): String
+}
+
+shared class Account(var owner: String, var balance: i64 = 0) : Named {
+    var history: Vec<i64> = vec[]
+
+    fun deposit(amount: i64) {
+        balance += amount
+        history.push(amount)
+    }
+
+    fun withdraw(amount: i64): i64 throws {
+        if (amount > balance) throw "not enough money"
+        record(-amount)
+        balance
+    }
+
+    fun record(amount: i64) {
+        balance += amount
+        history.push(amount)
+    }
+
+    override fun label(): String = "$owner's account"
+
+    override fun toString() = "$owner: $balance"
+
+    static fun empty(owner: &str): Account = Account(owner.to_string())
+}
+
+shared class Node(var value: i32, var next: Node? = null)
+
+class Bank(var accounts: Vec<Account> = vec[]) {
+    fun open(owner: &str): Account {
+        val a = Account(owner.to_string())
+        accounts.push(a.clone())
+        a
+    }
+    fun total(): i64 = accounts.iter().map { it.balance() }.sum()
+}
+
+fun describe(n: &dyn Named): String = n.label()
+
+fun main() throws {
+    val a = Account("Ada", 100)
+    val b = a                      // the same account
+    b.deposit(50)
+    println("$a / $b / same: ${a == b}")
+    println("balance ${a.balance}, history ${a.history.len()} entries, first ${a.history[0]}")
+    a.balance = 10
+    a.balance += 5
+    a.history.push(a.balance)
+    println("$a ${a.history:?}")
+    println(a.withdraw(3)?)
+    println(describe(&a))
+    val e = Account.empty("Linus")
+    e.owner = "Linus T."
+    println("${e.owner} ${e.label()}")
+
+    var bank = Bank()
+    val acc = bank.open("Grace")
+    acc.deposit(42)
+    println("bank total ${bank.total()}")
+
+    val first = Node(1)
+    val second = Node(2)
+    first.next = second.clone()
+    second.value = 20
+    println("first.next = ${first.next.map { it.value() }:?}")
+
+    var counts = HashMap<Account, i32>()
+    counts.insert(a.clone(), 1)
+    println("by identity: ${counts.contains_key(&b)} ${counts.contains_key(&e)}")
+    when (val r = a.withdraw(1000)) {
+        Ok(v) -> println("ok $v")
+        Err(err) -> println("error: $err")
+    }
+}

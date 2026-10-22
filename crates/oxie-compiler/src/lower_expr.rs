@@ -34,6 +34,23 @@ fn is_literal(e: &Expr) -> bool {
         || matches!(&e.kind, ExprKind::Unary(UnOp::Neg, x) if is_literal(x))
 }
 
+/// Methods whose closure receives a reference to each element (`filter` on an iterator even
+/// gets `&&T`). Comparisons and arithmetic with literals in these lambdas read the value.
+const REF_PREDICATES: &[&str] = &[
+    "filter", "filter_not", "find", "find_last", "position", "index_of_first", "any", "all", "none", "count", "take_while",
+    "skip_while", "retain", "partition", "is_some_and",
+];
+
+/// A number, `char` or `bool` literal (possibly negated).
+fn is_scalar_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Char(_) | ExprKind::Bool(_) => true,
+        ExprKind::Unary(UnOp::Neg, x) => matches!(x.kind, ExprKind::Int(_) | ExprKind::Float(_)),
+        ExprKind::Paren(x) => is_scalar_literal(x),
+        _ => false,
+    }
+}
+
 fn is_string_lit(e: &Expr) -> bool {
     matches!(e.kind, ExprKind::Str(_) | ExprKind::Template(_))
 }
@@ -151,6 +168,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 Some(t) => self.coerce(e, t, TyPos::Local),
+                None if self.is_shared_place(e) => self.shared_copy(e),
                 None => self.expr(e, P_LOWEST),
             }
         }
@@ -159,8 +177,25 @@ impl<'a> Lowerer<'a> {
             self.block_stmt(b);
         }
         self.e.w(";");
-        let known = ty.cloned().or_else(|| init.and_then(|e| self.infer_type(e)));
+        let known = ty.cloned().or_else(|| init.and_then(|e| self.infer_type(e))).or_else(|| init.and_then(|e| self.generic_ctor_type(e)));
         self.bind_pat(pat, known);
+    }
+
+    /// `Box(5)` for a generic class `Box<T>`: `Box<_>`, so its methods are known on the variable.
+    fn generic_ctor_type(&self, e: &Expr) -> Option<Type> {
+        let ExprKind::Call { callee, .. } = &e.kind else { return None };
+        let n = callee.ident()?;
+        if self.is_local(n) {
+            return None;
+        }
+        let c = self.k.class(n).filter(|c| c.has_generics)?;
+        let count = c.type_params;
+        if count == 0 {
+            return None;
+        }
+        let mut seg = PathSeg::plain(n);
+        seg.generics = Some(vec![GenericArg::Type(Type::Infer); count]);
+        Some(Type::Path { global: false, segs: vec![seg], span: Span::default() })
     }
 
     /// Emits an expression in statement position. Returns true if it is block-like (no `;` needed).
@@ -281,7 +316,7 @@ impl<'a> Lowerer<'a> {
     fn tail(&mut self, e: &Expr, t: &Target) {
         // `return x` as the last statement is just the value
         if let ExprKind::Return(Some(v)) = &e.kind {
-            if self.fns.last().is_some_and(|f| !f.is_lambda) && self.fns.last().is_some_and(|f| f.tries.is_empty()) && !v.diverges() {
+            if t.fn_result && self.fns.last().is_some_and(|f| !f.is_lambda) && self.fns.last().is_some_and(|f| f.tries.is_empty()) && !v.diverges() {
                 self.tail(v, t);
                 return;
             }
@@ -328,7 +363,23 @@ impl<'a> Lowerer<'a> {
             self.tail(e, &Target::ty(ty));
             return;
         }
+        if !matches!(ty, Type::Ref { .. }) && self.is_shared_place(e) {
+            match ty {
+                Type::Option(_) => {
+                    self.e.w("Some(");
+                    self.shared_copy(e);
+                    self.e.w(")");
+                }
+                _ => self.shared_copy(e),
+            }
+            return;
+        }
         match ty {
+            Type::Ref { mutable, .. } if pos == TyPos::Param && self.auto_borrow(e, *mutable) => {
+                self.e.mark(e.span);
+                self.e.w(if *mutable { "&mut " } else { "&" });
+                self.expr(e, P_UNARY);
+            }
             Type::Option(inner) => match &e.kind {
                 ExprKind::Null => self.e.w("None"),
                 _ if self.is_value_like(e) => {
@@ -407,6 +458,35 @@ impl<'a> Lowerer<'a> {
                 self.e.w(")");
             }
             _ => self.expr(e, P_LOWEST),
+        }
+    }
+
+    /// Should an argument for a `&T` / `&mut T` parameter be borrowed automatically?
+    /// Values are; references (`&x`, reference-typed variables, `self`) and string literals
+    /// are passed as they are.
+    fn auto_borrow(&self, e: &Expr, mutable: bool) -> bool {
+        match &e.kind {
+            ExprKind::Unary(UnOp::Ref | UnOp::RefMut, _) | ExprKind::SelfValue | ExprKind::Null | ExprKind::Lambda { .. } => false,
+            ExprKind::Str(_) | ExprKind::RawStr(_) => false,
+            ExprKind::Paren(x) => self.auto_borrow(x, mutable),
+            _ if e.ident().is_some() => {
+                let n = e.ident().unwrap();
+                if self.is_untyped_lambda_param(n) {
+                    return false;
+                }
+                match self.local(n) {
+                    Some(Some(t)) => !matches!(t, Type::Ref { .. } | Type::Ptr { .. }) && t.last_name() != Some("str"),
+                    // unknown type: it may already be a `&mut` (`map.get_mut(k).unwrap()`)
+                    Some(None) => !mutable,
+                    // a field of this class, or a constant
+                    None => self.class.as_ref().is_some_and(|c| c.fields.get(n).is_some_and(|t| !matches!(t, Type::Ref { .. }))) || (!mutable && is_const_like(n)),
+                }
+            }
+            _ if mutable => self.is_place(e),
+            ExprKind::Field { .. } | ExprKind::Index(..) => true,
+            ExprKind::Call { .. } | ExprKind::StructLit { .. } | ExprKind::VecLit(_) | ExprKind::Array(_) | ExprKind::Template(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Tuple(_) => true,
+            ExprKind::MethodCall { name, .. } => matches!(name.as_str(), "clone" | "to_string" | "to_owned" | "to_vec" | "collect" | "format"),
+            _ => false,
         }
     }
 
@@ -562,8 +642,14 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn expr_inner(&mut self, e: &Expr) {
+    pub(crate) fn expr_inner(&mut self, e: &Expr) {
         use ExprKind::*;
+        // fields of shared-class handles
+        match &e.kind {
+            Field { safe: false, .. } | Index(..) | MethodCall { safe: false, .. } if self.shared_access(e) => return,
+            Assign(op, target, value) if self.shared_assign(*op, target, value) => return,
+            _ => {}
+        }
         match &e.kind {
             Int(s) | Float(s) | Char(s) | RawStr(s) => self.e.w(s),
             Bool(b) => self.e.w(if *b { "true" } else { "false" }),
@@ -575,6 +661,19 @@ impl<'a> Lowerer<'a> {
             }
             Null => self.e.w("None"),
             Path { segs, generics, global } => self.path_expr(segs, generics.as_ref(), *global),
+            // `Vec::<i32>::new` (parsed as `<Vec<i32>>::new`)
+            QualifiedPath(Type::Qualified { ty, trait_: None, rest }) if matches!(**ty, Type::Path { .. }) => {
+                let turbofish = |s: String| match s.find('<') {
+                    Some(i) => format!("{}::{}", &s[..i], &s[i..]),
+                    None => s,
+                };
+                let mut s = turbofish(self.ty(ty, TyPos::Plain));
+                for seg in rest {
+                    s.push_str("::");
+                    s.push_str(&turbofish(self.seg(seg, TyPos::Generic)));
+                }
+                self.e.w(&s);
+            }
             QualifiedPath(t) => {
                 let s = self.ty(t, TyPos::Plain);
                 self.e.w(&s);
@@ -603,15 +702,22 @@ impl<'a> Lowerer<'a> {
                 let cmp = p == 5;
                 let lp = if cmp { p + 1 } else { p };
                 let lcast = matches!(l.kind, ExprKind::Cast(..)) && matches!(op, BinOp::Lt | BinOp::Shl);
+                let by_value = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem);
                 if lcast {
                     self.e.w("(");
                     self.expr(l, P_LOWEST);
                     self.e.w(")");
+                } else if by_value && is_scalar_literal(r) && self.is_ref_lambda_param(l) {
+                    self.read_value(l);
                 } else {
                     self.expr(l, lp);
                 }
                 self.e.w(&format!(" {} ", op.as_str()));
-                self.expr(r, p + 1);
+                if by_value && is_scalar_literal(l) && self.is_ref_lambda_param(r) {
+                    self.read_value(r);
+                } else {
+                    self.expr(r, p + 1);
+                }
             }
             Assign(op, target, value) => {
                 let target_ty = self.assign_target_type(target);
@@ -627,6 +733,7 @@ impl<'a> Lowerer<'a> {
                         self.e.w("&");
                         self.expr(value, P_UNARY);
                     }
+                    (None, None) if self.is_shared_place(value) => self.shared_copy(value),
                     _ => self.expr(value, P_LOWEST),
                 }
             }
@@ -998,7 +1105,11 @@ impl<'a> Lowerer<'a> {
             if i > 0 {
                 self.e.w(", ");
             }
-            self.expr(x, P_LOWEST);
+            if self.is_shared_place(x) {
+                self.shared_copy(x);
+            } else {
+                self.expr(x, P_LOWEST);
+            }
         }
     }
 
@@ -1317,6 +1428,17 @@ impl<'a> Lowerer<'a> {
     }
 
     fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) {
+        // `(self.on_click)(x)` calls the function stored in a field; without the parentheses
+        // Rust would look for a method
+        if let ExprKind::Paren(inner) = &callee.kind {
+            if matches!(inner.kind, ExprKind::Field { .. }) {
+                self.e.w("(");
+                self.expr(inner, P_LOWEST);
+                self.e.w(")");
+                self.arg_list(args, None, TyPos::Param, span);
+                return;
+            }
+        }
         if let ExprKind::Path { segs, generics, global: false } = &callee.kind {
             if segs.len() == 1 {
                 let name = segs[0].clone();
@@ -1568,7 +1690,11 @@ impl<'a> Lowerer<'a> {
                     if let Some(n) = &a.name {
                         self.error(a.value.span, format!("named argument `{}` can only be used with functions declared in Oxie", n));
                     }
-                    self.expr(&a.value, P_LOWEST);
+                    if self.is_shared_place(&a.value) {
+                        self.shared_copy(&a.value);
+                    } else {
+                        self.expr(&a.value, P_LOWEST);
+                    }
                 }
             }
         }
@@ -1871,6 +1997,13 @@ impl<'a> Lowerer<'a> {
             let gt = self.generic_args_text(g);
             self.e.w(&format!("::{}", gt));
         }
+        if REF_PREDICATES.contains(&name) && args.len() == 1 && matches!(args[0].value.kind, ExprKind::Lambda { .. }) {
+            self.e.w("(");
+            self.next_lambda_refs = true;
+            self.lambda(&args[0].value, None, None);
+            self.e.w(")");
+            return;
+        }
         self.arg_list(&args, None, TyPos::Param, span);
     }
 
@@ -1882,6 +2015,8 @@ impl<'a> Lowerer<'a> {
             "sort_by_key", "sort_unstable_by_key", "max_by_key", "min_by_key", "flat_map", "filter_map", "take_while", "skip_while",
             "map_while", "find_map", "partition", "is_some_and", "is_ok_and", "is_err_and", "map_or", "or_insert_with_key", "group_by",
             "dedup_by_key", "chunk_by", "split", "rsplit", "splitn", "matches", "trim_matches", "trim_start_matches", "trim_end_matches",
+            "filter_not", "find_last", "index_of_first", "none", "count", "sum_of", "max_of", "min_of", "sorted_by", "sorted_by_descending",
+            "distinct_by", "associate_by",
         ];
         let result_like = matches!(name, "unwrap_or_else" | "or_else" | "map_or_else") && self.is_result_expr(recv);
         if !ONE_ARG.contains(&name) && !result_like {
@@ -2478,6 +2613,10 @@ impl<'a> Lowerer<'a> {
                 for arm in arms {
                     self.e.nl();
                     self.e.mark(arm.span);
+                    for a in &arm.attrs {
+                        self.e.w(&format!("#[{}]", a));
+                        self.e.nl();
+                    }
                     self.push_scope();
                     let has_in = arm.conds.iter().any(|c| matches!(c, WhenCond::In { .. }));
                     if has_in {
@@ -2683,7 +2822,7 @@ impl<'a> Lowerer<'a> {
             if let Some(f) = l.fns.last_mut() {
                 f.tries.push(label.clone());
             }
-            let t = Target { ty: None, wrap: Some(wrap.clone()) };
+            let t = Target { ty: None, wrap: Some(wrap.clone()), fn_result: false };
             if value {
                 l.block_value(body, &t);
             } else {
@@ -2745,24 +2884,44 @@ impl<'a> Lowerer<'a> {
 
     // ------------------------------------------------------------------ lambdas & literals
 
+    /// An untyped lambda parameter, which may be a reference to the value (`filter { it > 2 }`).
+    fn is_ref_lambda_param(&self, e: &Expr) -> bool {
+        e.ident().is_some_and(|n| self.is_untyped_lambda_param(n))
+    }
+
+    /// Reads a scalar through any number of references: `crate::__oxie::val(it)`.
+    fn read_value(&mut self, e: &Expr) {
+        self.e.mark(e.span);
+        self.e.w("crate::__oxie::val(");
+        self.expr(e, P_LOWEST);
+        self.e.w(")");
+    }
+
     pub(crate) fn lambda(&mut self, e: &Expr, param_tys: Option<&[Type]>, ret_ty: Option<&Type>) {
-        let ExprKind::Lambda { params, ret, body, is_move, is_async, .. } = &e.kind else {
+        let ExprKind::Lambda { params, ret, body, is_move, is_async, implicit_it: braces, .. } = &e.kind else {
             self.expr(e, P_LOWEST);
             return;
         };
-        let implicit_it = params.is_empty() && visit::uses_it(body);
+        let implicit_it = *braces && params.is_empty() && visit::uses_it(body);
         if *is_async {
             self.e.w("async ");
         }
         if *is_move {
             self.e.w("move ");
         }
+        // predicates of `filter`, `find`, ... receive references to the elements
+        let ref_params = std::mem::take(&mut self.next_lambda_refs);
         self.push_scope();
+        let depth = self.scopes.len() - 1;
         let mut ps = Vec::new();
         if implicit_it {
             let t = param_tys.and_then(|p| p.first()).map(|t| format!(": {}", self.ty(t, TyPos::Local))).unwrap_or_default();
             ps.push(format!("it{}", t));
-            self.bind_name("it", param_tys.and_then(|p| p.first()).cloned());
+            let ty = param_tys.and_then(|p| p.first()).cloned();
+            if ty.is_none() && ref_params {
+                self.lambda_params.push((depth, "it".into()));
+            }
+            self.bind_name("it", ty);
         }
         for (i, p) in params.iter().enumerate() {
             let pt = self.pat(&p.pat);
@@ -2772,7 +2931,12 @@ impl<'a> Lowerer<'a> {
                     let tt = self.ty(t, TyPos::Local);
                     ps.push(format!("{}: {}", pt, tt));
                 }
-                None => ps.push(pt),
+                None => {
+                    ps.push(pt);
+                    if let (true, Pat::Ident { name, sub: None, .. }) = (ref_params, &p.pat) {
+                        self.lambda_params.push((depth, name.clone()));
+                    }
+                }
             }
             self.bind_pat(&p.pat, ty);
         }
@@ -2781,7 +2945,7 @@ impl<'a> Lowerer<'a> {
         let explicit_ret = matches!(&e.kind, ExprKind::Lambda { ret: Some(_), .. });
         self.fns.push(FnCtx { throws: false, ret: ret.clone(), is_lambda: true, tries: Vec::new() });
         let saved_loops = std::mem::take(&mut self.loops);
-        let target = Target { ty: ret.clone(), wrap: None };
+        let target = Target { ty: ret.clone(), wrap: None, fn_result: false };
         if explicit_ret {
             let rt = self.ty(ret.as_ref().unwrap(), TyPos::Ret);
             self.e.w(&format!(" -> {} ", rt));
@@ -2808,6 +2972,7 @@ impl<'a> Lowerer<'a> {
         }
         self.loops = saved_loops;
         self.fns.pop();
+        self.lambda_params.retain(|(d, _)| *d != depth);
         self.pop_scope();
     }
 

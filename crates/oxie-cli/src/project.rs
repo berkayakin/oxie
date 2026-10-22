@@ -177,10 +177,14 @@ pub fn script_project(file: &Path) -> std::io::Result<Project> {
     let src = std::fs::read_to_string(&abs)?;
     let stem = abs.file_stem().unwrap().to_string_lossy().replace(|c: char| !c.is_alphanumeric(), "_");
     let stem = if stem.chars().next().is_none_or(|c| c.is_ascii_digit()) { format!("script_{}", stem) } else { stem };
-    let dir = cache_dir().join("scripts").join(format!("{}-{:x}", stem, hash(&abs.display().to_string())));
+    let h = hash(&abs.display().to_string());
+    let dir = cache_dir().join("scripts").join(format!("{}-{:x}", stem, h));
     std::fs::create_dir_all(dir.join("src"))?;
     let deps = script_deps(&src).join("\n");
-    let manifest = manifest_text(&stem, &if deps.is_empty() { String::new() } else { format!("{}\n", deps) });
+    // scripts share one target directory, so two `main.oxi` in different folders need
+    // different package (and binary) names
+    let package = format!("{}_{:08x}", stem, h as u32);
+    let manifest = manifest_text(&package, &if deps.is_empty() { String::new() } else { format!("{}\n", deps) });
     let manifest = manifest.replace("build = \"build.rs\"", "build = \"build.rs\"\n\n[workspace]");
     write_if_changed(&dir.join("Cargo.toml"), &manifest)?;
     let build = format!(
@@ -191,7 +195,7 @@ pub fn script_project(file: &Path) -> std::io::Result<Project> {
     // crate attributes written in the script (`#![...]`) go at the top of the generated main.rs
     let crate_attrs: String = src.lines().filter(|l| l.trim_start().starts_with("#![")).map(|l| format!("{}\n", l.trim())).collect();
     write_if_changed(&dir.join("src/main.rs"), &format!("{}{}", crate_attrs, root_stub("main")))?;
-    Ok(Project { root: dir, manifest, name: stem })
+    Ok(Project { root: dir, manifest, name: package })
 }
 
 fn write_if_changed(p: &Path, text: &str) -> std::io::Result<()> {

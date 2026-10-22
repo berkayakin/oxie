@@ -76,6 +76,12 @@ pub fn path_to_uri(p: &Path) -> String {
     out
 }
 
+/// An LSP range from zero-based lines and character columns.
+fn char_range(text: &str, line: u32, col: u32, end_line: u32, end_col: u32) -> Value {
+    let utf16 = |l: u32, c: u32| -> usize { text.lines().nth(l as usize).unwrap_or("").chars().take(c as usize).map(|ch| ch.len_utf16()).sum() };
+    json!({"start": {"line": line, "character": utf16(line, col)}, "end": {"line": end_line, "character": utf16(end_line, end_col)}})
+}
+
 fn range(text: &str, idx: &LineIndex, start: usize, end: usize) -> Value {
     let (sl, sc) = idx.line_col_utf16(text, start);
     let (el, ec) = idx.line_col_utf16(text, end.max(start));
@@ -264,15 +270,38 @@ impl Server {
                 for n in &d.notes {
                     message.push_str(&format!("\n{}", n));
                 }
+                if let Some(m) = &d.rust_message {
+                    message.push_str(&format!("\nrustc: {}", m));
+                }
                 let end_line_text = text.lines().nth(d.end_line as usize).unwrap_or("");
                 let end_col: usize = end_line_text.chars().take(d.end_col as usize).map(|c| c.len_utf16()).sum();
-                let v = json!({
+                let uri = path_to_uri(&d.file);
+                let related: Vec<Value> = d
+                    .secondary
+                    .iter()
+                    .map(|s| json!({"location": {"uri": uri, "range": char_range(&text, s.line, s.col, s.line, s.end_col)}, "message": s.text}))
+                    .collect();
+                let fixes: Vec<Value> = d
+                    .fixes
+                    .iter()
+                    .map(|f| {
+                        let edits: Vec<Value> = f.edits.iter().map(|e| json!({"range": char_range(&text, e.line, e.col, e.end_line, e.end_col), "newText": e.text})).collect();
+                        json!({"title": f.title, "edits": edits})
+                    })
+                    .collect();
+                let mut v = json!({
                     "range": {"start": {"line": d.line, "character": to_utf16(d.col)}, "end": {"line": d.end_line, "character": end_col}},
                     "severity": match d.level.as_str() { "error" => 1, "warning" => 2, _ => 3 },
                     "source": "rustc",
                     "code": d.code,
                     "message": message,
                 });
+                if !related.is_empty() {
+                    v["relatedInformation"] = json!(related);
+                }
+                if !fixes.is_empty() {
+                    v["data"] = json!({"fixes": fixes});
+                }
                 by_file.entry(canonical(&d.file)).or_default().push(v);
             }
             let mut touched: HashSet<PathBuf> = files.iter().cloned().collect();
@@ -740,7 +769,7 @@ fn handle(server: &mut Server, method: &str, params: &Value) -> Result<Value, St
         "completionItem/resolve" => Ok(params.clone()),
         "textDocument/signatureHelp" => signature_help(server, params),
         "textDocument/inlayHint" => inlay_hints(server, params),
-        "textDocument/codeAction" => Ok(json!([])),
+        "textDocument/codeAction" => Ok(code_actions(server, params)),
         "workspace/executeCommand" => {
             let cmd = params["command"].as_str().unwrap_or("");
             if cmd == "oxie.showRust" {
@@ -753,6 +782,53 @@ fn handle(server: &mut Server, method: &str, params: &Value) -> Result<Value, St
         }
         "shutdown" => Ok(Value::Null),
         _ => Err(format!("unsupported method {}", method)),
+    }
+}
+
+/// Quick fixes for the rustc diagnostics in the requested range. Fixes travel in each
+/// diagnostic's `data`; clients that drop `data` get them from the last published diagnostics.
+fn code_actions(server: &Server, params: &Value) -> Value {
+    let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+    let path = canonical(&uri_to_path(uri));
+    let mut diags: Vec<Value> = params["context"]["diagnostics"].as_array().cloned().unwrap_or_default();
+    let published = server.cargo_diags.lock().unwrap().get(&path).cloned().unwrap_or_default();
+    for d in diags.iter_mut() {
+        if d.get("data").is_none() {
+            if let Some(p) = published.iter().find(|p| p["range"] == d["range"] && p["message"] == d["message"]) {
+                d["data"] = p["data"].clone();
+            }
+        }
+    }
+    if diags.is_empty() {
+        // no diagnostics sent: offer fixes for published ones touching the requested lines
+        let (sl, el) = (params["range"]["start"]["line"].as_u64().unwrap_or(0), params["range"]["end"]["line"].as_u64().unwrap_or(0));
+        diags = published.into_iter().filter(|p| p["range"]["start"]["line"].as_u64().is_some_and(|l| l >= sl && l <= el)).collect();
+    }
+    let mut actions = Vec::new();
+    for d in &diags {
+        let Some(fixes) = d["data"]["fixes"].as_array() else { continue };
+        for (i, f) in fixes.iter().enumerate() {
+            let mut diag = d.clone();
+            if let Some(o) = diag.as_object_mut() {
+                o.remove("data");
+            }
+            actions.push(json!({
+                "title": f["title"].as_str().map(capitalize).unwrap_or_default(),
+                "kind": "quickfix",
+                "diagnostics": [diag],
+                "isPreferred": i == 0,
+                "edit": {"changes": {uri: f["edits"].clone()}},
+            }));
+        }
+    }
+    json!(actions)
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
     }
 }
 
@@ -1167,6 +1243,7 @@ pub fn run() {
                         "completionProvider": {"triggerCharacters": [".", ":"], "resolveProvider": false},
                         "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                         "inlayHintProvider": true,
+                        "codeActionProvider": {"codeActionKinds": ["quickfix"]},
                         "executeCommandProvider": {"commands": ["oxie.showRust"]},
                     },
                     "serverInfo": {"name": "oxie", "version": env!("CARGO_PKG_VERSION")},

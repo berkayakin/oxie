@@ -71,6 +71,27 @@ fun short(x: i32) = x * 2
   constructors declared in Oxie; defaults are filled in at the call site.
 * **Generics and bounds** are Rust's: `<T: Display + Clone>`, `where T: Into<String>`,
   `<'a>`, `<const N: usize>`. Kotlin's `fun <T> name()` order is accepted too.
+* **Inferred bounds**: bounds a function body needs are added to the generated signature
+  (methods of generic classes get them as a `where` clause on the method):
+
+  | use of a `T` value (or an element of `&[T]`, `Vec<T>`) | bound added |
+  |---|---|
+  | `"$x"`, `println(x)`, `x.to_string()` | `Display` |
+  | `"${x:?}"` | `Debug` |
+  | `a < b`, `a.partial_cmp(b)` / `a == b`, `x in xs` | `PartialOrd` / `PartialEq` |
+  | `a.cmp(b)`, `a.max(b)` | `Ord` |
+  | `a + b`, `a * b`, ... with both `T` | `Add<Output = T> + Copy`, ... |
+  | `a += b` | `AddAssign`, ... |
+  | `x.clone()` | `Clone` |
+  | a key of a `HashSet`/`HashMap` variable | `Eq + Hash` |
+
+  Bounds already written (or implied, like `Ord` for `PartialOrd`) are not repeated.
+  Interface methods keep the interface's signature.
+* **Automatic borrowing**: an argument for a `&T` or `&mut T` parameter of a function or method
+  declared in Oxie is borrowed: `total(v)` → `total(&v)`, `add_one(v)` → `add_one(&mut v)`.
+  Arguments that already are references (`&v`, reference-typed variables, `self`, string
+  literals) are passed as they are. Passing a field to a `&mut` parameter makes the method
+  `&mut self`.
 * **Modifiers**: `async fun`, `unsafe fun`, `const fun`, `extern "C" fun`.
 * **Automatic lifetimes**: when a function returns a reference and Rust cannot infer which
   parameter it borrows from, Oxie ties the result to all reference parameters
@@ -140,10 +161,34 @@ class Name<T>(val a: A, var b: B = default, private c: C) : Interface, Hash {
   structs `struct Marker` are supported. A type without fields is also its own value, so
   `Marker.describe()` calls a method on it (static functions are still `Marker.create()`).
 * `union Bits { i: u32, f: f32 }` is a Rust union: built with `Bits { f: 1.0 }`, read in `unsafe`.
+* `shared class` — see [Shared classes](#shared-classes).
 * `object Name { ... }` is a namespace (a Rust module) of constants and functions:
   `Name.function()`.
 * Classes, enums and interfaces declared inside a class body are placed next to the class;
   refer to them as `Inner` or `Outer.Inner`.
+
+### Shared classes
+
+```oxie
+shared class Name(var a: A) : Interface { ... }   // Rc<RefCell<..>> handle
+@sync shared class Name(var a: A) { ... }         // Arc<Mutex<..>>, usable across threads
+```
+
+* The class is generated as `NameData` (the struct, constructor and methods as for a `class`)
+  and `Name`, a handle: `struct Name(Rc<RefCell<NameData>>)`.
+* The handle has the same constructor, one method per instance method that borrows the data
+  for the call (`self.0.borrow_mut().deposit(n)`), a getter `a()` and setter `set_a(v)` per
+  field, and implements the class's Oxie interfaces and `toString` (`Display`) by forwarding.
+* Static methods and `companion object` functions are on the handle.
+* `Clone` copies the handle; `==` and `Hash` use identity (`Rc::ptr_eq`).
+* Using a shared variable or field by value copies the handle (`val b = a` → `a.clone()`), so
+  the original stays usable.
+* From outside the class: `a.f` reads through the getter (a copy of the field), `a.f = v` uses
+  the setter, `a.f += v`, `a.f[i] = v` and mutating calls like `a.f.push(x)` borrow the object
+  mutably for that statement (arguments are evaluated first), and other chains (`a.f.len()`,
+  `a.f[0]`) borrow it for reading.
+* Methods returning references into the object can't be forwarded (the borrow ends with the
+  call); return owned values. Inside its methods, `this` is the data, not a handle.
 
 ## Enums
 
@@ -363,12 +408,17 @@ move { ... }                    // capture by value
 f(x) { trailing lambda }        // last argument outside the parentheses
 ```
 
-* A lambda without `->` has no parameters, or `it` if it uses `it`. When a standard method
-  always passes a value (`map`, `filter`, `map_err`, `unwrap_or_else` on results, ...), an
-  unused parameter is added for you (`map_err { MyError() }`).
+* A brace lambda without `->` has no parameters, or `it` if it uses `it`. Closures with an
+  explicit empty list (`|| it + 1`, `() => it`) take no parameter and use an outer `it`. When a
+  standard method always passes a value (`map`, `filter`, `map_err`, `unwrap_or_else` on
+  results, ...), an unused parameter is added for you (`map_err { MyError() }`).
 * A lambda body is a block; its last expression is the result.
 * A lambda stored in a `val` that assigns to captured variables is declared `mut`
   automatically.
+* In predicates (`filter`, `find`, `position`, `any`, `all`, `count`, `take_while`, `retain`,
+  ...) the parameter is a reference to the element (`&&T` for `iter().filter`). Comparing or
+  computing it with a number, `char` or `bool` literal reads the value through the
+  references: `filter { it > 2 }`, `filter { it % 2 == 0 }`.
 * `run { ... }` is a block expression; `repeat(n) { ... }` loops `n` times with `it`.
 
 ## Collections
@@ -383,6 +433,34 @@ f(x) { trailing lambda }        // last argument outside the parentheses
 | `m[key]`, `v[i]`, `&v[1..3]` | indexing and slicing |
 
 All standard library types and methods are used with their Rust names.
+
+### Collection operations
+
+Lists, arrays and slices (anything that derefs to `[T]`) also have Kotlin-style operations.
+Each one is the iterator chain you would write by hand; the element is passed by reference.
+
+| Oxie | Result | Rust |
+|---|---|---|
+| `xs.map { f(it) }`, `map_indexed { i, x -> }` | `Vec<U>` | `xs.iter().map(f).collect()` |
+| `xs.filter { p(it) }`, `filter_not` | `Vec<T>` (copies kept elements, `T: Clone`) | `xs.iter().filter(p).cloned().collect()` |
+| `xs.filter_map { }`, `flat_map { }` | `Vec<U>` | `filter_map` / `flat_map` + `collect` |
+| `xs.for_each { }`, `for_each_indexed { i, x -> }` | — | `iter().for_each(..)` |
+| `xs.find { }`, `find_last { }` | `T?` (a reference) | `iter().find(..)` |
+| `xs.index_of_first { }` | `usize?` | `iter().position(..)` |
+| `xs.any { }`, `all { }`, `none { }`, `count { }` | `bool` / `usize` | `iter().any(..)`, ... |
+| `xs.sum()`, `sum_of { }` | number | `iter().sum()`, `iter().map(..).sum()` |
+| `xs.max_of { }`, `min_of { }` | `S?` | `iter().map(..).max_by(..)` |
+| `xs.max_by_key { }`, `min_by_key { }` | `T?` (a reference) | works with `f64` keys too |
+| `xs.sorted()`, `sorted_descending()`, `sorted_by { }`, `sorted_by_descending { }` | `Vec<T>` | `to_vec()` + `sort` |
+| `xs.reversed()`, `distinct()`, `distinct_by { }`, `chunked(n)` | `Vec<T>` / `Vec<Vec<T>>` | |
+| `xs.group_by { key }` | `HashMap<K, Vec<T>>` | |
+| `xs.associate_by { key }` | `HashMap<K, T>` | |
+| `xs.partition { }` | `(Vec<T>, Vec<T>)` | |
+| `xs.join_to_string(", ")`, `join_with(", ") { it.name }` | `String` | |
+| `xs.is_not_empty()` | `bool` | `!xs.is_empty()` |
+
+Inherent Rust methods win over these (arrays keep Rust's by-value `map`), and Rust's iterator
+methods are always available: `xs.iter().filter { .. }.map { .. }.collect()`.
 
 ## Modules and imports
 
@@ -461,6 +539,6 @@ Reserved: `fun fn val var let if else when match for while do loop return break 
 try catch class interface trait enum struct impl import use const static typealias mod true
 false null this self Self in is as where async move unsafe dyn mut ref extern pub`.
 
-Contextual (usable as names elsewhere): `data`, `error`, `object`, `companion`, `init`, `union`,
-`override`, `operator`, `private`, `internal`, `public`, `test`, `rust`, `throws`, `to`,
+Contextual (usable as names elsewhere): `data`, `error`, `shared`, `object`, `companion`, `init`,
+`union`, `override`, `operator`, `private`, `internal`, `public`, `test`, `rust`, `throws`, `to`,
 `until`, `downTo`, `step`, `await`, `it`.

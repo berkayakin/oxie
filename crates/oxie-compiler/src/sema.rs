@@ -54,6 +54,11 @@ pub struct ClassInfo {
     /// No fields at all: the type name is also its only value (`struct Marker`, `class Dog : Animal`)
     pub is_unit: bool,
     pub has_generics: bool,
+    /// Number of type parameters (lifetimes and consts excluded).
+    pub type_params: usize,
+    /// `shared class`: a handle to `{Name}Data` (`sync`: `Arc<Mutex<..>>` instead of `Rc<RefCell<..>>`).
+    pub is_shared: bool,
+    pub is_sync: bool,
     /// Number of lifetime parameters (`data class Token<'a>`).
     pub lifetimes: usize,
 }
@@ -436,8 +441,11 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                         is_data: t.kind == TypeKind::Data,
                         is_tuple: t.kind == TypeKind::TupleStruct,
                         is_union: t.kind == TypeKind::Union,
-                        is_unit: t.kind != TypeKind::Union && t.fields.is_empty() && t.tuple_fields.is_empty(),
+                        is_unit: t.kind != TypeKind::Union && !t.shared && t.fields.is_empty() && t.tuple_fields.is_empty(),
+                        is_shared: t.shared,
+                        is_sync: t.shared && it.attrs.iter().any(|a| a.name() == "sync"),
                         has_generics: !t.generics.is_empty(),
+                        type_params: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Type { .. })).count(),
                         lifetimes: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count(),
                     };
                     insert_unique(&mut k.classes, &mut k.ambiguous, t.name.clone(), info);
@@ -594,6 +602,21 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             decided.insert((m.owner.clone(), m.fun.name.clone()), Recv::Ref);
         }
     }
+    // `&mut` parameters of crate functions and methods
+    let mut mut_params: HashMap<String, Vec<usize>> = HashMap::new();
+    let is_mut_ref = |t: &Type| matches!(t, Type::Ref { mutable: true, .. });
+    for (name, f) in &k.funs {
+        let idx: Vec<usize> = f.params.iter().enumerate().filter(|(_, p)| is_mut_ref(&p.ty)).map(|(i, _)| i).collect();
+        if !idx.is_empty() {
+            mut_params.insert(name.clone(), idx);
+        }
+    }
+    for m in &methods {
+        let idx: Vec<usize> = m.fun.params.iter().enumerate().filter(|(_, p)| is_mut_ref(&p.ty)).map(|(i, _)| i).collect();
+        if !idx.is_empty() {
+            mut_params.entry(m.fun.name.clone()).or_insert(idx);
+        }
+    }
     // fixpoint
     for _round in 0..8 {
         let mut changed = false;
@@ -601,7 +624,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             let m = &methods[i];
             let fields: HashSet<String> = k.classes.get(&m.owner).map(|c| c.fields.iter().map(|f| f.name.clone()).collect()).unwrap_or_default();
             let recvs: HashMap<String, Recv> = decided.iter().filter(|((o, _), _)| *o == m.owner).map(|((_, n), r)| (n.clone(), *r)).collect();
-            let facts = analyze_fun(m.fun, &fields, &recvs);
+            let facts = analyze_fun_with(m.fun, &fields, &recvs, &mut_params);
             let returns_self = m.fun.ret.as_ref().is_some_and(|t| t.single_name() == Some("Self") || t.single_name() == Some(m.owner.as_str()));
             let recv = if facts.mutates_self {
                 Recv::RefMut
@@ -662,7 +685,13 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
 }
 
 pub fn analyze_fun(f: &FunDecl, fields: &HashSet<String>, methods: &HashMap<String, Recv>) -> BodyFacts {
-    let mut w = Walker { fields, methods, scopes: vec![HashSet::new()], facts: BodyFacts::default() };
+    analyze_fun_with(f, fields, methods, &HashMap::new())
+}
+
+/// Like `analyze_fun`, also knowing which parameters of callable functions are `&mut`
+/// (passing a field there borrows it mutably: `fill(items)` becomes `fill(&mut self.items)`).
+pub fn analyze_fun_with(f: &FunDecl, fields: &HashSet<String>, methods: &HashMap<String, Recv>, mut_params: &HashMap<String, Vec<usize>>) -> BodyFacts {
+    let mut w = Walker { fields, methods, mut_params, scopes: vec![HashSet::new()], facts: BodyFacts::default() };
     for p in &f.params {
         w.bind(&p.pat);
     }
@@ -675,7 +704,8 @@ pub fn analyze_fun(f: &FunDecl, fields: &HashSet<String>, methods: &HashMap<Stri
 }
 
 pub fn analyze_block(b: &Block, fields: &HashSet<String>, methods: &HashMap<String, Recv>) -> BodyFacts {
-    let mut w = Walker { fields, methods, scopes: vec![HashSet::new()], facts: BodyFacts::default() };
+    let none = HashMap::new();
+    let mut w = Walker { fields, methods, mut_params: &none, scopes: vec![HashSet::new()], facts: BodyFacts::default() };
     w.block(b);
     w.facts
 }
@@ -683,6 +713,8 @@ pub fn analyze_block(b: &Block, fields: &HashSet<String>, methods: &HashMap<Stri
 struct Walker<'a> {
     fields: &'a HashSet<String>,
     methods: &'a HashMap<String, Recv>,
+    /// Function and method name -> indices of its `&mut` parameters.
+    mut_params: &'a HashMap<String, Vec<usize>>,
     scopes: Vec<HashSet<String>>,
     facts: BodyFacts,
 }
@@ -704,6 +736,16 @@ impl<'a> Walker<'a> {
     }
     fn pop(&mut self) {
         self.scopes.pop();
+    }
+
+    /// A field passed to a `&mut` parameter is borrowed mutably.
+    fn mut_args(&mut self, fun: &str, args: &[Arg]) {
+        let Some(idx) = self.mut_params.get(fun) else { return };
+        for (i, a) in args.iter().enumerate() {
+            if a.name.is_none() && idx.contains(&i) && self.rooted_in_self(&a.value) {
+                self.facts.mutates_self = true;
+            }
+        }
     }
 
     /// Is the root of this place expression `self` or an implicit field?
@@ -814,6 +856,9 @@ impl<'a> Walker<'a> {
                         }
                     }
                 }
+                if let Some(n) = callee.ident().filter(|n| !self.is_local(n)) {
+                    self.mut_args(n, args);
+                }
                 self.expr(callee);
                 for a in args {
                     self.expr(&a.value);
@@ -824,6 +869,7 @@ impl<'a> Walker<'a> {
                     if let Some(Recv::RefMut) = self.methods.get(name) {
                         self.facts.mutates_self = true;
                     }
+                    self.mut_args(name, args);
                 } else if MUTATING_METHODS.contains(&name.as_str()) && self.rooted_in_self(recv) {
                     self.facts.mutates_self = true;
                 }

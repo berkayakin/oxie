@@ -117,7 +117,10 @@ impl<'a> Lexer<'a> {
     fn push(&mut self, tok: Tok, start: usize) {
         if self.pending_newline {
             self.pending_newline = false;
-            let prev_continues = self.tokens.last().map(|t| continues_after(&t.tok)).unwrap_or(true);
+            let n = self.tokens.len();
+            // `import a::*` ends the line: a glob `*` is not a multiplication
+            let glob = n >= 2 && matches!(self.tokens[n - 1].tok, Tok::Punct("*")) && matches!(self.tokens[n - 2].tok, Tok::Punct("::"));
+            let prev_continues = !glob && self.tokens.last().map(|t| continues_after(&t.tok)).unwrap_or(true);
             let prev_is_newline = matches!(self.tokens.last().map(|t| &t.tok), Some(Tok::Newline) | None);
             if !prev_continues && !prev_is_newline && !continues_before(&tok) {
                 let at = self.base + start;

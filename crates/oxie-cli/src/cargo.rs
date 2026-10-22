@@ -31,11 +31,60 @@ pub struct MappedDiag {
     pub notes: Vec<String>,
     /// Whether the location came from a .oxi source map.
     pub from_oxie: bool,
+    /// Other labeled spans in the same file ("value moved here", ...).
+    pub secondary: Vec<Label>,
+    /// rustc's suggestions whose spans map exactly onto the .oxi source.
+    pub suggestions: Vec<Suggestion>,
+    /// rustc suggestions as plain text (for `use` paths and the like).
+    pub raw_suggestions: Vec<String>,
+    /// rustc's own message when the explanation replaced it.
+    pub rust_message: Option<String>,
+    /// The generated Rust text under the primary span (single-line spans only).
+    pub gen_text: Option<String>,
+    pub fixes: Vec<Fix>,
+}
+
+/// A labeled span on one line (zero-based, character columns).
+#[derive(Clone, Debug)]
+pub struct Label {
+    pub line: u32,
+    pub col: u32,
+    pub end_col: u32,
+    pub text: String,
+    /// The span mapped exactly, or an explanation placed it; others are dropped.
+    pub exact: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Suggestion {
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+    pub replacement: String,
+}
+
+/// A text replacement in a source file (zero-based lines, character columns).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Edit {
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+    pub text: String,
+}
+
+/// A quick fix: edits to the diagnostic's file.
+#[derive(Clone, Debug)]
+pub struct Fix {
+    pub title: String,
+    pub edits: Vec<Edit>,
 }
 
 #[derive(Default)]
 pub struct Mapper {
     maps: HashMap<PathBuf, Option<SourceMap>>,
+    texts: HashMap<PathBuf, String>,
 }
 
 impl Mapper {
@@ -77,6 +126,58 @@ impl Mapper {
         Some((path, ls, cs, le, ce, false))
     }
 
+    fn text_of(&mut self, file: &Path) -> &str {
+        self.texts.entry(file.to_path_buf()).or_insert_with(|| std::fs::read_to_string(file).unwrap_or_default())
+    }
+
+    /// Maps a zero-based generated position to the exact source position, or None when the
+    /// generated text between the nearest source-map mark and the position differs from the
+    /// source text (so the position has no exact counterpart).
+    fn map_exact(&mut self, gen: &Path, line: u32, col: u32) -> Option<(PathBuf, u32, u32)> {
+        let map = self.map_for(gen)?;
+        let source = map.source.clone();
+        let &(gl, gc, sl, sc) = map.entries.iter().take_while(|e| (e.0, e.1) <= (line, col)).last()?;
+        if gl != line {
+            return None;
+        }
+        let gen_line: String = self.text_of(gen).lines().nth(line as usize)?.to_string();
+        let piece: String = gen_line.chars().skip(gc as usize).take((col - gc) as usize).collect();
+        let src_line: String = self.text_of(&source).lines().nth(sl as usize)?.to_string();
+        let src_piece: String = src_line.chars().skip(sc as usize).take(piece.chars().count()).collect();
+        if piece != src_piece {
+            return None;
+        }
+        Some((source, sl, sc + piece.chars().count() as u32))
+    }
+
+    fn gen_path(root: &Path, span: &Value) -> Option<PathBuf> {
+        let mut path = PathBuf::from(span.get("file_name")?.as_str()?);
+        if path.is_relative() {
+            path = root.join(path);
+        }
+        Some(path)
+    }
+
+    fn span_text(&mut self, root: &Path, span: &Value) -> Option<String> {
+        let path = Self::gen_path(root, span)?;
+        let n = |k: &str| span.get(k).and_then(|v| v.as_u64()).map(|v| v as usize - 1);
+        let (l, c, el, ec) = (n("line_start")?, n("column_start")?, n("line_end")?, n("column_end")?);
+        if l != el {
+            return None;
+        }
+        let line = self.text_of(&path).lines().nth(l)?.to_string();
+        Some(line.chars().skip(c).take(ec.saturating_sub(c)).collect())
+    }
+
+    /// Maps a span exactly (both ends), for applying suggestions.
+    fn map_span_exact(&mut self, root: &Path, span: &Value) -> Option<(PathBuf, u32, u32, u32, u32)> {
+        let path = Self::gen_path(root, span)?;
+        let n = |k: &str| span.get(k).and_then(|v| v.as_u64()).map(|v| v as u32 - 1);
+        let (f, sl, sc) = self.map_exact(&path, n("line_start")?, n("column_start")?)?;
+        let (_, el, ec) = self.map_exact(&path, n("line_end")?, n("column_end")?)?;
+        Some((f, sl, sc, el, ec))
+    }
+
     pub fn map_message(&mut self, root: &Path, msg: &Value) -> Option<MappedDiag> {
         let level = msg.get("level")?.as_str()?.to_string();
         let message = msg.get("message")?.as_str()?.to_string();
@@ -87,7 +188,29 @@ impl Mapper {
         let span = expansion_site(primary);
         let (file, line, col, end_line, end_col, from_oxie) = self.map_span(root, span)?;
         let label = primary.get("label").and_then(|l| l.as_str()).map(|s| s.to_string());
+        let gen_text = self.span_text(root, span);
+        let mut secondary = Vec::new();
+        for s in spans {
+            if std::ptr::eq(s, primary) {
+                continue;
+            }
+            let Some(text) = s.get("label").and_then(|l| l.as_str()).filter(|l| !l.is_empty()) else { continue };
+            let site = expansion_site(s);
+            if let Some((f, l, c, el, ec)) = self.map_span_exact(root, site) {
+                if f == file && el == l {
+                    secondary.push(Label { line: l, col: c, end_col: ec, text: text.to_string(), exact: true });
+                    continue;
+                }
+            }
+            if let Some((f, l, c, el, ec, true)) = self.map_span(root, site) {
+                if f == file {
+                    secondary.push(Label { line: l, col: c, end_col: if el == l { ec } else { c + 1 }, text: text.to_string(), exact: false });
+                }
+            }
+        }
         let mut notes = Vec::new();
+        let mut suggestions = Vec::new();
+        let mut raw_suggestions = Vec::new();
         if let Some(children) = msg.get("children").and_then(|c| c.as_array()) {
             for c in children {
                 let lvl = c.get("level").and_then(|l| l.as_str()).unwrap_or("note");
@@ -96,17 +219,50 @@ impl Mapper {
                     continue;
                 }
                 let mut text = format!("{}: {}", lvl, m);
-                if let Some(sp) = c.get("spans").and_then(|s| s.as_array()).and_then(|s| s.first()) {
+                let child_spans = c.get("spans").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+                if let Some(sp) = child_spans.first() {
                     if let Some(sugg) = sp.get("suggested_replacement").and_then(|s| s.as_str()) {
                         if !sugg.is_empty() && sugg.len() < 80 && !sugg.contains('\n') {
                             text.push_str(&format!(": `{}`", sugg));
                         }
                     }
                 }
+                for sp in &child_spans {
+                    let Some(sugg) = sp.get("suggested_replacement").and_then(|s| s.as_str()) else { continue };
+                    raw_suggestions.push(sugg.to_string());
+                    if let Some((f, l, c, el, ec)) = self.map_span_exact(root, sp) {
+                        if f == file {
+                            suggestions.push(Suggestion { line: l, col: c, end_line: el, end_col: ec, replacement: sugg.to_string() });
+                        }
+                    }
+                }
                 notes.push(text);
             }
         }
-        Some(MappedDiag { level, code, message, file, line, col, end_line, end_col, label, notes, from_oxie })
+        let mut d = MappedDiag {
+            level,
+            code,
+            message,
+            file,
+            line,
+            col,
+            end_line,
+            end_col,
+            label,
+            notes,
+            from_oxie,
+            secondary,
+            suggestions,
+            raw_suggestions,
+            rust_message: None,
+            gen_text,
+            fixes: Vec::new(),
+        };
+        if d.from_oxie {
+            let src = self.text_of(&d.file).to_string();
+            crate::explain::explain(&mut d, &src);
+        }
+        Some(d)
     }
 }
 
@@ -138,25 +294,72 @@ pub fn render(d: &MappedDiag, root: &Path) -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     let shown = d.file.strip_prefix(&cwd).or_else(|_| d.file.strip_prefix(root)).unwrap_or(&d.file).display().to_string();
     let text = std::fs::read_to_string(&d.file).unwrap_or_default();
-    let line_text = text.lines().nth(d.line as usize).unwrap_or("");
-    let num = (d.line + 1).to_string();
-    let pad = " ".repeat(num.len());
-    let width = if d.end_line == d.line { d.end_col.saturating_sub(d.col).max(1) } else { 1 } as usize;
-    let width = width.min(line_text.chars().count().saturating_sub(d.col as usize).max(1));
+    let lines: Vec<&str> = text.lines().collect();
+    let primary_width = if d.end_line == d.line { d.end_col.saturating_sub(d.col).max(1) } else { 1 };
+    // (line, col, width, label, is_primary)
+    let mut labels: Vec<(u32, u32, u32, String, bool)> = vec![(d.line, d.col, primary_width, d.label.clone().unwrap_or_default(), true)];
+    for s in &d.secondary {
+        labels.push((s.line, s.col, s.end_col.saturating_sub(s.col).max(1), s.text.clone(), false));
+    }
+    labels.sort_by_key(|l| (l.0, !l.4, l.1));
+    let num_width = labels.iter().map(|l| (l.0 + 1).to_string().len()).max().unwrap_or(1);
+    let pad = " ".repeat(num_width);
     let code = d.code.as_ref().map(|c| format!("[{}]", c)).unwrap_or_default();
     let mut out = format!("{bold}{lc}{}{}{reset}{bold}: {}{reset}\n", d.level, code, d.message);
     out += &format!("{pad}{blue}-->{reset} {}:{}:{}\n", shown, d.line + 1, d.col + 1);
     out += &format!("{pad} {blue}|{reset}\n");
-    out += &format!("{blue}{num} |{reset} {}\n", line_text);
-    out += &format!("{pad} {blue}|{reset} {}{lc}{}{reset}", " ".repeat(d.col as usize), "^".repeat(width));
-    if let Some(l) = &d.label {
-        out += &format!(" {lc}{}{reset}", l);
+    let mut last_line: Option<u32> = None;
+    for (line, col, width, label, is_primary) in &labels {
+        let line_text = lines.get(*line as usize).copied().unwrap_or("");
+        if last_line != Some(*line) {
+            if last_line.is_some_and(|l| *line > l + 1) {
+                out += &format!("{blue}{}{reset}\n", ".".repeat(num_width.max(3)));
+            }
+            out += &format!("{blue}{:>num_width$} |{reset} {}\n", line + 1, line_text);
+        }
+        last_line = Some(*line);
+        let width = (*width as usize).min(line_text.chars().count().saturating_sub(*col as usize).max(1));
+        let (mark, color) = if *is_primary { ("^", lc) } else { ("-", blue) };
+        out += &format!("{pad} {blue}|{reset} {}{color}{}{reset}", " ".repeat(*col as usize), mark.repeat(width));
+        if !label.is_empty() {
+            out += &format!(" {color}{}{reset}", label);
+        }
+        out.push('\n');
     }
-    out.push('\n');
     for n in &d.notes {
+        let n = n.replace('\n', &format!("\n{pad}   "));
         out += &format!("{pad} {blue}={reset} {}\n", n);
     }
+    for f in &d.fixes {
+        out += &format!("{pad} {blue}={reset} {bold}fix{reset}: {}", f.title);
+        if let Some(preview) = fix_preview(&lines, f) {
+            out += &format!(": `{}`", preview);
+        }
+        out.push('\n');
+    }
+    if let Some(m) = &d.rust_message {
+        out += &format!("{pad} {blue}={reset} rustc: {}\n", m);
+    }
     out
+}
+
+/// The changed line, when a fix only touches one line.
+fn fix_preview(lines: &[&str], f: &Fix) -> Option<String> {
+    let line = f.edits.first()?.line;
+    if f.edits.iter().any(|e| e.line != line || e.end_line != line || e.text.contains('\n')) {
+        return None;
+    }
+    let mut chars: Vec<char> = lines.get(line as usize)?.chars().collect();
+    let mut edits = f.edits.clone();
+    edits.sort_by_key(|e| std::cmp::Reverse(e.col));
+    for e in edits {
+        let (s, t) = (e.col as usize, (e.end_col as usize).min(chars.len()));
+        if s > t {
+            return None;
+        }
+        chars.splice(s..t, e.text.chars());
+    }
+    Some(chars.into_iter().collect::<String>().trim().to_string())
 }
 
 /// Runs `cargo <args> --message-format=json-diagnostic-rendered-ansi` and prints mapped diagnostics.
