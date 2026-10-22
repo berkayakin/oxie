@@ -7,55 +7,108 @@ Every crate works, programs run exactly as fast as hand-written Rust, and you ne
 unless you want to.
 
 ```oxie
-import std::collections::HashMap
-
-data class User(name: String, age: u32, email: String? = null)
-
-fun oldest(users: &[User]): &User? = users.iter().max_by_key { it.age }
-
-fun parse_user(line: &str): User throws {
-    val (name, age) = line.split_once(',') ?: throw "bad line: $line"
-    User(name.trim(), age.trim().parse()?)
+error enum BankError {
+    Insufficient(needed: u64, available: u64) = "need $needed, have $available"
+    Frozen = "account is frozen"
 }
 
-fun main() throws {
-    var users = listOf(User("Ada", 36), User("Linus", 28, "linus@example.com"))
-    users.push(parse_user("Grace, 45")?)
-    println("oldest: ${oldest(&users)?.name ?: "nobody"}")
+data class Account(owner: String, balance: u64 = 0, frozen: bool = false) {
+    fun deposit(amount: u64) { balance += amount }
 
-    var by_age = HashMap()
-    for (u in &users) by_age.insert(u.age, u.name.clone())
-
-    when (users.len()) {
-        0 -> println("no users")
-        in 1..=10 -> println("${users.len()} users")
-        else -> println("many users")
+    fun withdraw(amount: u64): u64 throws BankError {
+        if (frozen) throw BankError.Frozen
+        if (amount > balance) throw BankError.Insufficient(amount, balance)
+        balance -= amount
+        balance
     }
+
+    override fun toString() = "$owner: $balance"
+}
+
+fun main() {
+    var account = Account("Ada")
+    account.deposit(100)
+
+    when (account.withdraw(250)) {
+        Ok(left) -> println("withdrew, $left left")
+        Err(e) -> println("failed: $e")
+    }
+    println("$account")
 }
 ```
 
-It compiles to the Rust you would write yourself (`oxie emit` shows it):
+The same program in Rust. This is what `oxie emit` generates, tidied the way you would write it by
+hand (shorter `std` paths, no `pub(crate)`):
 
 ```rust
+use std::fmt;
+
+#[derive(Debug)]
+enum BankError {
+    Insufficient { needed: u64, available: u64 },
+    Frozen,
+}
+
+impl fmt::Display for BankError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Insufficient { needed, available } => write!(f, "need {needed}, have {available}"),
+            Self::Frozen => f.write_str("account is frozen"),
+        }
+    }
+}
+
+impl std::error::Error for BankError {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct User {
-    pub(crate) name: String,
-    pub(crate) age: u32,
-    pub(crate) email: Option<String>,
+struct Account {
+    owner: String,
+    balance: u64,
+    frozen: bool,
 }
 
-pub(crate) fn oldest(users: &[User]) -> Option<&User> {
-    users.iter().max_by_key(|it| it.age)
+impl Account {
+    fn new(owner: String, balance: u64, frozen: bool) -> Self {
+        Self { owner, balance, frozen }
+    }
+
+    fn deposit(&mut self, amount: u64) {
+        self.balance += amount;
+    }
+
+    fn withdraw(&mut self, amount: u64) -> Result<u64, BankError> {
+        if self.frozen {
+            return Err(BankError::Frozen);
+        }
+        if amount > self.balance {
+            return Err(BankError::Insufficient { needed: amount, available: self.balance });
+        }
+        self.balance -= amount;
+        Ok(self.balance)
+    }
 }
 
-pub(crate) fn parse_user(line: &str) -> Result<User, AnyError> {
-    let (name, age) = match line.split_once(',') {
-        Some(v) => v,
-        None => return Err(format!("bad line: {line}").into()),
-    };
-    Ok(User::new(name.trim().into(), age.trim().parse()?, None))
+impl fmt::Display for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.owner, self.balance)
+    }
+}
+
+fn main() {
+    let mut account = Account::new(String::from("Ada"), 0, false);
+    account.deposit(100);
+
+    match account.withdraw(250) {
+        Ok(left) => println!("withdrew, {left} left"),
+        Err(e) => println!("failed: {e}"),
+    }
+    println!("{account}");
 }
 ```
+
+Oxie wrote the derives, the constructor, both `Display` impls, the `Error` impl, `&mut self`,
+`let mut`, `Ok(...)`, `String::from` and the default arguments for you. The program runs exactly
+as fast as the Rust version, because it *is* the Rust version.
 
 ## Why
 
