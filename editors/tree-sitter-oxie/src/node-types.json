@@ -157,6 +157,10 @@
           "named": true
         },
         {
+          "type": "rust_attribute",
+          "named": true
+        },
+        {
           "type": "self",
           "named": true
         },
@@ -302,6 +306,10 @@
         },
         {
           "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "rust_attribute",
           "named": true
         },
         {
@@ -491,6 +499,10 @@
         },
         {
           "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "rust_attribute",
           "named": true
         },
         {
@@ -737,6 +749,10 @@
           "named": true
         },
         {
+          "type": "rust_attribute",
+          "named": true
+        },
+        {
           "type": "self",
           "named": true
         },
@@ -915,6 +931,10 @@
         },
         {
           "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "rust_attribute",
           "named": true
         },
         {
@@ -1378,6 +1398,16 @@
             "named": true
           }
         ]
+      },
+      "name": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
       }
     },
     "children": {
@@ -1686,6 +1716,10 @@
           "named": true
         },
         {
+          "type": "rust_attribute",
+          "named": true
+        },
+        {
           "type": "self",
           "named": true
         },
@@ -1829,6 +1863,10 @@
           "named": true
         },
         {
+          "type": "rust_attribute",
+          "named": true
+        },
+        {
           "type": "self",
           "named": true
         },
@@ -1943,6 +1981,21 @@
         },
         {
           "type": "type_parameters",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "rust_attribute",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "bracketed",
           "named": true
         }
       ]
@@ -2068,6 +2121,10 @@
         },
         {
           "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "rust_attribute",
           "named": true
         },
         {
@@ -2826,6 +2883,10 @@
   },
   {
     "type": "u8",
+    "named": false
+  },
+  {
+    "type": "union",
     "named": false
   },
   {

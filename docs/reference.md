@@ -136,7 +136,9 @@ class Name<T>(val a: A, var b: B = default, private c: C) : Interface, Hash {
   body become derives. `override fun toString() = "..."` implements `Display`.
 * `@derive(...)` adds derives; `@no_auto_derive` turns the automatic ones off.
 * Rust-style `struct Point { x: f64, y: f64 }`, tuple structs `struct Meters(f64)` and unit
-  structs `struct Marker` are supported.
+  structs `struct Marker` are supported. A type without fields is also its own value, so
+  `Marker.describe()` calls a method on it (static functions are still `Marker.create()`).
+* `union Bits { i: u32, f: f32 }` is a Rust union: built with `Bits { f: 1.0 }`, read in `unsafe`.
 * `object Name { ... }` is a namespace (a Rust module) of constants and functions:
   `Name.function()`.
 * Classes, enums and interfaces declared inside a class body are placed next to the class;
@@ -170,7 +172,9 @@ interface Named : Display {
     fun name(): String                 // required
     fun greet(): String = "hi ${name()}" // default
     type Id                            // associated type
+    type Item<'a> where Self: 'a       // generic associated type
     const MAX: u32 = 10                // associated constant
+    fun borrow<'a>(&'a self): &'a str  // explicit receiver lifetime
 }
 ```
 
@@ -219,6 +223,8 @@ the right-hand side (`impl Mul<f64> for Vec2` for `operator fun times(k: f64)`).
 * Expressions, including assignments `a = b`, `a += b` (all compound operators).
 * Local `fun`, `class`, `enum`, ... declarations.
 * `return`, `break ['label] [value]`, `continue ['label]`, `throw e`.
+* Attributes on a statement: `@cfg(debug_assertions) println("debug")`,
+  `#[allow(unused_variables)] val x = 1`.
 
 ## Expressions
 
@@ -317,6 +323,8 @@ See [Error handling](errors.md) for the full guide.
 ```kotlin
 if (cond) a else b                  // also `if cond { }` (Rust style)
 if (val x = opt) { } else { }
+if (val x = opt && x > 0 && val y = f(x)) { }   // let chain (any Rust edition)
+while (val x = stack.pop() && x != 0) { }
 when (x) {                          // match
     1, 2 -> "one or two"            // alternatives
     in 3..=9 -> "small"             // range (or any `contains`)
@@ -332,6 +340,8 @@ while (cond) { }
 do { } while (cond)
 loop { }
 'outer: for (...) { break 'outer }
+val v = 'found: { if (c) break 'found 1; 0 }   // labeled block with a value
+val n = const { SIZE * 2 }                      // evaluated at compile time
 ```
 
 * A statement `when` on literals doesn't need `else` (Oxie adds `_ => {}`); a `when` used as a
@@ -383,7 +393,8 @@ All standard library types and methods are used with their Rust names.
 * `mod name { ... }` declares an inline module; `mod name` (without a body) declares a
   hand-written Rust module file next to the source.
 * Paths may use `.` instead of `::` when the left side is a type, module or crate name:
-  `std.mem.swap(a, b)`, `Duration.from_secs(1)`, `Color.Red`.
+  `std.mem.swap(a, b)`, `Duration.from_secs(1)`, `Color.Red`, `math.double(2)` (inline
+  module), `Stack::<i32>.new()`.
 
 ## Visibility
 
@@ -403,7 +414,15 @@ optimizer treat them like private Rust functions; mark library APIs `pub`.
 `@name` and `@name(args)` become `#[name]` / `#[name(args)]`: `@derive(Serialize)`,
 `@serde(rename_all = "camelCase")`, `@inline`, `@cfg(test)`, `@tokio::main`, ... Rust's `#[...]`
 syntax works too. Oxie-specific: `@no_auto_derive` (classes/enums), `@from` (error enum cases).
-Crate-level `#![...]` attributes belong in `src/main.rs`/`src/lib.rs`.
+Attributes also work on statements (see [Statements](#statements)).
+
+`#![...]` at the top of a file:
+
+* in a module file, it applies to that module (`#![allow(dead_code)]`);
+* in the crate root (`main.oxi`/`lib.oxi`), lint attributes (`allow`, `warn`, `deny`, `forbid`,
+  `expect`) apply to the whole crate. Other crate attributes (`#![recursion_limit = "..."]`,
+  `#![no_std]`, ...) work in single-file scripts; in a project, put them in `src/main.rs` /
+  `src/lib.rs`.
 
 ## Tests
 
@@ -431,7 +450,9 @@ Use any runtime: `@tokio::main async fun main()`. A throwing async `main` works 
   `vec[...]`, `format(...)`, `panic(...)`, `todo()`, `dbg(...)`, `matches(...)`, ...).
 * `macro_rules!` definitions at top level.
 * Rust syntax that Oxie shares (`let`, `match` with `=>`, `impl`, `fn`, `|x|` closures,
-  `::<T>` turbofish, `if let`, `while let`, `'label:` loops, `#[attr]`) is accepted directly.
+  `::<T>` turbofish, `if let`, `while let`, let chains, `'label:` loops and blocks, `const { }`,
+  `union`, `extern "C" { }`, `#[attr]`, `&'a self`) is accepted directly.
+  [`tests/coverage`](../tests/coverage) has one program per Rust feature.
 
 ## Keywords
 
@@ -439,6 +460,6 @@ Reserved: `fun fn val var let if else when match for while do loop return break 
 try catch class interface trait enum struct impl import use const static typealias mod true
 false null this self Self in is as where async move unsafe dyn mut ref extern pub`.
 
-Contextual (usable as names elsewhere): `data`, `error`, `object`, `companion`, `init`,
+Contextual (usable as names elsewhere): `data`, `error`, `object`, `companion`, `init`, `union`,
 `override`, `operator`, `private`, `internal`, `public`, `test`, `rust`, `throws`, `to`,
 `until`, `downTo`, `step`, `await`, `it`.

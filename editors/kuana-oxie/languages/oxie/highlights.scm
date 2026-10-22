@@ -12,7 +12,7 @@
 (modifier) @keyword
 
 [
-  "fun" "fn" "class" "struct" "enum" "interface" "trait" "object" "mod" "impl" "import" "use"
+  "fun" "fn" "class" "struct" "union" "enum" "interface" "trait" "object" "mod" "impl" "import" "use"
   "typealias" "test" "val" "var" "let" "init" "for" "where" "as" "from" "throws" "mut" "dyn"
   "data class" "error class" "sealed class" "value class" "error enum" "companion object"
 ] @keyword
@@ -73,3 +73,8 @@
 
 (interpolation "${" @punctuation.special "}" @punctuation.special)
 (simple_interpolation) @variable.special
+
+; Rust-style attributes: #[derive(Debug)], #![allow(dead_code)]
+(rust_attribute "#" @attribute)
+(rust_attribute (bracketed (identifier) @attribute))
+(rust_attribute (bracketed (call_expression function: (identifier) @attribute)))

@@ -93,6 +93,10 @@ Notable translations:
   `Option<String> ?: "x"`) and a `match` on `Elvis::opt` otherwise.
 * **`try`/`catch`** becomes `match ('label: { ...; Ok::<_, E>(value) }) { ... }`; `?` and
   `throw` inside break out of the labeled block.
+* **Let chains** (`val a = x && a > 0 && ...`) become nested `if`/`match` (the `else` branch is
+  repeated where a part can fail), so they work in every Rust edition.
+* **Crate-level lint attributes** in the root file are copied onto every top-level item and
+  module declaration, because the generated root is `include!`d and can't hold `#![...]`.
 * **Extension functions** become a trait per function; every file imports all of them as
   `_`.
 
@@ -124,6 +128,7 @@ highlighting, outline, indentation, text objects and runnables.
 * `crates/oxie-compiler` unit tests: lexer and formatter.
 * `crates/oxie-cli/tests/e2e.rs`:
   * `tests/e2e/*.oxi` programs run and compared with `.out` files;
+  * `tests/coverage/*.oxi`: one program per Rust feature, compared with `.out` files;
   * `tests/diagnostics/*.oxi` must fail with `// error: <line>: <text>` errors at the right lines;
   * every example in `examples/` runs (compared with `expected.txt`) and its tests pass;
   * every runnable code block in `README.md` and `docs/*.md` compiles and runs.

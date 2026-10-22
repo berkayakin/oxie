@@ -14,7 +14,7 @@ const KEYWORDS = [
   'if', 'else', 'when', 'match', 'for', 'while', 'do', 'loop', 'return', 'break', 'continue', 'throw',
   'try', 'catch', 'in', 'is', 'as', 'where', 'await', 'move', 'dyn', 'mut', 'ref', 'from', 'to', 'until',
   'downTo', 'step', 'super', 'crate', 'extern', 'out', 'reified', 'throws', 'type', 'async', 'unsafe',
-  'static', 'const', 'impl',
+  'static', 'const', 'impl', 'fn',
 ];
 
 const MODIFIERS = [
@@ -40,6 +40,9 @@ module.exports = grammar({
     [$.parenthesized, $.class_parameters],
     [$.function_declaration, $.class_declaration, $.class_parameter, $.enum_declaration, $.interface_declaration, $.object_declaration],
     [$.impl_declaration, $.keyword],
+    [$.function_declaration, $.keyword],
+    [$.annotation, $.operator],
+    [$.rust_attribute, $.operator],
     [$.parameter_name, $.variable_declaration],
     [$.property_name, $.variable_declaration],
     [$.class_parameter, $.variable_declaration],
@@ -76,6 +79,7 @@ module.exports = grammar({
         $.type_alias,
         $.test_declaration,
         $.annotation,
+        $.rust_attribute,
         $.call_expression,
         $.method_call,
         $.member_access,
@@ -119,7 +123,10 @@ module.exports = grammar({
 
     modifier: (_) => choice(...MODIFIERS),
 
-    annotation: ($) => prec.right(seq('@', field('name', $.annotation_name), optional($.parenthesized))),
+    annotation: ($) => prec.dynamic(5, prec.right(seq('@', field('name', $.annotation_name), optional($.parenthesized)))),
+    // Rust attribute syntax: `#[derive(Debug)]`, `#![allow(dead_code)]`
+    rust_attribute: ($) => prec.dynamic(5, seq('#', optional('!'), $.bracketed)),
+
     annotation_name: ($) => prec.right(seq($.identifier, repeat(seq(choice('::', '.'), $.identifier)))),
 
     function_declaration: ($) =>
@@ -160,7 +167,7 @@ module.exports = grammar({
         prec.right(
           seq(
             repeat($.modifier),
-            choice('class', 'struct', kw2('data', 'class'), kw2('error', 'class'), kw2('sealed', 'class'), kw2('value', 'class')),
+            choice('class', 'struct', 'union', kw2('data', 'class'), kw2('error', 'class'), kw2('sealed', 'class'), kw2('value', 'class')),
             field('name', $.type_identifier),
             optional($.type_parameters),
             optional(field('parameters', $.class_parameters)),
@@ -242,14 +249,16 @@ module.exports = grammar({
       prec.dynamic(5, prec(2, choice(seq(field('function', choice($.identifier, $.type_identifier)), $.parenthesized), seq(field('function', $.identifier), $.block)))),
     method_call: ($) => prec.dynamic(5, prec(3, seq(choice('.', '?.'), field('name', $.identifier), choice($.parenthesized, $.block)))),
     member_access: ($) => prec(1, seq(choice('.', '?.'), field('name', choice($.identifier, $.type_identifier, $.number, $.constant, $.keyword)))),
-    macro_invocation: ($) => prec(3, seq(field('macro', $.identifier), token.immediate('!'), choice($.parenthesized, $.bracketed, $.block))),
+    // `println!(...)`, and `macro_rules! name { ... }`
+    macro_invocation: ($) =>
+      prec(3, seq(field('macro', $.identifier), token.immediate('!'), optional(field('name', $.identifier)), choice($.parenthesized, $.bracketed, $.block))),
 
     // ------------------------------------------------------------------ tokens
 
     operator: (_) =>
       choice(
         '+', '-', '*', '/', '%', '=', '==', '!=', '<', '>', '<=', '>=', '&&', '||', '!', '&', '|', '^', '<<', '+=', '-=', '*=',
-        '/=', '%=', '&=', '|=', '^=', '->', '=>', '?', '?:', '!!', '..', '..=', '..<', '#', '$', '~',
+        '/=', '%=', '&=', '|=', '^=', '->', '=>', '?', '?:', '!!', '..', '..=', '..<', '#', '$', '~', '@',
       ),
 
     identifier: (_) => /(r#)?[a-z_][a-zA-Z0-9_]*/,

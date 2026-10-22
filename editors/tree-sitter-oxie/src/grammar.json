@@ -119,6 +119,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "rust_attribute"
+        },
+        {
+          "type": "SYMBOL",
           "name": "call_expression"
         },
         {
@@ -394,6 +398,10 @@
         {
           "type": "STRING",
           "value": "impl"
+        },
+        {
+          "type": "STRING",
+          "value": "fn"
         }
       ]
     },
@@ -523,34 +531,67 @@
       ]
     },
     "annotation": {
-      "type": "PREC_RIGHT",
-      "value": 0,
+      "type": "PREC_DYNAMIC",
+      "value": 5,
+      "content": {
+        "type": "PREC_RIGHT",
+        "value": 0,
+        "content": {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "@"
+            },
+            {
+              "type": "FIELD",
+              "name": "name",
+              "content": {
+                "type": "SYMBOL",
+                "name": "annotation_name"
+              }
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "parenthesized"
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "rust_attribute": {
+      "type": "PREC_DYNAMIC",
+      "value": 5,
       "content": {
         "type": "SEQ",
         "members": [
           {
             "type": "STRING",
-            "value": "@"
-          },
-          {
-            "type": "FIELD",
-            "name": "name",
-            "content": {
-              "type": "SYMBOL",
-              "name": "annotation_name"
-            }
+            "value": "#"
           },
           {
             "type": "CHOICE",
             "members": [
               {
-                "type": "SYMBOL",
-                "name": "parenthesized"
+                "type": "STRING",
+                "value": "!"
               },
               {
                 "type": "BLANK"
               }
             ]
+          },
+          {
+            "type": "SYMBOL",
+            "name": "bracketed"
           }
         ]
       }
@@ -1066,6 +1107,10 @@
                 {
                   "type": "STRING",
                   "value": "struct"
+                },
+                {
+                  "type": "STRING",
+                  "value": "union"
                 },
                 {
                   "type": "ALIAS",
@@ -2402,6 +2447,22 @@
             "type": "CHOICE",
             "members": [
               {
+                "type": "FIELD",
+                "name": "name",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "identifier"
+                }
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
                 "type": "SYMBOL",
                 "name": "parenthesized"
               },
@@ -2572,6 +2633,10 @@
         {
           "type": "STRING",
           "value": "~"
+        },
+        {
+          "type": "STRING",
+          "value": "@"
         }
       ]
     },
@@ -3165,6 +3230,18 @@
     [
       "impl_declaration",
       "keyword"
+    ],
+    [
+      "function_declaration",
+      "keyword"
+    ],
+    [
+      "annotation",
+      "operator"
+    ],
+    [
+      "rust_attribute",
+      "operator"
     ],
     [
       "parameter_name",
