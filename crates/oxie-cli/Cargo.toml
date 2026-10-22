@@ -12,4 +12,5 @@ path = "src/main.rs"
 
 [dependencies]
 oxie-compiler = { path = "../oxie-compiler" }
+oxie-from-rust = { path = "../oxie-from-rust" }
 serde_json = "1"

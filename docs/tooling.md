@@ -36,6 +36,7 @@ it to the checkout it runs in.
 | `oxie test [name] [--release]` | Run `test` blocks; `name` may be the test's description (`oxie test "adds numbers"`) or part of it |
 | `oxie fmt [--check] [paths]` | Format `.oxi` files (the project's `src/` by default) |
 | `oxie emit file.oxi` | Print the Rust generated for a file |
+| `oxie from-rust file.rs [-o out.oxi]` | Translate Rust to Oxie (`-` reads stdin); see [Translating Rust](#translating-rust) |
 | `oxie lsp` | Start the language server on stdin/stdout |
 | `oxie clean` | `cargo clean` |
 | `oxie version` | Print the version |
@@ -70,6 +71,69 @@ fun main() = println(rand.random::<u32>())
 
 Scripts are built in `~/.cache/oxie` (set `OXIE_CACHE` to change it) with a shared target
 directory, so only the first run of a script compiles its dependencies.
+
+### Translating Rust
+
+`oxie from-rust` turns Rust (a file from your crate, an example from a crate's docs, an answer
+from Stack Overflow) into idiomatic Oxie, printed to stdout or written with `-o`:
+
+```bash
+oxie from-rust src/point.rs -o src/point.oxi
+pbpaste | oxie from-rust -
+```
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Point { x: f64, y: f64 }
+
+impl Point {
+    fn new(x: f64, y: f64) -> Self { Point { x, y } }
+    fn scale(&mut self, k: f64) { self.x *= k; self.y *= k; }
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "({}, {})", self.x, self.y) }
+}
+
+fn parse_point(s: &str) -> Result<Point, Box<dyn std::error::Error>> {
+    let (a, b) = s.split_once(',').ok_or("missing comma")?;
+    Ok(Point::new(a.trim().parse()?, b.trim().parse()?))
+}
+```
+
+becomes
+
+```oxie
+data class Point(x: f64, y: f64) {
+    fun scale(k: f64) {
+        x *= k
+        y *= k
+    }
+
+    override fun toString() = "($x, $y)"
+}
+
+fun parse_point(s: &str): Point throws {
+    val (a, b) = s.split_once(',').ok_or("missing comma")?
+    Point(a.trim().parse()?, b.trim().parse()?)
+}
+```
+
+* Structs and their `impl` blocks become classes (a `data class` when the derives are exactly
+  the ones Oxie adds and `new` takes every field); traits become interfaces; enums get their
+  methods in the enum body. `Display` impls that only `write!` become `toString()`, `impl Add`
+  and friends become `operator fun`s, and `#[cfg(test)]` modules become `test` blocks.
+* `Result` returns become `throws` (`Ok(v)` → `v`, `return Err(e)` → `throw e`); `Option<T>` is
+  `T?` and `None` is `null`; `match` is `when`; `if let Some(x) = e` is `if (val x = e)`.
+* `format!`, `println!` and friends use string templates; closures become lambdas (`{ it * 2 }`
+  for simple one-parameter bodies) and move outside the parentheses when last; `vec![..]`,
+  `HashMap::from([(k, v)])` and `HashSet::from([..])` become `vec[..]`, `mapOf(k to v)` and `setOf(..)`.
+* Receivers, `self.`, `Type::new` and literal `.to_string()`s are dropped where Oxie restores
+  them. The translation is compiled with the Oxie compiler before it is printed: receivers and
+  derives Oxie would infer differently are written out, and items Oxie can't express are kept as
+  Rust in `rust { }` blocks with a `// TODO(from-rust)` comment (also reported on stderr).
+* Comments are kept. A `Box<dyn Error>` becomes `AnyError` (`Box<dyn Error + Send + Sync>`), so a
+  failing `main` prints `error: ...` instead of Rust's `Error: ...` debug output.
 
 ## Project layout
 

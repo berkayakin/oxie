@@ -180,6 +180,7 @@ oxie run dice.oxi
 | `oxie test [name]` | Run `test "name" { }` blocks |
 | `oxie fmt [--check]` | Format `.oxi` files |
 | `oxie emit file.oxi` | Show the generated Rust |
+| `oxie from-rust file.rs` | Translate Rust to Oxie |
 | `oxie lsp` | Language server for editors |
 
 Compiler errors — Oxie's own and rustc's — point at your `.oxi` lines:
@@ -253,6 +254,7 @@ from Rust, and a Rust program with Oxie modules.
 crates/oxie-compiler   lexer, parser, semantic analysis, lowering to Rust, formatter
 crates/oxie-build      build.rs helper used by Oxie projects
 crates/oxie-cli        the `oxie` command and language server
+crates/oxie-from-rust  Rust → Oxie translator (`oxie from-rust`)
 editors/              tree-sitter grammar and Kuana extension
 examples/             example projects (also run by the test suite)
 bench/                Oxie vs Rust benchmarks

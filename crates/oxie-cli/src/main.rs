@@ -1,6 +1,7 @@
 //! The `oxie` command line tool.
 
 mod cargo;
+mod from_rust;
 mod lsp;
 mod project;
 
@@ -25,6 +26,8 @@ COMMANDS:
     test [filter]          Run `test \"...\" { }` blocks
     fmt [--check] [paths]  Format .oxi files
     emit <file.oxi>        Print the Rust code generated for a file
+    from-rust <file.rs> [-o out.oxi]
+                           Translate Rust to Oxie (`-` reads stdin)
     lsp                    Start the language server (stdio)
     clean                  Remove build artifacts
     version                Print version
@@ -44,6 +47,7 @@ fn main() -> ExitCode {
         "test" => cmd_test(rest),
         "fmt" | "format" => cmd_fmt(rest),
         "emit" => cmd_emit(rest),
+        "from-rust" => from_rust::run(rest),
         "lsp" => {
             lsp::run();
             Ok(ExitCode::SUCCESS)
