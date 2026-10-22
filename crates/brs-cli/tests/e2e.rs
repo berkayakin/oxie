@@ -102,3 +102,53 @@ fn examples_run_and_test() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// Every ```kotlin block with `fun main` in README.md and docs/*.md must compile and run.
+#[test]
+fn documentation_examples_run() {
+    let root = repo();
+    let mut files = vec![root.join("README.md")];
+    let mut docs: Vec<PathBuf> = std::fs::read_dir(root.join("docs")).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map_or(false, |e| e == "md")).collect();
+    docs.sort();
+    files.extend(docs);
+    let tmp = std::env::temp_dir().join(format!("brs-doc-examples-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let mut failures = Vec::new();
+    let mut count = 0;
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        let mut in_block = false;
+        let mut block = String::new();
+        let mut start_line = 0;
+        for (i, line) in text.lines().enumerate() {
+            if !in_block && line.trim_start().starts_with("```kotlin") {
+                in_block = true;
+                block.clear();
+                start_line = i + 2;
+                continue;
+            }
+            if in_block && line.trim_start().starts_with("```") {
+                in_block = false;
+                if block.contains("fun main") && !block.contains("// not-runnable") {
+                    count += 1;
+                    let name = format!("{}_{}.brs", f.file_stem().unwrap().to_string_lossy().replace('-', "_"), start_line);
+                    let path = tmp.join(&name);
+                    std::fs::write(&path, &block).unwrap();
+                    let out = brs().arg("run").arg(&path).current_dir(&tmp).output().unwrap();
+                    let expect_failure = block.contains("throw") && block.contains("fun main() throws") && block.contains("// exits with an error");
+                    if out.status.success() == expect_failure {
+                        failures.push(format!("{}:{}\n{}", f.display(), start_line, String::from_utf8_lossy(&out.stderr)));
+                    }
+                }
+                continue;
+            }
+            if in_block {
+                block.push_str(line);
+                block.push('\n');
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert!(count > 10, "found only {} runnable examples", count);
+    assert!(failures.is_empty(), "{} documentation example(s) failed:\n{}", failures.len(), failures.join("\n\n"));
+}

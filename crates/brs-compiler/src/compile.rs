@@ -145,6 +145,7 @@ pub fn compile(inputs: Vec<Input>, opts: &Options) -> Output {
 
     for p in &parsed {
         let mut l = Lowerer::new(&k, p.module.clone(), p.is_root);
+        l.src_dir = p.input.abs_path.parent().map(|d| d.to_path_buf());
         l.lower_file(&p.file);
         let mut diags = p.diags.clone();
         diags.extend(l.diags.drain(..));

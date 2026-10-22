@@ -229,6 +229,8 @@ pub struct Lowerer<'a> {
     pub(crate) members_pub: bool,
     /// Emitting a function signature, where `'_` may stand for elided lifetimes.
     pub(crate) in_signature: std::cell::Cell<bool>,
+    /// Directory of the source file (for `mod name` declarations of hand-written Rust files).
+    pub src_dir: Option<std::path::PathBuf>,
 }
 
 pub fn esc(name: &str) -> String {
@@ -290,6 +292,7 @@ impl<'a> Lowerer<'a> {
             force_safe: false,
             members_pub: false,
             in_signature: std::cell::Cell::new(false),
+            src_dir: None,
         }
     }
 
@@ -1044,7 +1047,15 @@ impl<'a> Lowerer<'a> {
                 self.tests.push((it.attrs.clone(), t.clone()));
             }
             ItemKind::Raw(s) => {
-                self.e.raw_lines(s);
+                // `mod name` refers to `name.rs` next to the .brs file, not to the generated code
+                let text = match (s.strip_prefix("mod ").and_then(|r| r.strip_suffix(';')), &self.src_dir) {
+                    (Some(name), Some(dir)) if name.chars().all(|c| c.is_alphanumeric() || c == '_') => {
+                        let file = if dir.join(format!("{}.rs", name)).exists() { dir.join(format!("{}.rs", name)) } else { dir.join(name).join("mod.rs") };
+                        format!("#[path = \"{}\"]\nmod {};", file.display().to_string().replace('\\', "/"), name)
+                    }
+                    _ => s.clone(),
+                };
+                self.e.raw_lines(&text);
                 self.e.nl();
             }
             ItemKind::Macro(s) => {

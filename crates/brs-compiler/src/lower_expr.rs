@@ -325,7 +325,7 @@ impl<'a> Lowerer<'a> {
                     self.e.w(".into()");
                 }
                 // a call returning `T` converts to `T?` with `.into()` (identity when it already returns `T?`)
-                ExprKind::MethodCall { name, .. } if !INFERENCE_DEPENDENT.contains(&name.as_str()) && !has_safe_link(e) => {
+                ExprKind::MethodCall { name, .. } if !INFERENCE_DEPENDENT.contains(&name.as_str()) && !has_safe_link(e) && !self.is_option_expr(e) => {
                     self.expr(e, P_POSTFIX);
                     self.e.w(".into()");
                 }
@@ -334,6 +334,16 @@ impl<'a> Lowerer<'a> {
             Type::Path { segs, .. } if segs.len() == 1 && segs[0].name == "String" && segs[0].generics.is_none() => match &e.kind {
                 ExprKind::Str(parts) => self.e.w(&format!("String::from(\"{}\")", crate::lower::lit_parts(parts))),
                 ExprKind::RawStr(s) => self.e.w(&format!("String::from({})", s)),
+                // a `&str` where a `String` is expected is converted (identity when it already is one)
+                ExprKind::MethodCall { name, .. }
+                    if pos != TyPos::Local
+                        && !INFERENCE_DEPENDENT.contains(&name.as_str())
+                        && !matches!(name.as_str(), "to_string" | "to_owned" | "clone" | "to_uppercase" | "to_lowercase" | "repeat" | "join" | "replace" | "concat")
+                        && !has_safe_link(e) =>
+                {
+                    self.expr(e, P_POSTFIX);
+                    self.e.w(".into()");
+                }
                 _ => self.expr(e, P_LOWEST),
             },
             Type::Fn { params, ret } => {
@@ -1787,7 +1797,18 @@ impl<'a> Lowerer<'a> {
         let mut cur_is_option = false;
         for l in links {
             let mut node = l.clone();
-            let safe = link_is_safe(l);
+            let mut safe = link_is_safe(l);
+            // `?.` after a property declared non-nullable is just `.` (as in Kotlin)
+            if safe && cur_is_option {
+                if let ExprKind::Field { name, .. } = &cur.kind {
+                    if self.field_known_non_option(name) {
+                        safe = false;
+                        if let ExprKind::Field { safe: s, .. } | ExprKind::MethodCall { safe: s, .. } = &mut node.kind {
+                            *s = false;
+                        }
+                    }
+                }
+            }
             let mut make_try = false;
             if safe && !force && !cur_is_option {
                 make_try = if self.is_result_expr(&cur) {
@@ -1820,6 +1841,20 @@ impl<'a> Lowerer<'a> {
             cur = node;
         }
         cur
+    }
+
+    /// Every brs class field with this name is declared with a non-optional type.
+    fn field_known_non_option(&self, name: &str) -> bool {
+        let mut any = false;
+        for c in self.k.classes.values() {
+            if let Some(f) = c.fields.iter().find(|f| f.name == name) {
+                if matches!(f.ty, Type::Option(_)) || f.ty.single_name() == Some("Option") || f.ty == Type::Infer {
+                    return false;
+                }
+                any = true;
+            }
+        }
+        any
     }
 
     fn can_propagate(&self) -> bool {
@@ -2184,6 +2219,24 @@ impl<'a> Lowerer<'a> {
     }
 
     fn when_expr(&mut self, subject: Option<&Expr>, arms: &[WhenArm], rust_match: bool, mode: Option<&Target>, span: Span) {
+        // `in 1..=9` with literal bounds is just a range pattern
+        let arms: Vec<WhenArm> = arms
+            .iter()
+            .map(|a| {
+                let mut a = a.clone();
+                for c in a.conds.iter_mut() {
+                    if let WhenCond::In { expr, negated: false } = c {
+                        if let ExprKind::Range { start: Some(lo), end: Some(hi), inclusive } = &strip_paren(expr).kind {
+                            if is_literal(lo) && is_literal(hi) {
+                                *c = WhenCond::Pat(Pat::Range { lo: Some(lo.clone()), hi: Some(hi.clone()), inclusive: *inclusive });
+                            }
+                        }
+                    }
+                }
+                a
+            })
+            .collect();
+        let arms = &arms[..];
         match subject {
             Some(s) => {
                 self.e.w("match ");

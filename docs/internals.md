@@ -1,0 +1,131 @@
+# Compiler internals
+
+This document is for people working on brs itself.
+
+## Pipeline
+
+```
+.brs source
+  │ lexer.rs      tokens with byte spans; significant newlines; string interpolation parts
+  ▼
+  │ parser.rs     recursive descent → ast.rs; error recovery per statement
+  ▼
+  │ sema.rs       crate-wide symbol table: classes, enums, traits, functions, modules,
+  │               extension traits; receiver inference; automatic derives
+  ▼
+  │ lower.rs      items, types, patterns → Rust text
+  │ lower_expr.rs statements and expressions → Rust text (with source-map marks)
+  │ infer.rs      small type inference for obvious cases (return types, receivers)
+  ▼
+  │ compile.rs    per crate: module tree, `#[path]` module declarations, runtime module,
+  │               source maps (.rs.map)
+  ▼
+generated .rs files → rustc
+```
+
+The compiler is a library (`brs-compiler`) with no dependencies. `brs-build` calls it from
+`build.rs`; `brs-cli` calls it for checking, `brs emit`, formatting and the language server.
+
+## Lexer
+
+* Newlines are emitted as tokens only inside `{ }` blocks and at top level, and only when the
+  previous token can end an expression and the next line doesn't start with `.`, `?.`, `?:`,
+  `&&` or `||`. Inside `( )` and `[ ]` they are skipped. The parser therefore treats `Newline`
+  as a statement terminator and skips it where lists continue.
+* `>` is always a single token; the parser combines adjacent `>` `>` into `>>` when it is an
+  operator, so generics like `Vec<Vec<i32>>` need no special casing.
+* Strings are lexed into parts: literal text (already Rust-escaped) and interpolations with
+  their source text and byte offset; the parser re-lexes and parses each interpolation, so
+  spans inside templates are exact. `"""` strings are dedented while lexing.
+
+## Parser
+
+* One recursive-descent parser for Kotlin-, TypeScript- and Rust-style syntax. Ambiguities are
+  settled with small lookaheads:
+  * `if (` … `)` is a Kotlin condition unless the closing parenthesis is followed by a binary
+    operator (then it is part of a Rust-style condition);
+  * `{` in expression position is a lambda; after a lowercase name it is a trailing lambda;
+    after a type name followed by `name:`/`name,`/`}` it is a struct literal;
+  * `(a, b) =>` and `x =>` are arrow functions (found by scanning to the matching parenthesis);
+  * `Type<Args>` in expressions is tried as generic arguments and backtracked if it isn't one.
+* Errors are collected; after an error the parser skips to the end of the statement.
+* `rust { }` blocks and `name!( )` macro calls keep their source text verbatim.
+
+## Semantic analysis (`sema.rs`)
+
+`collect` builds a `Crate` from all files of a crate:
+
+* classes (fields, constructor parameters, methods, generics), enums (variants and their
+  shapes), traits (methods, associated types), free functions, module names, extension traits,
+  and which enum owns each variant name (for bare variant names in patterns and calls);
+* **receiver inference**: a fixpoint over all methods. A method is `&mut self` if its body
+  assigns into `self` (directly or through implicit fields), calls a known mutating method on
+  a field, takes `&mut` of a field, or calls a `&mut self` method of the same type. Interface
+  methods without an explicit receiver take `&mut self` if any implementation needs it, and
+  then all implementations use it;
+* **automatic derives**: a fixpoint deciding `Copy` and `Eq + Hash` for data classes and enums
+  from their field types.
+
+## Lowering
+
+The `Lowerer` walks one file and writes Rust with an `Emitter` that tracks indentation and
+records source-map marks (generated line/column → source offset) at every statement and
+expression.
+
+Contexts tracked while lowering:
+
+* **scopes** of locals (with declared or inferred types) — needed for implicit `this`, deciding
+  whether a name is a path root (`std.fs.read` → `std::fs::read`), and inline format captures;
+* the **current class** (fields, methods with receivers) for implicit `this` and calls;
+* the **function context** (does it throw, its value type, enclosing `try` labels) for `Ok`
+  wrapping, `throw`, and `?` inside `try`;
+* **loops** for `do { } while` with `continue`.
+
+Notable translations:
+
+* **Tail expressions** are emitted with a `Target` (expected type + optional `Ok` wrapper);
+  `if`/`when`/blocks pass the target to each branch, so coercions (`Some(...)`,
+  `String::from`) and `Ok(...)` are applied at the leaves.
+* **`?.`** is first resolved per link (`resolve_question_dots`): links on known `Result`s become
+  `Try` + member access, others are safe navigation lowered to `as_ref`/`map`/`and_then`,
+  flattening where the field or method is declared optional.
+* **`?:`** uses `ElvisOr::or_val` for literal defaults (handles `Option<&T> ?: 0` and
+  `Option<String> ?: "x"`) and a `match` on `Elvis::opt` otherwise.
+* **`try`/`catch`** becomes `match ('label: { ...; Ok::<_, E>(value) }) { ... }`; `?` and
+  `throw` inside break out of the labeled block.
+* **Extension functions** become a trait per function; every file imports all of them as
+  `_`.
+
+## Source maps and diagnostics
+
+Each generated file `x.rs` has `x.rs.map`:
+
+```
+brs-sourcemap 1
+/abs/path/src/x.brs
+<gen line> <gen col> <src line> <src col>
+...
+```
+
+`brs-cli`'s `cargo.rs` runs cargo with `--message-format=json`, maps the primary span of each
+message (following macro expansions back to the call site) to the `.brs` file, and renders it
+in rustc's format. The language server does the same with `cargo check`.
+
+## Tree-sitter grammar
+
+`editors/tree-sitter-brs/grammar.js` is a separate, deliberately shallow grammar for editors:
+declarations, calls, member access, strings with interpolation; everything else is a token
+stream grouped by brackets. It parses all repository files without errors and is used for
+highlighting, outline, indentation, text objects and runnables.
+`editors/build-kuana-extension.sh` regenerates it and copies it into the Kuana extension.
+
+## Tests
+
+* `crates/brs-compiler` unit tests: lexer and formatter.
+* `crates/brs-cli/tests/e2e.rs`:
+  * `tests/e2e/*.brs` programs run and compared with `.out` files;
+  * `tests/diagnostics/*.brs` must fail with `// error: <line>: <text>` errors at the right lines;
+  * every example in `examples/` runs (compared with `expected.txt`) and its tests pass;
+  * every runnable code block in `README.md` and `docs/*.md` compiles and runs.
+* `crates/brs-cli/tests/lsp.rs` drives the language server over stdio.
+* `tests/run_e2e.sh` runs the e2e programs from the shell.
