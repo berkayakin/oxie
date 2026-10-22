@@ -1,0 +1,916 @@
+//! Crate-wide symbol table and method receiver inference.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::ast::*;
+use crate::parser::is_type_like;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recv {
+    Static,
+    Ref,
+    RefMut,
+    Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParamInfo {
+    pub name: Option<String>,
+    pub ty: Type,
+    pub default: Option<Expr>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MethodInfo {
+    pub recv: Recv,
+    pub params: Vec<ParamInfo>,
+    pub throws: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldInfo {
+    pub name: String,
+    pub ty: Type,
+    pub default: Option<Expr>,
+    pub in_ctor: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClassInfo {
+    pub name: String,
+    pub module: Vec<String>,
+    pub fields: Vec<FieldInfo>,
+    pub methods: HashMap<String, MethodInfo>,
+    pub user_new: bool,
+    pub is_data: bool,
+    pub is_tuple: bool,
+    pub has_generics: bool,
+}
+
+impl ClassInfo {
+    /// Constructor parameters in order.
+    pub fn ctor_params(&self) -> Vec<ParamInfo> {
+        if self.user_new {
+            if let Some(m) = self.methods.get("new") {
+                return m.params.clone();
+            }
+        }
+        self.fields
+            .iter()
+            .filter(|f| f.in_ctor)
+            .map(|f| ParamInfo { name: Some(f.name.clone()), ty: f.ty.clone(), default: f.default.clone() })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum VariantShape {
+    Unit,
+    Tuple(usize),
+    Named(Vec<(String, Type)>),
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumInfo {
+    pub name: String,
+    pub module: Vec<String>,
+    pub variants: Vec<(String, VariantShape)>,
+    pub methods: HashMap<String, MethodInfo>,
+}
+
+impl EnumInfo {
+    pub fn variant(&self, name: &str) -> Option<&VariantShape> {
+        self.variants.iter().find(|(n, _)| n == name).map(|(_, s)| s)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TraitInfo {
+    pub name: String,
+    pub module: Vec<String>,
+    pub methods: HashMap<String, MethodInfo>,
+    pub assoc_types: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FunInfo {
+    pub module: Vec<String>,
+    pub params: Vec<ParamInfo>,
+    pub throws: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Crate {
+    pub crate_name: String,
+    pub classes: HashMap<String, ClassInfo>,
+    pub enums: HashMap<String, EnumInfo>,
+    pub traits: HashMap<String, TraitInfo>,
+    pub funs: HashMap<String, FunInfo>,
+    pub ambiguous: HashSet<String>,
+    /// Top-level module names (children of the crate root).
+    pub modules: HashSet<String>,
+    /// External crate names from Cargo.toml.
+    pub extern_crates: HashSet<String>,
+    /// (module path, trait name) for every extension-function trait.
+    pub ext_traits: Vec<(Vec<String>, String)>,
+    pub variant_owner: HashMap<String, Vec<String>>,
+    /// Whether a `lib.brs` exists (main.brs then imports modules through the crate name).
+    pub has_lib: bool,
+    /// Automatic derives per type (data classes and enums).
+    pub derives: HashMap<String, Vec<String>>,
+}
+
+pub const STATIC_METHOD_NAMES: &[&str] = &["new", "default", "from", "from_str", "try_from", "from_iter"];
+
+/// Methods that take `&mut self` on common std types (used to infer `mut fun`).
+pub const MUTATING_METHODS: &[&str] = &[
+    "push", "push_str", "push_back", "push_front", "pop", "pop_back", "pop_front", "insert", "remove", "clear", "extend",
+    "extend_from_slice", "append", "truncate", "retain", "retain_mut", "drain", "sort", "sort_by", "sort_by_key",
+    "sort_unstable", "sort_unstable_by", "sort_unstable_by_key", "dedup", "dedup_by_key", "reverse", "swap", "resize",
+    "entry", "get_mut", "iter_mut", "values_mut", "last_mut", "first_mut", "as_mut", "as_mut_slice", "take", "replace",
+    "set", "fill", "rotate_left", "rotate_right", "split_off", "shrink_to_fit", "reserve", "get_or_insert",
+    "get_or_insert_with", "write", "write_all", "write_str", "write_fmt", "flush", "read", "read_line",
+    "read_to_string", "read_to_end", "read_exact", "next", "next_back", "or_insert", "swap_remove", "push_all",
+    "borrow_mut", "chunks_mut", "split_at_mut", "nth", "advance_by", "make_ascii_uppercase", "make_ascii_lowercase",
+];
+
+impl Crate {
+    pub fn class(&self, name: &str) -> Option<&ClassInfo> {
+        if self.ambiguous.contains(name) {
+            return None;
+        }
+        self.classes.get(name)
+    }
+    pub fn enum_(&self, name: &str) -> Option<&EnumInfo> {
+        if self.ambiguous.contains(name) {
+            return None;
+        }
+        self.enums.get(name)
+    }
+    /// The enum owning a variant, if the variant name is unique among brs enums.
+    pub fn variant_enum(&self, variant: &str) -> Option<&EnumInfo> {
+        if matches!(variant, "Some" | "None" | "Ok" | "Err") {
+            return None;
+        }
+        match self.variant_owner.get(variant) {
+            Some(v) if v.len() == 1 => self.enum_(&v[0]),
+            _ => None,
+        }
+    }
+    pub fn is_trait(&self, name: &str) -> bool {
+        self.traits.contains_key(name)
+    }
+    pub fn is_user_type(&self, name: &str) -> bool {
+        self.classes.contains_key(name) || self.enums.contains_key(name) || self.traits.contains_key(name)
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// Collection
+
+pub struct SourceUnit<'a> {
+    pub module: Vec<String>,
+    pub file: &'a File,
+}
+
+pub fn collect(units: &[SourceUnit], crate_name: &str, extern_crates: HashSet<String>, has_lib: bool) -> Crate {
+    let mut k = Crate { crate_name: crate_name.to_string(), extern_crates, has_lib, ..Default::default() };
+    for u in units {
+        if let Some(first) = u.module.first() {
+            k.modules.insert(first.clone());
+        }
+    }
+    // pass 1: traits (needed for impl receivers)
+    for u in units {
+        collect_traits(&mut k, &u.module, &u.file.items);
+    }
+    // pass 2: types and functions
+    for u in units {
+        collect_items(&mut k, &u.module, &u.file.items);
+    }
+    // pass 3: inherent impl blocks add methods to classes
+    for u in units {
+        collect_impls(&mut k, &u.file.items);
+    }
+    // pass 4: receiver inference (fixpoint over mutating methods)
+    infer_receivers(&mut k, units);
+    compute_derives(&mut k, units);
+    k
+}
+
+fn has_attr(attrs: &[Attr], name: &str) -> bool {
+    attrs.iter().any(|a| a.name() == name)
+}
+
+/// Kotlin-like value semantics: data classes and enums get Debug/Clone/PartialEq,
+/// plus Copy/Eq/Hash when every field type is known to support them.
+fn compute_derives(k: &mut Crate, units: &[SourceUnit]) {
+    fn gather<'a>(items: &'a [Item], out: &mut Vec<(&'a TypeDecl, &'a [Attr])>) {
+        for it in items {
+            match &it.kind {
+                ItemKind::Type(t) => out.push((t, &it.attrs)),
+                ItemKind::Mod { items, .. } => gather(items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut decls = Vec::new();
+    for u in units {
+        gather(&u.file.items, &mut decls);
+    }
+    let mut copy: HashSet<String> = HashSet::new();
+    let mut hash: HashSet<String> = HashSet::new();
+    let field_types = |t: &TypeDecl| -> Vec<Type> {
+        let mut v: Vec<Type> = t.fields.iter().map(|f| f.ty.clone()).collect();
+        for var in &t.variants {
+            match &var.fields {
+                VariantFields::Unit => {}
+                VariantFields::Tuple(ts) => v.extend(ts.iter().cloned()),
+                VariantFields::Named(fs) => v.extend(fs.iter().map(|f| f.ty.clone())),
+            }
+        }
+        v
+    };
+    let eligible = |t: &TypeDecl, attrs: &[Attr]| {
+        !t.is_error && !has_attr(attrs, "no_auto_derive") && matches!(t.kind, TypeKind::Data | TypeKind::Enum) && t.generics.is_empty()
+    };
+    for _ in 0..6 {
+        let mut changed = false;
+        for (t, attrs) in &decls {
+            if !eligible(t, attrs) {
+                continue;
+            }
+            let fts = field_types(t);
+            if !copy.contains(&t.name) && fts.iter().all(|ft| is_copy_simple(ft, k, &copy)) {
+                copy.insert(t.name.clone());
+                changed = true;
+            }
+            if !hash.contains(&t.name) && fts.iter().all(|ft| is_hash_simple(ft, k, &hash)) {
+                hash.insert(t.name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (t, attrs) in &decls {
+        let mut d: Vec<String> = Vec::new();
+        if t.is_error {
+            d.push("Debug".into());
+        } else if has_attr(attrs, "no_auto_derive") {
+        } else if matches!(t.kind, TypeKind::Data | TypeKind::Enum) {
+            d.extend(["Debug", "Clone"].iter().map(|s| s.to_string()));
+            if t.generics.is_empty() && copy.contains(&t.name) {
+                d.push("Copy".into());
+            }
+            d.push("PartialEq".into());
+            if t.generics.is_empty() && hash.contains(&t.name) {
+                d.push("Eq".into());
+                d.push("Hash".into());
+            }
+        }
+        k.derives.insert(t.name.clone(), d);
+    }
+}
+
+fn collect_traits(k: &mut Crate, module: &[String], items: &[Item]) {
+    for it in items {
+        match &it.kind {
+            ItemKind::Trait(t) => {
+                let mut methods = HashMap::new();
+                let mut assoc = Vec::new();
+                for m in &t.members {
+                    match &m.kind {
+                        ItemKind::Fun(f) => {
+                            methods.insert(f.name.clone(), method_info_explicit(f, None).unwrap_or(MethodInfo {
+                                recv: Recv::Ref,
+                                params: params_info(f),
+                                throws: !matches!(f.throws, Throws::No),
+                            }));
+                        }
+                        ItemKind::TypeAlias { name, .. } => assoc.push(name.clone()),
+                        _ => {}
+                    }
+                }
+                insert_unique(&mut k.traits, &mut k.ambiguous, t.name.clone(), TraitInfo { name: t.name.clone(), module: module.to_vec(), methods, assoc_types: assoc });
+            }
+            ItemKind::Mod { name, items } => {
+                let mut m = module.to_vec();
+                m.push(name.clone());
+                collect_traits(k, &m, items);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn insert_unique<V>(map: &mut HashMap<String, V>, amb: &mut HashSet<String>, key: String, v: V) {
+    if map.contains_key(&key) {
+        amb.insert(key);
+    } else {
+        map.insert(key, v);
+    }
+}
+
+pub fn params_info(f: &FunDecl) -> Vec<ParamInfo> {
+    f.params
+        .iter()
+        .map(|p| ParamInfo { name: p.name().map(|s| s.to_string()), ty: p.ty.clone(), default: p.default.clone() })
+        .collect()
+}
+
+/// Receiver determined purely from syntax, or None if it must be inferred.
+fn method_info_explicit(f: &FunDecl, trait_recv: Option<Recv>) -> Option<MethodInfo> {
+    let params = params_info(f);
+    let throws = !matches!(f.throws, Throws::No);
+    let recv = match &f.self_param {
+        Some(SelfParam::Ref) => Some(Recv::Ref),
+        Some(SelfParam::RefMut) => Some(Recv::RefMut),
+        Some(SelfParam::Value { .. }) | Some(SelfParam::Typed(_)) => Some(Recv::Value),
+        None if f.mods.is_static => Some(Recv::Static),
+        None if f.mods.is_mut => Some(Recv::RefMut),
+        None if trait_recv.is_some() => trait_recv,
+        None if STATIC_METHOD_NAMES.contains(&f.name.as_str()) => Some(Recv::Static),
+        None if f.mods.is_operator => Some(Recv::Value),
+        None => None,
+    };
+    recv.map(|recv| MethodInfo { recv, params, throws })
+}
+
+fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
+    for it in items {
+        match &it.kind {
+            ItemKind::Fun(f) if f.receiver.is_none() => {
+                let info = FunInfo { module: module.to_vec(), params: params_info(f), throws: !matches!(f.throws, Throws::No) };
+                insert_unique(&mut k.funs, &mut k.ambiguous, f.name.clone(), info);
+            }
+            ItemKind::Fun(f) => {
+                k.ext_traits.push((module.to_vec(), ext_trait_name(module, &f.name)));
+            }
+            ItemKind::Type(t) => match t.kind {
+                TypeKind::Class | TypeKind::Data | TypeKind::TupleStruct => {
+                    let fields = t
+                        .fields
+                        .iter()
+                        .map(|f| FieldInfo { name: f.name.clone(), ty: f.ty.clone(), default: f.default.clone(), in_ctor: f.in_ctor })
+                        .collect();
+                    let mut methods = HashMap::new();
+                    let mut user_new = false;
+                    for m in &t.members {
+                        if let ItemKind::Fun(f) = &m.kind {
+                            if f.name == "new" {
+                                user_new = true;
+                            }
+                            if let Some(mi) = method_info_explicit(f, None) {
+                                methods.insert(f.name.clone(), mi);
+                            } else {
+                                methods.insert(f.name.clone(), MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No) });
+                            }
+                        }
+                    }
+                    let info = ClassInfo {
+                        name: t.name.clone(),
+                        module: module.to_vec(),
+                        fields,
+                        methods,
+                        user_new,
+                        is_data: t.kind == TypeKind::Data,
+                        is_tuple: t.kind == TypeKind::TupleStruct,
+                        has_generics: !t.generics.is_empty(),
+                    };
+                    insert_unique(&mut k.classes, &mut k.ambiguous, t.name.clone(), info);
+                }
+                TypeKind::Enum => {
+                    let variants: Vec<(String, VariantShape)> = t
+                        .variants
+                        .iter()
+                        .map(|v| {
+                            let shape = match &v.fields {
+                                VariantFields::Unit => VariantShape::Unit,
+                                VariantFields::Tuple(ts) => VariantShape::Tuple(ts.len()),
+                                VariantFields::Named(fs) => VariantShape::Named(fs.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()),
+                            };
+                            (v.name.clone(), shape)
+                        })
+                        .collect();
+                    for (vn, _) in &variants {
+                        k.variant_owner.entry(vn.clone()).or_default().push(t.name.clone());
+                    }
+                    let mut methods = HashMap::new();
+                    for m in &t.members {
+                        if let ItemKind::Fun(f) = &m.kind {
+                            let mi = method_info_explicit(f, None).unwrap_or(MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No) });
+                            methods.insert(f.name.clone(), mi);
+                        }
+                    }
+                    insert_unique(&mut k.enums, &mut k.ambiguous, t.name.clone(), EnumInfo { name: t.name.clone(), module: module.to_vec(), variants, methods });
+                }
+            },
+            ItemKind::Mod { name, items } => {
+                let mut m = module.to_vec();
+                m.push(name.clone());
+                collect_items(k, &m, items);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_impls(k: &mut Crate, items: &[Item]) {
+    for it in items {
+        match &it.kind {
+            ItemKind::Impl(imp) => {
+                let Some(name) = imp.self_ty.last_name() else { continue };
+                let trait_info = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| k.traits.get(n)).cloned();
+                for m in &imp.members {
+                    if let ItemKind::Fun(f) = &m.kind {
+                        let trecv = trait_info.as_ref().and_then(|t| t.methods.get(&f.name)).map(|m| m.recv);
+                        let mi = method_info_explicit(f, trecv).unwrap_or(MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No) });
+                        if let Some(c) = k.classes.get_mut(name) {
+                            if f.name == "new" && imp.trait_.is_none() {
+                                c.user_new = true;
+                            }
+                            c.methods.entry(f.name.clone()).or_insert(mi);
+                        } else if let Some(e) = k.enums.get_mut(name) {
+                            e.methods.entry(f.name.clone()).or_insert(mi);
+                        }
+                    }
+                }
+            }
+            ItemKind::Mod { items, .. } => collect_impls(k, items),
+            _ => {}
+        }
+    }
+}
+
+pub fn ext_trait_name(module: &[String], fun: &str) -> String {
+    let mut s = String::from("__BrsExt");
+    for m in module {
+        s.push('_');
+        s.push_str(m);
+    }
+    s.push('_');
+    s.push_str(fun);
+    s
+}
+
+// -------------------------------------------------------------------------------------------
+// Receiver inference
+
+/// Information about a method body relevant to receiver inference.
+#[derive(Default, Debug)]
+pub struct BodyFacts {
+    pub uses_self: bool,
+    pub mutates_self: bool,
+}
+
+struct MethodRef<'a> {
+    owner: String,
+    fun: &'a FunDecl,
+    trait_recv: Option<Recv>,
+}
+
+fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
+    // gather method bodies per owner type
+    let mut methods: Vec<MethodRef> = Vec::new();
+    fn gather<'a>(k: &Crate, items: &'a [Item], out: &mut Vec<MethodRef<'a>>) {
+        for it in items {
+            match &it.kind {
+                ItemKind::Type(t) => {
+                    for m in &t.members {
+                        if let ItemKind::Fun(f) = &m.kind {
+                            // `override` methods implement a supertype; look it up when it's a brs trait
+                            let mut trecv = None;
+                            if f.mods.is_override {
+                                for st in &t.supertypes {
+                                    if let Some(ti) = st.last_name().and_then(|n| k.traits.get(n)) {
+                                        if let Some(mi) = ti.methods.get(&f.name) {
+                                            trecv = Some(mi.recv);
+                                        }
+                                    }
+                                }
+                            }
+                            out.push(MethodRef { owner: t.name.clone(), fun: f, trait_recv: trecv });
+                        }
+                    }
+                }
+                ItemKind::Impl(imp) => {
+                    let Some(owner) = imp.self_ty.last_name() else { continue };
+                    let tinfo = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| k.traits.get(n));
+                    for m in &imp.members {
+                        if let ItemKind::Fun(f) = &m.kind {
+                            let trecv = tinfo.and_then(|t| t.methods.get(&f.name)).map(|m| m.recv);
+                            out.push(MethodRef { owner: owner.to_string(), fun: f, trait_recv: trecv });
+                        }
+                    }
+                }
+                ItemKind::Mod { items, .. } => gather(k, items, out),
+                _ => {}
+            }
+        }
+    }
+    for u in units {
+        gather(k, &u.file.items, &mut methods);
+    }
+
+    // initial: explicit receivers fixed, others start as Ref/Static
+    let mut decided: HashMap<(String, String), Recv> = HashMap::new();
+    let mut pending: Vec<usize> = Vec::new();
+    for (i, m) in methods.iter().enumerate() {
+        if let Some(mi) = method_info_explicit(m.fun, m.trait_recv) {
+            decided.insert((m.owner.clone(), m.fun.name.clone()), mi.recv);
+        } else {
+            pending.push(i);
+            decided.insert((m.owner.clone(), m.fun.name.clone()), Recv::Ref);
+        }
+    }
+    // fixpoint
+    for _round in 0..8 {
+        let mut changed = false;
+        for &i in &pending {
+            let m = &methods[i];
+            let fields: HashSet<String> = k.classes.get(&m.owner).map(|c| c.fields.iter().map(|f| f.name.clone()).collect()).unwrap_or_default();
+            let recvs: HashMap<String, Recv> = decided.iter().filter(|((o, _), _)| *o == m.owner).map(|((_, n), r)| (n.clone(), *r)).collect();
+            let facts = analyze_fun(m.fun, &fields, &recvs);
+            let returns_self = m.fun.ret.as_ref().map_or(false, |t| t.single_name() == Some("Self") || t.single_name() == Some(m.owner.as_str()));
+            let recv = if facts.mutates_self {
+                Recv::RefMut
+            } else if !facts.uses_self && returns_self && m.trait_recv.is_none() {
+                Recv::Static
+            } else {
+                Recv::Ref
+            };
+            let key = (m.owner.clone(), m.fun.name.clone());
+            if decided.get(&key) != Some(&recv) {
+                decided.insert(key, recv);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for ((owner, name), recv) in decided {
+        if let Some(c) = k.classes.get_mut(&owner) {
+            if let Some(mi) = c.methods.get_mut(&name) {
+                mi.recv = recv;
+            }
+        } else if let Some(e) = k.enums.get_mut(&owner) {
+            if let Some(mi) = e.methods.get_mut(&name) {
+                mi.recv = recv;
+            }
+        }
+    }
+}
+
+pub fn analyze_fun(f: &FunDecl, fields: &HashSet<String>, methods: &HashMap<String, Recv>) -> BodyFacts {
+    let mut w = Walker { fields, methods, scopes: vec![HashSet::new()], facts: BodyFacts::default() };
+    for p in &f.params {
+        w.bind(&p.pat);
+    }
+    match &f.body {
+        Some(FunBody::Block(b)) => w.block(b),
+        Some(FunBody::Expr(e)) => w.expr(e),
+        None => {}
+    }
+    w.facts
+}
+
+pub fn analyze_block(b: &Block, fields: &HashSet<String>, methods: &HashMap<String, Recv>) -> BodyFacts {
+    let mut w = Walker { fields, methods, scopes: vec![HashSet::new()], facts: BodyFacts::default() };
+    w.block(b);
+    w.facts
+}
+
+struct Walker<'a> {
+    fields: &'a HashSet<String>,
+    methods: &'a HashMap<String, Recv>,
+    scopes: Vec<HashSet<String>>,
+    facts: BodyFacts,
+}
+
+impl<'a> Walker<'a> {
+    fn is_local(&self, n: &str) -> bool {
+        self.scopes.iter().any(|s| s.contains(n))
+    }
+    fn bind(&mut self, p: &Pat) {
+        let mut names = Vec::new();
+        p.bindings(&mut names);
+        let top = self.scopes.last_mut().unwrap();
+        for n in names {
+            top.insert(n);
+        }
+    }
+    fn push(&mut self) {
+        self.scopes.push(HashSet::new());
+    }
+    fn pop(&mut self) {
+        self.scopes.pop();
+    }
+
+    /// Is the root of this place expression `self` or an implicit field?
+    fn rooted_in_self(&self, e: &Expr) -> bool {
+        let mut cur = e;
+        loop {
+            match &cur.kind {
+                ExprKind::Field { recv, .. } => cur = recv,
+                ExprKind::Index(r, _) => cur = r,
+                ExprKind::MethodCall { recv, .. } => cur = recv,
+                ExprKind::Unary(UnOp::Deref, r) => cur = r,
+                ExprKind::Paren(r) => cur = r,
+                ExprKind::SelfValue => return true,
+                ExprKind::Path { .. } => {
+                    return cur.ident().map_or(false, |n| !self.is_local(n) && self.fields.contains(n));
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    fn block(&mut self, b: &Block) {
+        self.push();
+        for s in &b.stmts {
+            self.stmt(s);
+        }
+        self.pop();
+    }
+
+    fn stmt(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Let { pat, init, else_, .. } => {
+                if let Some(e) = init {
+                    self.expr(e);
+                }
+                if let Some(b) = else_ {
+                    self.block(b);
+                }
+                self.bind(pat);
+            }
+            Stmt::Expr { expr, .. } => self.expr(expr),
+            Stmt::Item(_) => {}
+        }
+    }
+
+    fn cond(&mut self, c: &Cond) {
+        match c {
+            Cond::Expr(e) => self.expr(e),
+            Cond::Let { pat, expr, .. } => {
+                self.expr(expr);
+                self.bind(pat);
+            }
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        use ExprKind::*;
+        match &e.kind {
+            Path { .. } => {
+                if let Some(n) = e.ident() {
+                    if !self.is_local(n) && self.fields.contains(n) {
+                        self.facts.uses_self = true;
+                    }
+                }
+            }
+            SelfValue => self.facts.uses_self = true,
+            Template(parts) => {
+                for p in parts {
+                    if let TemplatePart::Expr(x, _) = p {
+                        self.expr(x);
+                    }
+                }
+            }
+            Unary(op, x) => {
+                if *op == UnOp::RefMut && self.rooted_in_self(x) {
+                    self.facts.mutates_self = true;
+                }
+                self.expr(x);
+            }
+            Binary(_, a, b) | Elvis(a, b) | Pair(a, b) | Index(a, b) | ArrayRepeat(a, b) => {
+                self.expr(a);
+                self.expr(b);
+            }
+            In { item, coll, .. } => {
+                self.expr(item);
+                self.expr(coll);
+            }
+            Is { expr, .. } => self.expr(expr),
+            Assign(_, t, v) => {
+                if self.rooted_in_self(t) {
+                    self.facts.mutates_self = true;
+                }
+                self.expr(t);
+                self.expr(v);
+            }
+            Call { callee, args } => {
+                if let Some(n) = callee.ident() {
+                    if !self.is_local(n) {
+                        if let Some(r) = self.methods.get(n) {
+                            if *r != Recv::Static {
+                                self.facts.uses_self = true;
+                            }
+                            if *r == Recv::RefMut {
+                                self.facts.mutates_self = true;
+                            }
+                        }
+                    }
+                }
+                self.expr(callee);
+                for a in args {
+                    self.expr(&a.value);
+                }
+            }
+            MethodCall { recv, name, args, .. } => {
+                if matches!(recv.kind, SelfValue) {
+                    if let Some(Recv::RefMut) = self.methods.get(name) {
+                        self.facts.mutates_self = true;
+                    }
+                } else if MUTATING_METHODS.contains(&name.as_str()) && self.rooted_in_self(recv) {
+                    self.facts.mutates_self = true;
+                }
+                self.expr(recv);
+                for a in args {
+                    self.expr(&a.value);
+                }
+            }
+            Field { recv, .. } | Try(recv) | Unwrap(recv) | Await(recv) | Cast(recv, _) | Paren(recv) | Throw(recv) => self.expr(recv),
+            If { cond, then, else_ } => {
+                self.push();
+                self.cond(cond);
+                self.block(then);
+                self.pop();
+                if let Some(e) = else_ {
+                    self.expr(e);
+                }
+            }
+            When { subject, arms, .. } => {
+                if let Some(s) = subject {
+                    self.expr(s);
+                }
+                for a in arms {
+                    self.push();
+                    for c in &a.conds {
+                        match c {
+                            WhenCond::Pat(p) => self.bind(p),
+                            WhenCond::In { expr, .. } | WhenCond::Expr(expr) => self.expr(expr),
+                            WhenCond::Else => {}
+                        }
+                    }
+                    if let Some(g) = &a.guard {
+                        self.expr(g);
+                    }
+                    self.expr(&a.body);
+                    self.pop();
+                }
+            }
+            Block(b) | Unsafe(b) | Loop { body: b, .. } => self.block(b),
+            Async { block, .. } => self.block(block),
+            While { cond, body, .. } => {
+                self.push();
+                self.cond(cond);
+                self.block(body);
+                self.pop();
+            }
+            DoWhile { body, cond, .. } => {
+                self.block(body);
+                self.expr(cond);
+            }
+            For { pat, iter, body, .. } => {
+                self.expr(iter);
+                self.push();
+                self.bind(pat);
+                self.block(body);
+                self.pop();
+            }
+            Lambda { params, body, .. } => {
+                self.push();
+                for p in params {
+                    self.bind(&p.pat);
+                }
+                self.scopes.last_mut().unwrap().insert("it".into());
+                self.expr(body);
+                self.pop();
+            }
+            Return(Some(x)) => self.expr(x),
+            Break { value: Some(x), .. } => self.expr(x),
+            Tuple(v) | Array(v) | VecLit(v) | MapLit(v) | SetLit(v) => {
+                for x in v {
+                    self.expr(x);
+                }
+            }
+            Range { start, end, .. } => {
+                if let Some(s) = start {
+                    self.expr(s);
+                }
+                if let Some(s) = end {
+                    self.expr(s);
+                }
+            }
+            StructLit { fields, base, .. } => {
+                for (n, v) in fields {
+                    match v {
+                        Some(v) => self.expr(v),
+                        None => {
+                            if !self.is_local(n) && self.fields.contains(n) {
+                                self.facts.uses_self = true;
+                            }
+                        }
+                    }
+                }
+                if let Some(b) = base {
+                    self.expr(b);
+                }
+            }
+            BuiltinMacro { args, .. } => {
+                for a in args {
+                    self.expr(&a.value);
+                }
+            }
+            Macro { text, .. } | Raw(text) => {
+                if contains_word(text, "self") {
+                    self.facts.uses_self = true;
+                }
+            }
+            TryCatch { body, catch } => {
+                self.block(body);
+                if let Some(c) = catch {
+                    self.push();
+                    self.bind(&c.binding);
+                    self.block(&c.body);
+                    self.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn contains_word(text: &str, word: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while let Some(pos) = text[i..].find(word) {
+        let s = i + pos;
+        let e = s + word.len();
+        let before_ok = s == 0 || !(bytes[s - 1].is_ascii_alphanumeric() || bytes[s - 1] == b'_');
+        let after_ok = e >= bytes.len() || !(bytes[e].is_ascii_alphanumeric() || bytes[e] == b'_');
+        if before_ok && after_ok {
+            return true;
+        }
+        i = e;
+    }
+    false
+}
+
+// -------------------------------------------------------------------------------------------
+// Type facts used for automatic derives
+
+const INTS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "Int", "Long", "Short", "Byte", "UInt", "ULong", "UByte", "UShort"];
+
+/// Copy-able without knowing user types.
+pub fn is_copy_simple(t: &Type, k: &Crate, copy_types: &HashSet<String>) -> bool {
+    match t {
+        Type::Path { segs, .. } if segs.len() == 1 => {
+            let n = segs[0].name.as_str();
+            if segs[0].generics.is_none() && (INTS.contains(&n) || matches!(n, "f32" | "f64" | "bool" | "char" | "Double" | "Float" | "Boolean" | "Char")) {
+                return true;
+            }
+            if n == "Option" {
+                if let Some(g) = &segs[0].generics {
+                    return g.iter().all(|a| matches!(a, GenericArg::Type(t) if is_copy_simple(t, k, copy_types)));
+                }
+            }
+            segs[0].generics.is_none() && copy_types.contains(n)
+        }
+        Type::Option(inner) => is_copy_simple(inner, k, copy_types),
+        Type::Tuple(v) => v.iter().all(|t| is_copy_simple(t, k, copy_types)),
+        Type::Array(inner, _) => is_copy_simple(inner, k, copy_types),
+        Type::Ref { mutable: false, lifetime: Some(l), .. } if l == "static" => true,
+        _ => false,
+    }
+}
+
+/// Eq + Hash-able without knowing user types.
+pub fn is_hash_simple(t: &Type, k: &Crate, hash_types: &HashSet<String>) -> bool {
+    match t {
+        Type::Path { segs, .. } if segs.len() == 1 => {
+            let n = segs[0].name.as_str();
+            let args_ok = |seg: &PathSeg| seg.generics.as_ref().map_or(true, |g| g.iter().all(|a| matches!(a, GenericArg::Type(t) if is_hash_simple(t, k, hash_types))));
+            if INTS.contains(&n) || matches!(n, "bool" | "char" | "String" | "Boolean" | "Char") {
+                return segs[0].generics.is_none();
+            }
+            if matches!(n, "Vec" | "Option" | "Box" | "BTreeMap" | "BTreeSet" | "Rc" | "Arc") {
+                return args_ok(&segs[0]);
+            }
+            segs[0].generics.is_none() && hash_types.contains(n)
+        }
+        Type::Option(inner) => is_hash_simple(inner, k, hash_types),
+        Type::Tuple(v) => v.iter().all(|t| is_hash_simple(t, k, hash_types)),
+        Type::Array(inner, _) | Type::Slice(inner) => is_hash_simple(inner, k, hash_types),
+        Type::Ref { mutable: false, inner, .. } => matches!(inner.single_name(), Some("str")) || is_hash_simple(inner, k, hash_types),
+        _ => false,
+    }
+}
+
+pub fn is_type_name_like(s: &str) -> bool {
+    is_type_like(s)
+}

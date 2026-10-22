@@ -1,0 +1,2212 @@
+//! Lowering from the Brs AST to Rust source text.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::ast::*;
+use crate::diag::{Diag, Span};
+use crate::emit::Emitter;
+use crate::lexer::StrPart;
+use crate::parser::is_type_like;
+use crate::sema::{self, Crate, MethodInfo, Recv, VariantShape};
+use crate::visit;
+
+// Rust output precedence levels.
+pub(crate) const P_LOWEST: u8 = 0;
+pub(crate) const P_RANGE: u8 = 1;
+pub(crate) const P_CAST: u8 = 12;
+pub(crate) const P_UNARY: u8 = 13;
+pub(crate) const P_POSTFIX: u8 = 14;
+pub(crate) const P_PRIMARY: u8 = 15;
+
+pub const RT: &str = "crate::__brs";
+
+/// Rust keywords that are valid identifiers in Brs and need `r#`.
+const RUST_ONLY_KEYWORDS: &[&str] = &[
+    "type", "box", "yield", "macro", "final", "priv", "typeof", "unsized", "virtual", "abstract", "become", "override",
+    "gen", "await", "loop", "match", "struct", "trait", "impl", "where", "use", "fn", "let", "ref", "mod", "pub",
+    "move", "dyn", "extern", "unsafe", "do", "try", "static", "const", "enum", "in", "as", "for", "while", "if",
+    "else", "return", "break", "continue", "mut", "true", "false",
+];
+
+pub(crate) const FORMAT_MACROS: &[(&str, usize)] = &[
+    ("println", 0), ("print", 0), ("eprintln", 0), ("eprint", 0), ("format", 0), ("panic", 0), ("todo", 0),
+    ("unimplemented", 0), ("unreachable", 0), ("write", 1), ("writeln", 1), ("assert", 1), ("debug_assert", 1),
+    ("assert_eq", 2), ("assert_ne", 2), ("debug_assert_eq", 2), ("debug_assert_ne", 2), ("format_args", 0),
+];
+
+pub(crate) const OTHER_MACROS: &[&str] = &[
+    "dbg", "matches", "concat", "stringify", "env", "option_env", "include_str", "include_bytes", "line", "file",
+    "column", "module_path", "cfg", "compile_error", "vec",
+];
+
+const STD_AUTO_DYN: &[&str] = &[
+    "Display", "Debug", "Error", "Any", "Read", "Write", "BufRead", "Iterator", "DoubleEndedIterator",
+    "ExactSizeIterator", "IntoIterator", "Future", "ToString", "Fn", "FnMut", "FnOnce",
+];
+
+const DERIVABLE: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "Hash", "Default", "PartialOrd", "Ord"];
+
+const CONTAINERS: &[&str] = &["Box", "Rc", "Arc", "RefCell", "Mutex", "RwLock", "Cell", "Pin", "Weak", "UnsafeCell"];
+
+/// Std trait owning a method name (for assigning `override fun` to a supertype).
+fn std_trait_of_method(m: &str) -> &'static [&'static str] {
+    match m {
+        "fmt" => &["Display", "Debug"],
+        "default" => &["Default"],
+        "clone" => &["Clone"],
+        "eq" | "ne" => &["PartialEq"],
+        "partial_cmp" | "lt" | "le" | "gt" | "ge" => &["PartialOrd"],
+        "cmp" | "max" | "min" => &["Ord"],
+        "hash" => &["Hash"],
+        "next" | "size_hint" | "count" => &["Iterator"],
+        "next_back" => &["DoubleEndedIterator"],
+        "from" => &["From"],
+        "try_from" => &["TryFrom"],
+        "drop" => &["Drop"],
+        "deref" => &["Deref"],
+        "deref_mut" => &["DerefMut"],
+        "from_str" => &["FromStr"],
+        "as_ref" => &["AsRef"],
+        "as_mut" => &["AsMut"],
+        "borrow" => &["Borrow"],
+        "index" => &["Index"],
+        "index_mut" => &["IndexMut"],
+        "into_iter" => &["IntoIterator"],
+        "source" | "description" | "cause" => &["Error"],
+        "poll" => &["Future"],
+        "add" => &["Add"],
+        "sub" => &["Sub"],
+        "mul" => &["Mul"],
+        "div" => &["Div"],
+        "rem" => &["Rem"],
+        "neg" => &["Neg"],
+        "not" => &["Not"],
+        "write_str" => &["Write"],
+        _ => &[],
+    }
+}
+
+fn std_trait_assoc(t: &str) -> &'static [&'static str] {
+    match t {
+        "Iterator" => &["Item"],
+        "IntoIterator" => &["Item", "IntoIter"],
+        "Deref" => &["Target"],
+        "Add" | "Sub" | "Mul" | "Div" | "Rem" | "Neg" | "Not" | "Index" | "Future" | "Shl" | "Shr" | "BitAnd" | "BitOr" | "BitXor" => &["Output"],
+        "FromStr" => &["Err"],
+        "TryFrom" | "TryInto" => &["Error"],
+        _ => &[],
+    }
+}
+
+/// Kotlin operator function names -> (trait, method, is_assign, is_unary)
+fn operator_trait(name: &str) -> Option<(&'static str, &'static str, bool, bool)> {
+    Some(match name {
+        "plus" | "add" => ("Add", "add", false, false),
+        "minus" | "sub" => ("Sub", "sub", false, false),
+        "times" | "mul" => ("Mul", "mul", false, false),
+        "div" => ("Div", "div", false, false),
+        "rem" | "mod" => ("Rem", "rem", false, false),
+        "unaryMinus" | "neg" => ("Neg", "neg", false, true),
+        "not" => ("Not", "not", false, true),
+        "plusAssign" | "add_assign" => ("AddAssign", "add_assign", true, false),
+        "minusAssign" | "sub_assign" => ("SubAssign", "sub_assign", true, false),
+        "timesAssign" | "mul_assign" => ("MulAssign", "mul_assign", true, false),
+        "divAssign" | "div_assign" => ("DivAssign", "div_assign", true, false),
+        "remAssign" | "rem_assign" => ("RemAssign", "rem_assign", true, false),
+        "shl" => ("Shl", "shl", false, false),
+        "shr" => ("Shr", "shr", false, false),
+        "and" | "bitand" => ("BitAnd", "bitand", false, false),
+        "or" | "bitor" => ("BitOr", "bitor", false, false),
+        "xor" | "bitxor" => ("BitXor", "bitxor", false, false),
+        _ => return None,
+    })
+}
+
+fn kotlin_alias(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Int" => "i32",
+        "Long" => "i64",
+        "Short" => "i16",
+        "Byte" => "i8",
+        "UInt" => "u32",
+        "ULong" => "u64",
+        "UShort" => "u16",
+        "UByte" => "u8",
+        "Double" => "f64",
+        "Float" => "f32",
+        "Boolean" => "bool",
+        "Char" => "char",
+        "Unit" => "()",
+        _ => return None,
+    })
+}
+
+pub(crate) const PRIMITIVES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char", "str",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TyPos {
+    Param,
+    Ret,
+    Field,
+    Generic,
+    Container,
+    Local,
+    Plain,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ItemCtx {
+    Top,
+    Local,
+    Object,
+}
+
+#[derive(Clone)]
+pub(crate) struct ClassCtx {
+    pub(crate) name: String,
+    pub(crate) fields: HashMap<String, Type>,
+    pub(crate) methods: HashMap<String, MethodInfo>,
+    pub(crate) self_name: String,
+    pub(crate) is_static: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct FnCtx {
+    pub(crate) throws: bool,
+    /// Value type of the function (Ok type for throwing functions).
+    pub(crate) ret: Option<Type>,
+    pub(crate) is_lambda: bool,
+    pub(crate) tries: Vec<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LoopCtx {
+    pub(crate) dowhile_label: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Target {
+    pub(crate) ty: Option<Type>,
+    /// Wrap the tail value, e.g. `Ok` or `Ok::<_, E>`.
+    pub(crate) wrap: Option<String>,
+}
+
+impl Target {
+    pub(crate) fn none() -> Target {
+        Target { ty: None, wrap: None }
+    }
+    pub(crate) fn ty(t: &Type) -> Target {
+        Target { ty: Some(t.clone()), wrap: None }
+    }
+}
+
+pub(crate) enum PathKind {
+    Module,
+    Type,
+    Value,
+}
+
+pub struct Lowerer<'a> {
+    pub(crate) k: &'a Crate,
+    pub e: Emitter,
+    pub diags: Vec<Diag>,
+    pub(crate) module: Vec<String>,
+    pub(crate) is_root: bool,
+    pub(crate) path_roots: HashSet<String>,
+    pub(crate) scopes: Vec<HashMap<String, Option<Type>>>,
+    pub(crate) class: Option<ClassCtx>,
+    pub(crate) fns: Vec<FnCtx>,
+    pub(crate) loops: Vec<LoopCtx>,
+    pub(crate) tmp: usize,
+    pub(crate) tests: Vec<(Vec<Attr>, TestDecl)>,
+    pub(crate) in_test_mod: bool,
+}
+
+pub fn esc(name: &str) -> String {
+    if name.starts_with("r#") {
+        return name.to_string();
+    }
+    if RUST_ONLY_KEYWORDS.contains(&name) {
+        format!("r#{}", name)
+    } else {
+        name.to_string()
+    }
+}
+
+/// `"NotFound"` -> `"not found"`
+fn humanize(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push(' ');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
+fn slug(name: &str) -> String {
+    let mut s: String = name.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+    while s.contains("__") {
+        s = s.replace("__", "_");
+    }
+    let s = s.trim_matches('_').to_string();
+    if s.is_empty() || s.chars().next().unwrap().is_ascii_digit() {
+        format!("test_{}", s)
+    } else {
+        s
+    }
+}
+
+impl<'a> Lowerer<'a> {
+    pub fn new(k: &'a Crate, module: Vec<String>, is_root: bool) -> Lowerer<'a> {
+        let mut path_roots: HashSet<String> = ["std", "core", "alloc", "crate", "super"].iter().map(|s| s.to_string()).collect();
+        path_roots.extend(k.modules.iter().cloned());
+        path_roots.extend(k.extern_crates.iter().cloned());
+        Lowerer {
+            k,
+            e: Emitter::new(),
+            diags: Vec::new(),
+            module,
+            is_root,
+            path_roots,
+            scopes: vec![HashMap::new()],
+            class: None,
+            fns: Vec::new(),
+            loops: Vec::new(),
+            tmp: 0,
+            tests: Vec::new(),
+            in_test_mod: false,
+        }
+    }
+
+    pub(crate) fn error(&mut self, span: Span, msg: impl Into<String>) {
+        self.diags.push(Diag::error(span, msg));
+    }
+
+    pub(crate) fn fresh(&mut self, base: &str) -> String {
+        self.tmp += 1;
+        format!("__brs_{}{}", base, self.tmp)
+    }
+
+    // ------------------------------------------------------------------ scopes
+
+    pub(crate) fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+    pub(crate) fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+    pub(crate) fn bind_name(&mut self, name: &str, ty: Option<Type>) {
+        self.scopes.last_mut().unwrap().insert(name.to_string(), ty);
+    }
+    pub(crate) fn bind_pat(&mut self, p: &Pat, ty: Option<Type>) {
+        if let Pat::Ident { name, sub: None, .. } = p {
+            self.bind_name(name, ty);
+            return;
+        }
+        let mut names = Vec::new();
+        p.bindings(&mut names);
+        for n in names {
+            self.bind_name(&n, None);
+        }
+    }
+    pub(crate) fn local(&self, name: &str) -> Option<&Option<Type>> {
+        for s in self.scopes.iter().rev() {
+            if let Some(t) = s.get(name) {
+                return Some(t);
+            }
+        }
+        None
+    }
+    pub(crate) fn is_local(&self, name: &str) -> bool {
+        self.local(name).is_some()
+    }
+
+    pub(crate) fn implicit_field(&self, name: &str) -> Option<String> {
+        if self.is_local(name) {
+            return None;
+        }
+        let c = self.class.as_ref()?;
+        if c.is_static {
+            return None;
+        }
+        if c.fields.contains_key(name) {
+            Some(format!("{}.{}", c.self_name, esc(name)))
+        } else {
+            None
+        }
+    }
+
+
+    // ------------------------------------------------------------------ file
+
+    pub fn lower_file(&mut self, file: &File) {
+        for d in &file.inner_docs {
+            self.e.w(&format!("//{}", d));
+            self.e.nl();
+        }
+        self.e.w("#[allow(unused_imports)]\nuse crate::__brs::prelude::*;");
+        self.e.nl();
+        self.ext_imports();
+        // imports first so path roots are known
+        for it in &file.items {
+            if let ItemKind::Import(i) = &it.kind {
+                self.note_import(&i.tree);
+            }
+        }
+        for it in &file.items {
+            self.e.nl();
+            self.item(it, ItemCtx::Top);
+        }
+        self.emit_tests();
+    }
+
+    fn ext_imports(&mut self) {
+        let mut seen = HashSet::new();
+        let traits = self.k.ext_traits.clone();
+        for (m, t) in traits {
+            if m == self.module && !self.in_test_mod {
+                continue;
+            }
+            if !seen.insert((m.clone(), t.clone())) {
+                continue;
+            }
+            let mut path = String::from("crate");
+            for s in &m {
+                path.push_str("::");
+                path.push_str(s);
+            }
+            self.e.w(&format!("#[allow(unused_imports)]\nuse {}::{} as _;", path, t));
+            self.e.nl();
+        }
+    }
+
+    fn note_import(&mut self, tree: &UseTree) {
+        match tree {
+            UseTree::Path { segments, alias } => {
+                let name = alias.clone().unwrap_or_else(|| segments.last().cloned().unwrap_or_default());
+                if !name.is_empty() && !is_type_like(&name) && name.chars().next().map_or(false, |c| c.is_lowercase()) {
+                    self.path_roots.insert(name);
+                }
+            }
+            UseTree::Group { items, .. } => {
+                for i in items {
+                    self.note_import(i);
+                }
+            }
+            UseTree::Glob { .. } => {}
+        }
+    }
+
+    fn emit_tests(&mut self) {
+        if self.tests.is_empty() {
+            return;
+        }
+        let tests = std::mem::take(&mut self.tests);
+        self.e.nl();
+        self.e.w("#[cfg(test)]\nmod __brs_tests {");
+        self.e.indent();
+        self.e.nl();
+        self.e.w("#[allow(unused_imports)]\nuse super::*;");
+        self.e.nl();
+        self.in_test_mod = true;
+        self.ext_imports();
+        self.in_test_mod = false;
+        let mut used = HashSet::new();
+        for (attrs, t) in tests {
+            self.e.nl();
+            let mut name = slug(&t.name);
+            while !used.insert(name.clone()) {
+                name.push('_');
+            }
+            self.e.w(&format!("/// {}", t.name.replace('\n', " ")));
+            self.e.nl();
+            let custom = attrs.iter().any(|a| a.name().ends_with("test"));
+            self.attrs(&attrs, &[]);
+            if !custom {
+                self.e.w("#[test]");
+                self.e.nl();
+            }
+            let asyncs = if t.is_async { "async " } else { "" };
+            if t.throws {
+                self.e.w(&format!("{}fn {}() -> ::std::result::Result<(), {}::AnyError> ", asyncs, name, RT));
+            } else {
+                self.e.w(&format!("{}fn {}() ", asyncs, name));
+            }
+            self.fns.push(FnCtx { throws: t.throws, ret: None, is_lambda: false, tries: Vec::new() });
+            self.push_scope();
+            self.fn_block(&t.body, None, t.throws);
+            self.pop_scope();
+            self.fns.pop();
+            self.e.nl();
+        }
+        self.e.dedent();
+        self.e.w("}");
+        self.e.nl();
+    }
+
+    // ------------------------------------------------------------------ attributes & docs
+
+    pub(crate) fn docs(&mut self, docs: &[String]) {
+        for d in docs {
+            self.e.w(&format!("///{}", d));
+            self.e.nl();
+        }
+    }
+
+    /// Emits attributes, merging any derives with `extra_derives`.
+    pub(crate) fn attrs(&mut self, attrs: &[Attr], extra_derives: &[String]) {
+        let mut derives: Vec<String> = extra_derives.to_vec();
+        let mut rest = Vec::new();
+        for a in attrs {
+            match a {
+                Attr::Brs { name, args, .. } => match name.as_str() {
+                    "derive" => {
+                        if let Some(args) = args {
+                            for d in args.split(',') {
+                                let d = d.trim().to_string();
+                                if !d.is_empty() && !derives.contains(&d) {
+                                    derives.push(d);
+                                }
+                            }
+                        }
+                    }
+                    "no_auto_derive" | "from" | "source" => {}
+                    _ => rest.push(match args {
+                        Some(a) => format!("#[{}({})]", name, a),
+                        None => format!("#[{}]", name),
+                    }),
+                },
+                Attr::Raw(s) => {
+                    let t = s.trim();
+                    if let Some(inner) = t.strip_prefix("derive(").and_then(|x| x.strip_suffix(')')) {
+                        for d in inner.split(',') {
+                            let d = d.trim().to_string();
+                            if !d.is_empty() && !derives.contains(&d) {
+                                derives.push(d);
+                            }
+                        }
+                    } else {
+                        rest.push(format!("#[{}]", s));
+                    }
+                }
+            }
+        }
+        if !derives.is_empty() {
+            self.e.w(&format!("#[derive({})]", derives.join(", ")));
+            self.e.nl();
+        }
+        for r in rest {
+            self.e.w(&r);
+            self.e.nl();
+        }
+    }
+
+    pub(crate) fn vis(&self, v: &Vis, ctx: ItemCtx) -> String {
+        match v {
+            Vis::Default | Vis::Public => {
+                if ctx == ItemCtx::Local {
+                    String::new()
+                } else {
+                    "pub ".into()
+                }
+            }
+            Vis::Private => String::new(),
+            Vis::Internal => "pub(crate) ".into(),
+            Vis::Raw(s) => format!("{} ", s),
+        }
+    }
+
+    // ------------------------------------------------------------------ types
+
+    pub(crate) fn is_trait_name(&self, n: &str) -> bool {
+        self.k.is_trait(n) || (STD_AUTO_DYN.contains(&n) && !self.k.is_user_type(n) && !self.k.classes.contains_key(n))
+    }
+
+    pub fn ty(&self, t: &Type, pos: TyPos) -> String {
+        match t {
+            Type::Path { global, segs, .. } => {
+                // bare trait used as a type
+                if segs.len() == 1 && segs[0].fn_sugar.is_none() && self.is_trait_name(&segs[0].name) && pos != TyPos::Plain {
+                    let inner = self.path_ty(*global, segs, TyPos::Generic);
+                    return self.trait_obj(&inner, pos);
+                }
+                if segs.len() == 1 && segs[0].fn_sugar.is_some() && pos != TyPos::Plain {
+                    let inner = self.path_ty(*global, segs, TyPos::Generic);
+                    return self.trait_obj(&inner, pos);
+                }
+                self.path_ty(*global, segs, pos)
+            }
+            Type::Qualified { ty, trait_, rest } => {
+                let mut s = format!("<{}", self.ty(ty, TyPos::Plain));
+                if let Some(t) = trait_ {
+                    s.push_str(" as ");
+                    s.push_str(&self.ty(t, TyPos::Plain));
+                }
+                s.push('>');
+                for seg in rest {
+                    s.push_str("::");
+                    s.push_str(&self.seg(seg, TyPos::Generic));
+                }
+                s
+            }
+            Type::Ref { lifetime, mutable, inner } => {
+                let mut s = String::from("&");
+                if let Some(l) = lifetime {
+                    s.push_str(&format!("'{} ", l));
+                }
+                if *mutable {
+                    s.push_str("mut ");
+                }
+                s.push_str(&self.ty(inner, TyPos::Container));
+                s
+            }
+            Type::Ptr { mutable, inner } => format!("*{} {}", if *mutable { "mut" } else { "const" }, self.ty(inner, TyPos::Container)),
+            Type::Tuple(v) => {
+                if v.len() == 1 {
+                    format!("({},)", self.ty(&v[0], TyPos::Generic))
+                } else {
+                    format!("({})", v.iter().map(|t| self.ty(t, TyPos::Generic)).collect::<Vec<_>>().join(", "))
+                }
+            }
+            Type::Array(inner, n) => format!("[{}; {}]", self.ty(inner, TyPos::Generic), n),
+            Type::Slice(inner) => format!("[{}]", self.ty(inner, TyPos::Generic)),
+            Type::Option(inner) => format!("Option<{}>", self.ty(inner, TyPos::Generic)),
+            Type::Fn { params, ret } => {
+                let ps = params.iter().map(|t| self.ty(t, TyPos::Generic)).collect::<Vec<_>>().join(", ");
+                let r = if ret.is_unit() { String::new() } else { format!(" -> {}", self.ty(ret, TyPos::Ret)) };
+                let base = match pos {
+                    TyPos::Param => "FnMut",
+                    _ => "Fn",
+                };
+                let sig = format!("{}({}){}", base, ps, r);
+                self.trait_obj(&sig, pos)
+            }
+            Type::Dyn(b) => format!("dyn {}", self.bounds(b)),
+            Type::Impl(b) => format!("impl {}", self.bounds(b)),
+            Type::Bounds(b) => self.bounds(b),
+            Type::Lifetime(l) => format!("'{}", l),
+            Type::Maybe(t) => format!("?{}", self.ty(t, TyPos::Plain)),
+            Type::Never => "!".into(),
+            Type::Infer => "_".into(),
+            Type::Raw(s) => s.clone(),
+        }
+    }
+
+    fn trait_obj(&self, inner: &str, pos: TyPos) -> String {
+        match pos {
+            TyPos::Param | TyPos::Ret => format!("impl {}", inner),
+            TyPos::Container => format!("dyn {}", inner),
+            TyPos::Field | TyPos::Generic | TyPos::Local => format!("Box<dyn {}>", inner),
+            TyPos::Plain => inner.to_string(),
+        }
+    }
+
+    fn path_ty(&self, global: bool, segs: &[PathSeg], pos: TyPos) -> String {
+        let mut s = String::new();
+        if global {
+            s.push_str("::");
+        }
+        // crate-relative module paths
+        if segs.len() > 1 && self.k.modules.contains(&segs[0].name) && !self.is_local(&segs[0].name) {
+            s.push_str("crate::");
+        }
+        for (i, seg) in segs.iter().enumerate() {
+            if i > 0 {
+                s.push_str("::");
+            }
+            if segs.len() == 1 && seg.generics.is_none() {
+                if let Some(a) = kotlin_alias(&seg.name) {
+                    if !self.k.is_user_type(&seg.name) {
+                        s.push_str(a);
+                        continue;
+                    }
+                }
+            }
+            let _ = pos;
+            s.push_str(&self.seg(seg, TyPos::Generic));
+        }
+        s
+    }
+
+    fn seg(&self, seg: &PathSeg, _pos: TyPos) -> String {
+        let mut s = esc(&seg.name);
+        let container = CONTAINERS.contains(&seg.name.as_str());
+        if let Some(g) = &seg.generics {
+            s.push('<');
+            let parts: Vec<String> = g
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => self.ty(t, if container { TyPos::Container } else { TyPos::Generic }),
+                    GenericArg::Lifetime(l) => format!("'{}", l),
+                    GenericArg::Binding(n, t) => format!("{} = {}", n, self.ty(t, TyPos::Generic)),
+                    GenericArg::Const(c) => c.clone(),
+                })
+                .collect();
+            s.push_str(&parts.join(", "));
+            s.push('>');
+        }
+        if let Some((params, ret)) = &seg.fn_sugar {
+            s.push('(');
+            s.push_str(&params.iter().map(|t| self.ty(t, TyPos::Generic)).collect::<Vec<_>>().join(", "));
+            s.push(')');
+            if let Some(r) = ret {
+                if !r.is_unit() {
+                    s.push_str(" -> ");
+                    s.push_str(&self.ty(r, TyPos::Ret));
+                }
+            }
+        }
+        s
+    }
+
+    fn bounds(&self, b: &[Type]) -> String {
+        b.iter()
+            .map(|t| match t {
+                Type::Fn { params, ret } => {
+                    let ps = params.iter().map(|t| self.ty(t, TyPos::Generic)).collect::<Vec<_>>().join(", ");
+                    if ret.is_unit() {
+                        format!("FnMut({})", ps)
+                    } else {
+                        format!("FnMut({}) -> {}", ps, self.ty(ret, TyPos::Ret))
+                    }
+                }
+                _ => self.ty(t, TyPos::Plain),
+            })
+            .collect::<Vec<_>>()
+            .join(" + ")
+    }
+
+    fn generics_decl(&self, g: &Generics) -> String {
+        if g.params.is_empty() {
+            return String::new();
+        }
+        let parts: Vec<String> = g
+            .params
+            .iter()
+            .map(|p| match p {
+                GenericParam::Lifetime { name, bounds } => {
+                    if bounds.is_empty() {
+                        format!("'{}", name)
+                    } else {
+                        format!("'{}: {}", name, bounds.join(" + "))
+                    }
+                }
+                GenericParam::Type { name, bounds, default } => {
+                    let mut s = name.clone();
+                    if !bounds.is_empty() {
+                        s.push_str(": ");
+                        s.push_str(&self.bounds(bounds));
+                    }
+                    if let Some(d) = default {
+                        s.push_str(" = ");
+                        s.push_str(&self.ty(d, TyPos::Generic));
+                    }
+                    s
+                }
+                GenericParam::Const { name, ty, default } => {
+                    let mut s = format!("const {}: {}", name, self.ty(ty, TyPos::Plain));
+                    if let Some(d) = default {
+                        s.push_str(" = ");
+                        s.push_str(d);
+                    }
+                    s
+                }
+            })
+            .collect();
+        format!("<{}>", parts.join(", "))
+    }
+
+    fn generics_names(&self, g: &Generics) -> String {
+        if g.params.is_empty() {
+            return String::new();
+        }
+        let parts: Vec<String> = g
+            .params
+            .iter()
+            .map(|p| match p {
+                GenericParam::Lifetime { name, .. } => format!("'{}", name),
+                GenericParam::Type { name, .. } | GenericParam::Const { name, .. } => name.clone(),
+            })
+            .collect();
+        format!("<{}>", parts.join(", "))
+    }
+
+    fn where_clause(&self, g: &Generics) -> String {
+        if g.where_clause.is_empty() {
+            return String::new();
+        }
+        let parts: Vec<String> = g
+            .where_clause
+            .iter()
+            .map(|w| match w {
+                WherePred::Type { ty, bounds } => format!("{}: {}", self.ty(ty, TyPos::Plain), self.bounds(bounds)),
+                WherePred::Lifetime { name, bounds } => format!("'{}: {}", name, bounds.join(" + ")),
+            })
+            .collect();
+        format!(" where {}", parts.join(", "))
+    }
+
+    // ------------------------------------------------------------------ patterns
+
+    pub(crate) fn pat(&mut self, p: &Pat) -> String {
+        match p {
+            Pat::Wild => "_".into(),
+            Pat::Rest => "..".into(),
+            Pat::Null => "None".into(),
+            Pat::Ident { name, by_ref, mutable, sub, .. } => {
+                let mut s = String::new();
+                if *by_ref {
+                    s.push_str("ref ");
+                }
+                if *mutable {
+                    s.push_str("mut ");
+                }
+                s.push_str(&esc(name));
+                if let Some(sub) = sub {
+                    s.push_str(" @ ");
+                    s.push_str(&self.pat(sub));
+                }
+                s
+            }
+            Pat::Lit(e) => self.lit_text(e),
+            Pat::Range { lo, hi, inclusive } => {
+                let lo = lo.as_ref().map(|e| self.lit_text(e)).unwrap_or_default();
+                let hi = hi.as_ref().map(|e| self.lit_text(e)).unwrap_or_default();
+                format!("{}{}{}", lo, if *inclusive { "..=" } else { ".." }, hi)
+            }
+            Pat::Tuple(v) => {
+                let parts: Vec<String> = v.iter().map(|p| self.pat(p)).collect();
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
+            }
+            Pat::Slice(v) => format!("[{}]", v.iter().map(|p| self.pat(p)).collect::<Vec<_>>().join(", ")),
+            Pat::Ref { mutable, pat } => format!("&{}{}", if *mutable { "mut " } else { "" }, self.pat(pat)),
+            Pat::Or(v) => v.iter().map(|p| self.pat(p)).collect::<Vec<_>>().join(" | "),
+            Pat::Typed { pat, ty } => format!("{}: {}", self.pat(pat), self.ty(ty, TyPos::Local)),
+            Pat::Raw(s) => s.clone(),
+            Pat::Path(segs, _) => {
+                let (path, shape) = self.resolve_variant_path(segs);
+                match shape {
+                    Some(VariantShape::Named(_)) => format!("{} {{ .. }}", path),
+                    Some(VariantShape::Tuple(_)) => format!("{}(..)", path),
+                    _ => path,
+                }
+            }
+            Pat::TupleStruct { path, elems, .. } => {
+                let (p, shape) = self.resolve_variant_path(path);
+                if let Some(VariantShape::Named(fields)) = shape {
+                    let mut parts = Vec::new();
+                    let mut rest = false;
+                    for (i, e) in elems.iter().enumerate() {
+                        if matches!(e, Pat::Rest) {
+                            rest = true;
+                            continue;
+                        }
+                        if let Some((fname, _)) = fields.get(i) {
+                            let sub = self.pat(e);
+                            if sub == esc(fname) {
+                                parts.push(sub);
+                            } else {
+                                parts.push(format!("{}: {}", esc(fname), sub));
+                            }
+                        }
+                    }
+                    if rest || elems.len() < fields.len() {
+                        parts.push("..".into());
+                    }
+                    return format!("{} {{ {} }}", p, parts.join(", "));
+                }
+                format!("{}({})", p, elems.iter().map(|e| self.pat(e)).collect::<Vec<_>>().join(", "))
+            }
+            Pat::Struct { path, fields, rest, .. } => {
+                let (p, _) = self.resolve_variant_path(path);
+                let mut parts: Vec<String> = fields
+                    .iter()
+                    .map(|(n, sub)| match sub {
+                        Some(sp) => format!("{}: {}", esc(n), self.pat(sp)),
+                        None => esc(n),
+                    })
+                    .collect();
+                if *rest {
+                    parts.push("..".into());
+                }
+                if parts.is_empty() {
+                    format!("{} {{}}", p)
+                } else {
+                    format!("{} {{ {} }}", p, parts.join(", "))
+                }
+            }
+        }
+    }
+
+    /// Resolves `Circle`, `Shape.Circle`, `Shape::Circle` to a qualified variant path.
+    pub(crate) fn resolve_variant_path(&self, segs: &[String]) -> (String, Option<VariantShape>) {
+        if segs.len() == 1 {
+            let n = &segs[0];
+            if !self.k.classes.contains_key(n) && !self.is_local(n) {
+                if let Some(en) = self.k.variant_enum(n) {
+                    let shape = en.variant(n).cloned();
+                    return (format!("{}::{}", en.name, n), shape);
+                }
+            }
+            return (esc(n), None);
+        }
+        let mut path = self.join_path(segs);
+        let en_name = &segs[segs.len() - 2];
+        let vname = &segs[segs.len() - 1];
+        let shape = if en_name == "Self" {
+            self.class.as_ref().and_then(|c| self.k.enum_(&c.name)).and_then(|e| e.variant(vname).cloned())
+        } else {
+            self.k.enum_(en_name).and_then(|e| e.variant(vname).cloned())
+        };
+        if path.is_empty() {
+            path = segs.join("::");
+        }
+        (path, shape)
+    }
+
+    pub(crate) fn join_path(&self, segs: &[String]) -> String {
+        let mut s = String::new();
+        if segs.len() > 1 && self.k.modules.contains(&segs[0]) && !self.is_local(&segs[0]) {
+            if self.k.has_lib && self.is_root && self.module.is_empty() && self.is_main_file() {
+                s.push_str(&self.k.crate_name.replace('-', "_"));
+                s.push_str("::");
+            } else {
+                s.push_str("crate::");
+            }
+        }
+        let parts: Vec<String> = segs.iter().map(|x| if x.is_empty() { String::new() } else { esc(x) }).collect();
+        s.push_str(&parts.join("::"));
+        s
+    }
+
+    fn is_main_file(&self) -> bool {
+        false
+    }
+
+    /// Literal-ish expression text (used in patterns and const contexts).
+    pub(crate) fn lit_text(&mut self, e: &Expr) -> String {
+        match &e.kind {
+            ExprKind::Int(s) | ExprKind::Float(s) | ExprKind::Char(s) | ExprKind::RawStr(s) => s.clone(),
+            ExprKind::Bool(b) => b.to_string(),
+            ExprKind::Str(parts) => format!("\"{}\"", lit_parts(parts)),
+            ExprKind::Unary(UnOp::Neg, x) => format!("-{}", self.lit_text(x)),
+            ExprKind::Path { segs, .. } => self.resolve_variant_path(segs).0,
+            ExprKind::Null => "None".into(),
+            _ => {
+                self.error(e.span, "expected a literal");
+                "_".into()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ items
+
+    pub(crate) fn item(&mut self, it: &Item, ctx: ItemCtx) {
+        self.e.mark(it.span);
+        match &it.kind {
+            ItemKind::Fun(f) if f.receiver.is_some() => self.ext_fun(it, f, ctx),
+            ItemKind::Fun(f) => self.free_fun(it, f, ctx),
+            ItemKind::Type(t) => match t.kind {
+                TypeKind::Enum => self.enum_decl(it, t, ctx),
+                _ => self.class_decl(it, t, ctx),
+            },
+            ItemKind::Trait(t) => self.trait_decl(it, t, ctx),
+            ItemKind::Impl(imp) => self.impl_decl(it, imp),
+            ItemKind::Import(i) => {
+                self.note_import(&i.tree);
+                self.docs(&it.docs);
+                self.attrs(&it.attrs, &[]);
+                let vis = match it.vis {
+                    Vis::Public => "pub ".to_string(),
+                    Vis::Internal => "pub(crate) ".to_string(),
+                    Vis::Raw(ref s) => format!("{} ", s),
+                    _ => String::new(),
+                };
+                let tree = self.use_tree(&i.tree, true);
+                self.e.w(&format!("{}use {};", vis, tree));
+                self.e.nl();
+            }
+            ItemKind::Const(c) | ItemKind::Static(c) => {
+                let is_static = matches!(it.kind, ItemKind::Static(_));
+                self.docs(&it.docs);
+                self.attrs(&it.attrs, &[]);
+                let vis = self.vis(&it.vis, ctx);
+                let ty = match &c.ty {
+                    Some(t) => self.ty(t, TyPos::Plain),
+                    None => match c.value.as_ref().and_then(infer_lit_type) {
+                        Some(t) => t,
+                        None => {
+                            self.error(it.span, format!("constant `{}` needs a type annotation", c.name));
+                            "_".into()
+                        }
+                    },
+                };
+                let kw = if is_static {
+                    if c.mutable {
+                        "static mut"
+                    } else {
+                        "static"
+                    }
+                } else {
+                    "const"
+                };
+                self.e.w(&format!("{}{} {}: {}", vis, kw, c.name, ty));
+                if let Some(v) = &c.value {
+                    self.e.w(" = ");
+                    self.expr(v, P_LOWEST);
+                }
+                self.e.w(";");
+                self.e.nl();
+            }
+            ItemKind::TypeAlias { name, generics, ty } => {
+                self.docs(&it.docs);
+                self.attrs(&it.attrs, &[]);
+                let vis = self.vis(&it.vis, ctx);
+                let g = self.generics_decl(generics);
+                let t = self.ty(ty, TyPos::Field);
+                self.e.w(&format!("{}type {}{} = {};", vis, name, g, t));
+                self.e.nl();
+            }
+            ItemKind::Mod { name, items } => {
+                self.docs(&it.docs);
+                self.attrs(&it.attrs, &[]);
+                let vis = self.vis(&it.vis, ctx);
+                self.e.w(&format!("{}mod {} {{", vis, name));
+                self.e.indent();
+                self.e.nl();
+                self.e.w("#[allow(unused_imports)]\nuse crate::__brs::prelude::*;");
+                self.e.nl();
+                self.module.push(name.clone());
+                for i in items {
+                    self.e.nl();
+                    self.item(i, ItemCtx::Top);
+                }
+                self.module.pop();
+                self.e.dedent();
+                self.e.w("}");
+                self.e.nl();
+            }
+            ItemKind::Object { name, items } => {
+                self.docs(&it.docs);
+                self.attrs(&it.attrs, &[]);
+                let vis = self.vis(&it.vis, ctx);
+                self.e.w(&format!("#[allow(non_snake_case)]\n{}mod {} {{", vis, name));
+                self.e.indent();
+                self.e.nl();
+                self.e.w("#[allow(unused_imports)]\nuse super::*;");
+                self.e.nl();
+                for i in items {
+                    self.e.nl();
+                    self.item(i, ItemCtx::Object);
+                }
+                self.e.dedent();
+                self.e.w("}");
+                self.e.nl();
+            }
+            ItemKind::Test(t) => {
+                self.tests.push((it.attrs.clone(), t.clone()));
+            }
+            ItemKind::Raw(s) => {
+                self.e.raw_lines(s);
+                self.e.nl();
+            }
+            ItemKind::Macro(s) => {
+                self.docs(&it.docs);
+                self.attrs(&it.attrs, &[]);
+                self.e.raw_lines(s);
+                self.e.nl();
+            }
+        }
+    }
+
+    fn use_tree(&self, t: &UseTree, top: bool) -> String {
+        let prefix = |segs: &[String]| -> String {
+            if top && !segs.is_empty() && self.k.modules.contains(&segs[0]) {
+                format!("crate::{}", segs.iter().map(|s| esc(s)).collect::<Vec<_>>().join("::"))
+            } else {
+                segs.iter().map(|s| if s.is_empty() { String::new() } else { esc(s) }).collect::<Vec<_>>().join("::")
+            }
+        };
+        match t {
+            UseTree::Path { segments, alias } => {
+                let p = prefix(segments);
+                match alias {
+                    Some(a) => format!("{} as {}", p, a),
+                    None => p,
+                }
+            }
+            UseTree::Glob { segments } => {
+                if segments.is_empty() {
+                    "*".into()
+                } else {
+                    format!("{}::*", prefix(segments))
+                }
+            }
+            UseTree::Group { segments, items } => {
+                let inner: Vec<String> = items.iter().map(|i| self.use_tree(i, segments.is_empty() && top)).collect();
+                if segments.is_empty() {
+                    format!("{{{}}}", inner.join(", "))
+                } else {
+                    format!("{}::{{{}}}", prefix(segments), inner.join(", "))
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ functions
+
+    fn ret_type(&self, f: &FunDecl, pos: TyPos) -> Option<String> {
+        let value = f.ret.as_ref().filter(|t| !t.is_unit());
+        match &f.throws {
+            Throws::No => value.map(|t| self.ty(t, pos)),
+            Throws::Any => Some(format!(
+                "::std::result::Result<{}, {}::AnyError>",
+                value.map(|t| self.ty(t, TyPos::Generic)).unwrap_or_else(|| "()".into()),
+                RT
+            )),
+            Throws::Ty(e) => Some(format!(
+                "::std::result::Result<{}, {}>",
+                value.map(|t| self.ty(t, TyPos::Generic)).unwrap_or_else(|| "()".into()),
+                self.ty(e, TyPos::Generic)
+            )),
+        }
+    }
+
+    fn params_text(&mut self, f: &FunDecl, recv: Option<String>) -> String {
+        let mut parts = Vec::new();
+        if let Some(r) = recv {
+            parts.push(r);
+        }
+        for p in &f.params {
+            let fn_typed = matches!(p.ty, Type::Fn { .. });
+            let mut pat = self.pat(&p.pat);
+            if fn_typed {
+                let called = p.name().map_or(false, |n| f.body.as_ref().map_or(false, |b| visit::calls_ident(b, n)));
+                if called && !pat.starts_with("mut ") {
+                    pat = format!("mut {}", pat);
+                }
+            }
+            let ty = self.ty(&p.ty, TyPos::Param);
+            parts.push(format!("{}: {}", pat, ty));
+        }
+        parts.join(", ")
+    }
+
+    fn fn_header(&self, f: &FunDecl) -> String {
+        let mut s = String::new();
+        if f.mods.is_const {
+            s.push_str("const ");
+        }
+        if f.mods.is_async {
+            s.push_str("async ");
+        }
+        if f.mods.is_unsafe {
+            s.push_str("unsafe ");
+        }
+        if let Some(abi) = &f.mods.abi {
+            s.push_str(&format!("extern \"{}\" ", abi));
+        }
+        s
+    }
+
+    fn bind_params(&mut self, f: &FunDecl) {
+        for p in &f.params {
+            self.bind_pat(&p.pat, Some(p.ty.clone()));
+        }
+    }
+
+    fn free_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
+        let is_main = f.name == "main" && ctx == ItemCtx::Top && self.is_root && self.module.is_empty();
+        let wrap_main = is_main && !matches!(f.throws, Throws::No);
+        self.docs(&it.docs);
+        let (main_attrs, other_attrs): (Vec<Attr>, Vec<Attr>) = if wrap_main {
+            it.attrs.iter().cloned().partition(|a| a.name().ends_with("main"))
+        } else {
+            (Vec::new(), it.attrs.clone())
+        };
+        self.attrs(&other_attrs, &[]);
+        let vis = if is_main { String::new() } else { self.vis(&it.vis, ctx) };
+        let name = if wrap_main { "__brs_main".to_string() } else { esc(&f.name) };
+        let header = self.fn_header(f);
+        let g = self.generics_decl(&f.generics);
+        self.push_scope();
+        let params = self.params_text(f, None);
+        let ret = self.ret_type(f, TyPos::Ret);
+        let wc = self.where_clause(&f.generics);
+        self.e.w(&format!("{}{}fn {}{}({})", vis, header, name, g, params));
+        if let Some(r) = &ret {
+            self.e.w(&format!(" -> {}", r));
+        }
+        self.e.w(&wc);
+        self.bind_params(f);
+        match &f.body {
+            Some(body) => {
+                self.e.w(" ");
+                self.fun_body(f, body);
+            }
+            None => self.e.w(";"),
+        }
+        self.pop_scope();
+        self.e.nl();
+        if wrap_main {
+            self.e.nl();
+            self.attrs(&main_attrs, &[]);
+            let asyncs = if f.mods.is_async { "async " } else { "" };
+            let aw = if f.mods.is_async { ".await" } else { "" };
+            self.e.w(&format!(
+                "{}fn main() {{\n    if let Err(err) = __brs_main(){} {{\n        {}::report(err);\n        ::std::process::exit(1);\n    }}\n}}",
+                asyncs, aw, RT
+            ));
+            self.e.nl();
+        }
+    }
+
+    fn fun_body(&mut self, f: &FunDecl, body: &FunBody) {
+        let throws = !matches!(f.throws, Throws::No);
+        let ret = f.ret.clone().filter(|t| !t.is_unit());
+        self.fns.push(FnCtx { throws, ret: ret.clone(), is_lambda: false, tries: Vec::new() });
+        match body {
+            FunBody::Block(b) => self.fn_block(b, ret.as_ref(), throws),
+            FunBody::Expr(e) => {
+                let b = Block { stmts: vec![Stmt::Expr { expr: e.clone(), semi: false }], span: e.span };
+                self.fn_block(&b, ret.as_ref(), throws);
+            }
+        }
+        self.fns.pop();
+    }
+
+    /// Emits a function body block: tail value for non-unit functions, `Ok(())` for unit throwing ones.
+    pub(crate) fn fn_block(&mut self, b: &Block, ret: Option<&Type>, throws: bool) {
+        self.e.w("{");
+        self.e.indent();
+        self.push_scope();
+        match ret {
+            Some(t) => {
+                let target = Target { ty: Some(t.clone()), wrap: if throws { Some("Ok".into()) } else { None } };
+                self.stmts_with_tail(&b.stmts, Some(&target));
+            }
+            None => {
+                self.stmts_with_tail(&b.stmts, None);
+                if throws && !ends_diverging(&b.stmts) {
+                    self.e.nl();
+                    self.e.w("Ok(())");
+                }
+            }
+        }
+        self.pop_scope();
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+    }
+
+    fn ext_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
+        let recv_ty = f.receiver.as_ref().unwrap();
+        let tname = sema::ext_trait_name(&self.module, &f.name);
+        let recv = match &f.self_param {
+            Some(SelfParam::Value { mutable }) => if *mutable { "mut self" } else { "self" }.to_string(),
+            Some(SelfParam::RefMut) => "&mut self".into(),
+            Some(SelfParam::Typed(t)) => format!("self: {}", self.ty(t, TyPos::Plain)),
+            _ if f.mods.is_mut => "&mut self".into(),
+            _ => "&self".into(),
+        };
+        let g = self.generics_decl(&f.generics);
+        let gn = self.generics_names(&f.generics);
+        let wc = self.where_clause(&f.generics);
+        let header = self.fn_header(f);
+        self.push_scope();
+        let params = self.params_text(f, Some(recv));
+        let ret = self.ret_type(f, TyPos::Ret);
+        let sig = format!(
+            "{}fn {}({}){}",
+            header,
+            esc(&f.name),
+            params,
+            ret.as_ref().map(|r| format!(" -> {}", r)).unwrap_or_default()
+        );
+        let vis = self.vis(&it.vis, ctx);
+        self.docs(&it.docs);
+        self.e.w(&format!("#[allow(non_camel_case_types)]\n{}trait {}{}{} {{\n    {};\n}}", vis, tname, g, wc, sig));
+        self.e.nl();
+        self.e.nl();
+        self.e.w(&format!("impl{} {}{} for {}{} {{", g, tname, gn, self.ty(recv_ty, TyPos::Plain), wc));
+        self.e.indent();
+        self.e.nl();
+        self.attrs(&it.attrs, &[]);
+        self.e.w(&sig);
+        self.bind_params(f);
+        if let Some(body) = &f.body {
+            self.e.w(" ");
+            self.fun_body(f, body);
+        } else {
+            self.error(f.name_span, "extension functions need a body");
+        }
+        self.pop_scope();
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.nl();
+    }
+
+    /// Emits a method inside an impl/trait block.
+    pub(crate) fn method(&mut self, it: &Item, f: &FunDecl, recv: Recv, vis_allowed: bool, rename: Option<&str>) {
+        self.e.mark(it.span);
+        self.docs(&it.docs);
+        let attrs: Vec<Attr> = it.attrs.clone();
+        self.attrs(&attrs, &[]);
+        let vis = if vis_allowed { self.vis(&it.vis, ItemCtx::Top) } else { String::new() };
+        let recv_text = match &f.self_param {
+            Some(SelfParam::Value { mutable: true }) => Some("mut self".to_string()),
+            Some(SelfParam::Typed(t)) => Some(format!("self: {}", self.ty(t, TyPos::Plain))),
+            _ => match recv {
+                Recv::Static => None,
+                Recv::Ref => Some("&self".into()),
+                Recv::RefMut => Some("&mut self".into()),
+                Recv::Value => Some("self".into()),
+            },
+        };
+        let header = self.fn_header(f);
+        let g = self.generics_decl(&f.generics);
+        self.push_scope();
+        let params = self.params_text(f, recv_text);
+        let ret = self.ret_type(f, TyPos::Ret);
+        let wc = self.where_clause(&f.generics);
+        let name = rename.map(|s| s.to_string()).unwrap_or_else(|| esc(&f.name));
+        self.e.w(&format!("{}{}fn {}{}({})", vis, header, name, g, params));
+        if let Some(r) = &ret {
+            self.e.w(&format!(" -> {}", r));
+        }
+        self.e.w(&wc);
+        self.bind_params(f);
+        let saved_static = self.class.as_ref().map(|c| c.is_static);
+        if let Some(c) = self.class.as_mut() {
+            c.is_static = recv == Recv::Static && f.self_param.is_none();
+        }
+        match &f.body {
+            Some(b) => {
+                self.e.w(" ");
+                self.fun_body(f, b);
+            }
+            None => self.e.w(";"),
+        }
+        if let (Some(c), Some(s)) = (self.class.as_mut(), saved_static) {
+            c.is_static = s;
+        }
+        self.pop_scope();
+        self.e.nl();
+    }
+
+    // ------------------------------------------------------------------ classes
+
+    fn class_ctx_for(&self, name: &str, decl_fields: &[Field]) -> ClassCtx {
+        let info = self.k.class(name);
+        let mut fields: HashMap<String, Type> = decl_fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect();
+        if let Some(c) = info {
+            for f in &c.fields {
+                fields.entry(f.name.clone()).or_insert_with(|| f.ty.clone());
+            }
+        }
+        let methods = info
+            .map(|c| c.methods.clone())
+            .or_else(|| self.k.enum_(name).map(|e| e.methods.clone()))
+            .unwrap_or_default();
+        ClassCtx { name: name.to_string(), fields, methods, self_name: "self".into(), is_static: false }
+    }
+
+    fn field_type(&mut self, f: &Field) -> Type {
+        if f.ty != Type::Infer {
+            return f.ty.clone();
+        }
+        if let Some(d) = &f.default {
+            if let Some(t) = infer_field_type(d) {
+                return t;
+            }
+        }
+        self.error(f.span, format!("property `{}` needs a type annotation", f.name));
+        Type::Infer
+    }
+
+    fn class_decl(&mut self, it: &Item, t: &TypeDecl, ctx: ItemCtx) {
+        let vis = self.vis(&it.vis, ctx);
+        let g = self.generics_decl(&t.generics);
+        let gn = self.generics_names(&t.generics);
+        let wc = self.where_clause(&t.generics);
+        let self_ty = format!("{}{}", t.name, gn);
+
+        // which supertypes become derives
+        let (derived, impl_traits, members_by_trait, inherent) = self.split_members(t);
+        let mut derives: Vec<String> = self.k.derives.get(&t.name).cloned().unwrap_or_default();
+        for d in derived {
+            if !derives.contains(&d) {
+                derives.push(d);
+            }
+        }
+        self.docs(&it.docs);
+        self.attrs(&it.attrs, &derives);
+        let fields: Vec<(Field, Type)> = t.fields.iter().map(|f| (f.clone(), self.field_type(f))).collect();
+        match t.kind {
+            TypeKind::TupleStruct => {
+                if t.tuple_fields.is_empty() {
+                    self.e.w(&format!("{}struct {}{}{};", vis, t.name, g, wc));
+                } else {
+                    let parts: Vec<String> = t
+                        .tuple_fields
+                        .iter()
+                        .map(|(v, ty)| format!("{}{}", self.vis(v, ItemCtx::Top), self.ty(ty, TyPos::Field)))
+                        .collect();
+                    self.e.w(&format!("{}struct {}{}({}){};", vis, t.name, g, parts.join(", "), wc));
+                }
+                self.e.nl();
+            }
+            _ => {
+                if fields.is_empty() {
+                    self.e.w(&format!("{}struct {}{}{};", vis, t.name, g, wc));
+                    self.e.nl();
+                } else {
+                    self.e.w(&format!("{}struct {}{}{} {{", vis, t.name, g, wc));
+                    self.e.indent();
+                    for (f, ty) in &fields {
+                        self.e.nl();
+                        self.e.mark(f.span);
+                        self.docs(&f.docs);
+                        self.attrs(&f.attrs, &[]);
+                        let fv = self.vis(&f.vis, ItemCtx::Top);
+                        let tt = self.ty(ty, TyPos::Field);
+                        self.e.w(&format!("{}{}: {},", fv, esc(&f.name), tt));
+                    }
+                    self.e.dedent();
+                    self.e.nl();
+                    self.e.w("}");
+                    self.e.nl();
+                }
+            }
+        }
+
+        let saved_class = self.class.take();
+        self.class = Some(self.class_ctx_for(&t.name, &t.fields));
+        let info = self.k.class(&t.name).cloned();
+
+        // inherent impl: constructor + methods
+        let needs_new = t.kind != TypeKind::TupleStruct && !info.as_ref().map_or(false, |c| c.user_new);
+        let has_inherent = needs_new || !inherent.is_empty();
+        let ops: Vec<&Item> = t.members.iter().filter(|m| matches!(&m.kind, ItemKind::Fun(f) if f.mods.is_operator)).collect();
+        if has_inherent {
+            self.e.nl();
+            self.e.w(&format!("impl{} {}{} {{", g, self_ty, wc));
+            self.e.indent();
+            if needs_new {
+                self.e.nl();
+                self.constructor(t, &fields);
+            }
+            for m in &inherent {
+                if let ItemKind::Fun(f) = &m.kind {
+                    if f.mods.is_operator {
+                        continue;
+                    }
+                    self.e.nl();
+                    let recv = self.recv_of(&t.name, f);
+                    self.method(m, f, recv, true, None);
+                } else {
+                    self.e.nl();
+                    self.assoc_item(m, true);
+                }
+            }
+            self.e.dedent();
+            self.e.w("}");
+            self.e.nl();
+        }
+        // operators
+        for m in ops {
+            if let ItemKind::Fun(f) = &m.kind {
+                self.operator_impl(m, f, &g, &self_ty, &wc);
+            }
+        }
+        // trait impls
+        for (tr, members) in impl_traits.iter().zip(members_by_trait.iter()) {
+            self.trait_impl_block(tr, members, &g, &self_ty, &wc);
+        }
+        // error class
+        if t.is_error {
+            self.error_class_impls(t, &g, &self_ty, &wc);
+        }
+        self.class = saved_class;
+    }
+
+    pub(crate) fn recv_of(&self, owner: &str, f: &FunDecl) -> Recv {
+        if let Some(c) = self.k.class(owner) {
+            if let Some(m) = c.methods.get(&f.name) {
+                return m.recv;
+            }
+        }
+        if let Some(e) = self.k.enum_(owner) {
+            if let Some(m) = e.methods.get(&f.name) {
+                return m.recv;
+            }
+        }
+        match &f.self_param {
+            Some(SelfParam::Ref) => Recv::Ref,
+            Some(SelfParam::RefMut) => Recv::RefMut,
+            Some(_) => Recv::Value,
+            None if f.mods.is_static => Recv::Static,
+            None if f.mods.is_mut => Recv::RefMut,
+            None if sema::STATIC_METHOD_NAMES.contains(&f.name.as_str()) => Recv::Static,
+            None => Recv::Ref,
+        }
+    }
+
+    /// Splits class/enum members into derives, trait impls (with their members) and inherent members.
+    fn split_members<'t>(&mut self, t: &'t TypeDecl) -> (Vec<String>, Vec<Type>, Vec<Vec<&'t Item>>, Vec<&'t Item>) {
+        let mut derived = Vec::new();
+        let mut impl_traits: Vec<Type> = Vec::new();
+        for st in &t.supertypes {
+            let name = st.last_name().unwrap_or("");
+            let has_member = t.members.iter().any(|m| self.member_trait_candidates(m, t).iter().any(|c| c == name));
+            if DERIVABLE.contains(&name) && !has_member && matches!(st, Type::Path { segs, .. } if segs.len() == 1 && segs[0].generics.is_none()) {
+                derived.push(name.to_string());
+            } else {
+                impl_traits.push(st.clone());
+            }
+        }
+        let mut by_trait: Vec<Vec<&Item>> = vec![Vec::new(); impl_traits.len()];
+        let mut inherent = Vec::new();
+        for m in &t.members {
+            let is_override = matches!(&m.kind, ItemKind::Fun(f) if f.mods.is_override);
+            let is_display = matches!(&m.kind, ItemKind::Fun(f) if (f.name == "to_string" || f.name == "toString") && f.mods.is_override);
+            if is_display {
+                // handled as a Display impl
+                by_trait.push(vec![m]);
+                impl_traits.push(Type::simple("__Display"));
+                continue;
+            }
+            let cands = self.member_trait_candidates(m, t);
+            let idx: Vec<usize> = impl_traits.iter().enumerate().filter(|(_, tr)| cands.iter().any(|c| Some(c.as_str()) == tr.last_name())).map(|(i, _)| i).collect();
+            let assoc = matches!(m.kind, ItemKind::TypeAlias { .. });
+            if idx.len() == 1 {
+                by_trait[idx[0]].push(m);
+            } else if (is_override || assoc) && impl_traits.iter().filter(|t| t.last_name() != Some("__Display")).count() == 1 {
+                let i = impl_traits.iter().position(|t| t.last_name() != Some("__Display")).unwrap();
+                by_trait[i].push(m);
+            } else if is_override || (assoc && !impl_traits.is_empty()) {
+                self.error(m.span, "cannot tell which supertype this member implements; use a separate `impl Trait for Type { }` block");
+            } else {
+                inherent.push(m);
+            }
+        }
+        (derived, impl_traits, by_trait, inherent)
+    }
+
+    /// Names of supertypes (brs or std traits) that declare this member.
+    fn member_trait_candidates(&self, m: &Item, t: &TypeDecl) -> Vec<String> {
+        let mut out = Vec::new();
+        let (name, is_type) = match &m.kind {
+            ItemKind::Fun(f) => (f.name.as_str(), false),
+            ItemKind::TypeAlias { name, .. } => (name.as_str(), true),
+            _ => return out,
+        };
+        for st in &t.supertypes {
+            let Some(sn) = st.last_name() else { continue };
+            if let Some(ti) = self.k.traits.get(sn) {
+                if (!is_type && ti.methods.contains_key(name)) || (is_type && ti.assoc_types.iter().any(|a| a == name)) {
+                    out.push(sn.to_string());
+                }
+            } else if is_type {
+                if std_trait_assoc(sn).contains(&name) {
+                    out.push(sn.to_string());
+                }
+            } else if std_trait_of_method(name).contains(&sn) {
+                out.push(sn.to_string());
+            }
+        }
+        out
+    }
+
+    fn constructor(&mut self, t: &TypeDecl, fields: &[(Field, Type)]) {
+        let params: Vec<String> = fields
+            .iter()
+            .filter(|(f, _)| f.in_ctor)
+            .map(|(f, ty)| format!("{}: {}", esc(&f.name), self.ty(ty, TyPos::Field)))
+            .collect();
+        self.e.w(&format!("pub fn new({}) -> Self {{", params.join(", ")));
+        self.e.indent();
+        self.e.nl();
+        let has_init = t.init.is_some();
+        if has_init {
+            self.e.w("#[allow(unused_mut)]\nlet mut __self = ");
+        }
+        if fields.is_empty() {
+            self.e.w("Self");
+        } else {
+            self.e.w("Self {");
+            self.e.indent();
+            self.push_scope();
+            for (f, _) in fields.iter().filter(|(f, _)| f.in_ctor) {
+                self.bind_name(&f.name, Some(f.ty.clone()));
+            }
+            let saved = self.class.take();
+            for (f, ty) in fields {
+                self.e.nl();
+                if f.in_ctor {
+                    self.e.w(&format!("{},", esc(&f.name)));
+                } else {
+                    self.e.w(&format!("{}: ", esc(&f.name)));
+                    match &f.default {
+                        Some(d) => self.coerce(d, ty, TyPos::Field),
+                        None => self.e.w("::std::default::Default::default()"),
+                    }
+                    self.e.w(",");
+                }
+            }
+            self.class = saved;
+            self.pop_scope();
+            self.e.dedent();
+            self.e.nl();
+            self.e.w("}");
+        }
+        if has_init {
+            self.e.w(";");
+            self.e.nl();
+            if let Some(c) = self.class.as_mut() {
+                c.self_name = "__self".into();
+            }
+            self.push_scope();
+            for (f, _) in fields.iter().filter(|(f, _)| f.in_ctor) {
+                // constructor params shadow fields inside init
+                let _ = f;
+            }
+            self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new() });
+            let init = t.init.as_ref().unwrap();
+            self.stmts_with_tail(&init.stmts, None);
+            self.fns.pop();
+            self.pop_scope();
+            if let Some(c) = self.class.as_mut() {
+                c.self_name = "self".into();
+            }
+            self.e.nl();
+            self.e.w("__self");
+        }
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.nl();
+    }
+
+    fn assoc_item(&mut self, m: &Item, vis_allowed: bool) {
+        self.e.mark(m.span);
+        match &m.kind {
+            ItemKind::TypeAlias { name, generics, ty } => {
+                let g = self.generics_decl(generics);
+                match ty {
+                    Type::Bounds(b) if b.is_empty() => self.e.w(&format!("type {}{};", name, g)),
+                    Type::Bounds(b) => {
+                        let bs = self.bounds(b);
+                        self.e.w(&format!("type {}{}: {};", name, g, bs))
+                    }
+                    _ => {
+                        let tt = self.ty(ty, TyPos::Generic);
+                        self.e.w(&format!("type {}{} = {};", name, g, tt))
+                    }
+                }
+                self.e.nl();
+            }
+            ItemKind::Const(c) => {
+                let vis = if vis_allowed { self.vis(&m.vis, ItemCtx::Top) } else { String::new() };
+                let ty = match &c.ty {
+                    Some(t) => self.ty(t, TyPos::Plain),
+                    None => c.value.as_ref().and_then(infer_lit_type).unwrap_or_else(|| "_".into()),
+                };
+                self.e.w(&format!("{}const {}: {}", vis, c.name, ty));
+                if let Some(v) = &c.value {
+                    self.e.w(" = ");
+                    self.expr(v, P_LOWEST);
+                }
+                self.e.w(";");
+                self.e.nl();
+            }
+            _ => self.item(m, ItemCtx::Top),
+        }
+    }
+
+    fn trait_impl_block(&mut self, tr: &Type, members: &[&Item], g: &str, self_ty: &str, wc: &str) {
+        self.e.nl();
+        if tr.last_name() == Some("__Display") {
+            if let Some(m) = members.first() {
+                if let ItemKind::Fun(f) = &m.kind {
+                    self.display_impl_from_to_string(f, g, self_ty, wc);
+                }
+            }
+            return;
+        }
+        let tname = self.ty(tr, TyPos::Plain);
+        self.e.w(&format!("impl{} {} for {}{} {{", g, tname, self_ty, wc));
+        self.e.indent();
+        let trait_info = tr.last_name().and_then(|n| self.k.traits.get(n)).cloned();
+        for m in members {
+            self.e.nl();
+            match &m.kind {
+                ItemKind::Fun(f) => {
+                    let owner = self.class.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+                    let recv = trait_info
+                        .as_ref()
+                        .and_then(|t| t.methods.get(&f.name))
+                        .filter(|_| f.self_param.is_none() && !f.mods.is_mut && !f.mods.is_static)
+                        .map(|m| m.recv)
+                        .unwrap_or_else(|| self.recv_of(&owner, f));
+                    self.method(m, f, recv, false, None);
+                }
+                _ => self.assoc_item(m, false),
+            }
+        }
+        self.e.dedent();
+        self.e.w("}");
+        self.e.nl();
+    }
+
+    fn display_impl_from_to_string(&mut self, f: &FunDecl, g: &str, self_ty: &str, wc: &str) {
+        self.e.w(&format!("impl{} ::std::fmt::Display for {}{} {{", g, self_ty, wc));
+        self.e.indent();
+        self.e.nl();
+        self.e.w("fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {");
+        self.e.indent();
+        self.e.nl();
+        self.push_scope();
+        self.bind_name("f", None);
+        self.fns.push(FnCtx { throws: false, ret: Some(Type::simple("String")), is_lambda: false, tries: Vec::new() });
+        let single = match &f.body {
+            Some(FunBody::Expr(e)) => Some(e.clone()),
+            Some(FunBody::Block(b)) if b.stmts.len() == 1 => match &b.stmts[0] {
+                Stmt::Expr { expr, semi: false } => Some(expr.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        match single.as_ref().map(|e| &e.kind) {
+            Some(ExprKind::Template(parts)) => {
+                self.e.w("write!(f, ");
+                self.format_args(parts);
+                self.e.w(")");
+            }
+            Some(ExprKind::Str(parts)) => {
+                self.e.w(&format!("f.write_str(\"{}\")", lit_parts(parts)));
+            }
+            _ => {
+                self.e.w("let __brs_s: String = ");
+                match &f.body {
+                    Some(FunBody::Expr(e)) => self.coerce(e, &Type::simple("String"), TyPos::Local),
+                    Some(FunBody::Block(b)) => {
+                        let target = Target::ty(&Type::simple("String"));
+                        self.e.w("{");
+                        self.e.indent();
+                        self.stmts_with_tail(&b.stmts, Some(&target));
+                        self.e.dedent();
+                        self.e.nl();
+                        self.e.w("}");
+                    }
+                    None => self.e.w("String::new()"),
+                }
+                self.e.w(";");
+                self.e.nl();
+                self.e.w("f.write_str(&__brs_s)");
+            }
+        }
+        self.fns.pop();
+        self.pop_scope();
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.nl();
+    }
+
+    fn operator_impl(&mut self, m: &Item, f: &FunDecl, g: &str, self_ty: &str, wc: &str) {
+        let Some((tr, method, is_assign, is_unary)) = operator_trait(&f.name) else {
+            self.error(f.name_span, format!("unknown operator function `{}`", f.name));
+            return;
+        };
+        let rhs = f.params.first().map(|p| self.ty(&p.ty, TyPos::Generic));
+        let trait_text = match (&rhs, is_unary) {
+            (Some(r), false) if r != "Self" && r != self_ty => format!("::std::ops::{}<{}>", tr, r),
+            _ => format!("::std::ops::{}", tr),
+        };
+        self.e.nl();
+        self.e.w(&format!("impl{} {} for {}{} {{", g, trait_text, self_ty, wc));
+        self.e.indent();
+        self.e.nl();
+        if !is_assign {
+            let out = f.ret.as_ref().map(|t| self.ty(t, TyPos::Generic)).unwrap_or_else(|| "Self".into());
+            self.e.w(&format!("type Output = {};", out));
+            self.e.nl();
+        }
+        let mut f2 = f.clone();
+        f2.mods.is_operator = false;
+        if f2.ret.is_none() && !is_assign {
+            f2.ret = Some(Type::simple("Self"));
+        }
+        let recv = if is_assign { Recv::RefMut } else { Recv::Value };
+        let mut it2 = m.clone();
+        it2.attrs.push(Attr::Brs { name: "inline".into(), args: None, span: Span::default() });
+        self.method(&it2, &f2, recv, false, Some(method));
+        self.e.dedent();
+        self.e.w("}");
+        self.e.nl();
+    }
+
+    fn error_class_impls(&mut self, t: &TypeDecl, g: &str, self_ty: &str, wc: &str) {
+        self.e.nl();
+        self.e.w(&format!("impl{} ::std::fmt::Display for {}{} {{", g, self_ty, wc));
+        self.e.indent();
+        self.e.nl();
+        self.e.w("fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {");
+        self.e.indent();
+        self.e.nl();
+        self.push_scope();
+        match &t.message {
+            Some(msg) => {
+                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new() });
+                self.write_message(msg);
+                self.fns.pop();
+            }
+            None => {
+                let text = humanize(&t.name);
+                self.e.w(&format!("f.write_str(\"{}\")", text));
+            }
+        }
+        self.pop_scope();
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.nl();
+        self.e.nl();
+        self.e.w(&format!("impl{} ::std::error::Error for {}{} {{}}", g, self_ty, wc));
+        self.e.nl();
+    }
+
+    /// `write!(f, ...)` for an error message template.
+    pub(crate) fn write_message(&mut self, msg: &Expr) {
+        match &msg.kind {
+            ExprKind::Template(parts) => {
+                self.e.w("write!(f, ");
+                self.format_args(parts);
+                self.e.w(")");
+            }
+            ExprKind::Str(parts) => self.e.w(&format!("f.write_str(\"{}\")", lit_parts(parts))),
+            _ => {
+                self.e.w("::std::fmt::Display::fmt(&");
+                self.expr(msg, P_UNARY);
+                self.e.w(", f)");
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ enums
+
+    fn enum_decl(&mut self, it: &Item, t: &TypeDecl, ctx: ItemCtx) {
+        let vis = self.vis(&it.vis, ctx);
+        let g = self.generics_decl(&t.generics);
+        let gn = self.generics_names(&t.generics);
+        let wc = self.where_clause(&t.generics);
+        let self_ty = format!("{}{}", t.name, gn);
+        let (derived, impl_traits, members_by_trait, inherent) = self.split_members(t);
+        let mut derives: Vec<String> = self.k.derives.get(&t.name).cloned().unwrap_or_default();
+        for d in derived {
+            if !derives.contains(&d) {
+                derives.push(d);
+            }
+        }
+        self.docs(&it.docs);
+        self.attrs(&it.attrs, &derives);
+        self.e.w(&format!("{}enum {}{}{} {{", vis, t.name, g, wc));
+        self.e.indent();
+        for v in &t.variants {
+            self.e.nl();
+            self.e.mark(v.span);
+            self.docs(&v.docs);
+            let vattrs: Vec<Attr> = v.attrs.iter().filter(|a| a.name() != "from" && a.name() != "source").cloned().collect();
+            self.attrs(&vattrs, &[]);
+            let mut s = v.name.clone();
+            match &v.fields {
+                VariantFields::Unit => {}
+                VariantFields::Tuple(ts) => {
+                    s.push('(');
+                    s.push_str(&ts.iter().map(|t| self.ty(t, TyPos::Field)).collect::<Vec<_>>().join(", "));
+                    s.push(')');
+                }
+                VariantFields::Named(fs) => {
+                    s.push_str(" { ");
+                    s.push_str(&fs.iter().map(|f| format!("{}: {}", esc(&f.name), self.ty(&f.ty, TyPos::Field))).collect::<Vec<_>>().join(", "));
+                    s.push_str(" }");
+                }
+            }
+            self.e.w(&s);
+            if let Some(d) = &v.discriminant {
+                self.e.w(" = ");
+                self.expr(d, P_LOWEST);
+            }
+            self.e.w(",");
+        }
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.nl();
+
+        let saved_class = self.class.take();
+        self.class = Some(self.class_ctx_for(&t.name, &[]));
+        if !inherent.is_empty() {
+            self.e.nl();
+            self.e.w(&format!("impl{} {}{} {{", g, self_ty, wc));
+            self.e.indent();
+            for m in &inherent {
+                self.e.nl();
+                if let ItemKind::Fun(f) = &m.kind {
+                    let recv = self.recv_of(&t.name, f);
+                    self.method(m, f, recv, true, None);
+                } else {
+                    self.assoc_item(m, true);
+                }
+            }
+            self.e.dedent();
+            self.e.w("}");
+            self.e.nl();
+        }
+        for m in t.members.iter().filter(|m| matches!(&m.kind, ItemKind::Fun(f) if f.mods.is_operator)) {
+            if let ItemKind::Fun(f) = &m.kind {
+                self.operator_impl(m, f, &g, &self_ty, &wc);
+            }
+        }
+        for (tr, members) in impl_traits.iter().zip(members_by_trait.iter()) {
+            self.trait_impl_block(tr, members, &g, &self_ty, &wc);
+        }
+        if t.is_error {
+            self.error_enum_impls(t, &g, &self_ty, &wc);
+        }
+        self.class = saved_class;
+    }
+
+    fn error_enum_impls(&mut self, t: &TypeDecl, g: &str, self_ty: &str, wc: &str) {
+        // which variants wrap a source error
+        let wraps_error = |ty: &Type| ty.last_name().map_or(false, |n| n.ends_with("Error") && n != "AnyError");
+        let mut from_counts: HashMap<String, usize> = HashMap::new();
+        for v in &t.variants {
+            if let VariantFields::Tuple(ts) = &v.fields {
+                if ts.len() == 1 && wraps_error(&ts[0]) {
+                    *from_counts.entry(self.ty(&ts[0], TyPos::Plain)).or_default() += 1;
+                }
+            }
+        }
+        // Display
+        self.e.nl();
+        self.e.w(&format!("impl{} ::std::fmt::Display for {}{} {{", g, self_ty, wc));
+        self.e.indent();
+        self.e.nl();
+        self.e.w("fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {");
+        self.e.indent();
+        self.e.nl();
+        self.e.w("match self {");
+        self.e.indent();
+        for v in &t.variants {
+            self.e.nl();
+            self.e.mark(v.span);
+            let mut used = Vec::new();
+            if let Some(m) = &v.message {
+                visit::idents_in(m, &mut used);
+            }
+            self.push_scope();
+            let pat = match &v.fields {
+                VariantFields::Unit => format!("Self::{}", v.name),
+                VariantFields::Tuple(ts) => {
+                    let parts: Vec<String> = (0..ts.len())
+                        .map(|i| {
+                            let n = format!("__{}", i);
+                            if used.contains(&n) || (v.message.is_none() && ts.len() == 1) {
+                                self.bind_name(&n, None);
+                                n
+                            } else {
+                                "_".into()
+                            }
+                        })
+                        .collect();
+                    format!("Self::{}({})", v.name, parts.join(", "))
+                }
+                VariantFields::Named(fs) => {
+                    let mut parts: Vec<String> = Vec::new();
+                    for f in fs {
+                        if used.contains(&f.name) {
+                            self.bind_name(&f.name, None);
+                            parts.push(esc(&f.name));
+                        }
+                    }
+                    if parts.len() < fs.len() {
+                        parts.push("..".into());
+                    }
+                    format!("Self::{} {{ {} }}", v.name, parts.join(", "))
+                }
+            };
+            self.e.w(&format!("{} => ", pat));
+            match &v.message {
+                Some(m) => {
+                    let m2 = rewrite_positional(m);
+                    self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new() });
+                    self.write_message(&m2);
+                    self.fns.pop();
+                }
+                None => match &v.fields {
+                    VariantFields::Tuple(ts) if ts.len() == 1 => self.e.w("::std::fmt::Display::fmt(__0, f)"),
+                    _ => self.e.w(&format!("f.write_str(\"{}\")", humanize(&v.name))),
+                },
+            }
+            self.e.w(",");
+            self.pop_scope();
+        }
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+        self.e.nl();
+        // Error + source
+        let sources: Vec<(String, String)> = t
+            .variants
+            .iter()
+            .filter_map(|v| {
+                let explicit = v.attrs.iter().any(|a| a.name() == "from" || a.name() == "source");
+                match &v.fields {
+                    VariantFields::Tuple(ts) if ts.len() == 1 && (explicit || wraps_error(&ts[0])) => Some((format!("Self::{}(e)", v.name), "e".to_string())),
+                    VariantFields::Named(fs) => fs
+                        .iter()
+                        .find(|f| f.name == "source" || f.name == "cause")
+                        .filter(|f| f.ty.last_name().map_or(false, |n| n != "AnyError" && n != "Box"))
+                        .map(|f| (format!("Self::{} {{ {}: e, .. }}", v.name, esc(&f.name)), "e".to_string())),
+                    _ => None,
+                }
+            })
+            .collect();
+        self.e.nl();
+        if sources.is_empty() {
+            self.e.w(&format!("impl{} ::std::error::Error for {}{} {{}}", g, self_ty, wc));
+            self.e.nl();
+        } else {
+            self.e.w(&format!("impl{} ::std::error::Error for {}{} {{", g, self_ty, wc));
+            self.e.indent();
+            self.e.nl();
+            self.e.w("fn source(&self) -> Option<&(dyn ::std::error::Error + 'static)> {");
+            self.e.indent();
+            self.e.nl();
+            self.e.w("match self {");
+            self.e.indent();
+            for (p, b) in &sources {
+                self.e.nl();
+                self.e.w(&format!("{} => Some({}),", p, b));
+            }
+            self.e.nl();
+            self.e.w("#[allow(unreachable_patterns)]\n_ => None,");
+            self.e.dedent();
+            self.e.nl();
+            self.e.w("}");
+            self.e.dedent();
+            self.e.nl();
+            self.e.w("}");
+            self.e.dedent();
+            self.e.nl();
+            self.e.w("}");
+            self.e.nl();
+        }
+        // From impls
+        for v in &t.variants {
+            if let VariantFields::Tuple(ts) = &v.fields {
+                let explicit = v.attrs.iter().any(|a| a.name() == "from");
+                if ts.len() == 1 {
+                    let tt = self.ty(&ts[0], TyPos::Plain);
+                    if explicit || (wraps_error(&ts[0]) && from_counts.get(&tt) == Some(&1)) {
+                        self.e.nl();
+                        self.e.w(&format!(
+                            "impl{} ::std::convert::From<{}> for {}{} {{\n    fn from(e: {}) -> Self {{\n        Self::{}(e)\n    }}\n}}",
+                            g, tt, self_ty, wc, tt, v.name
+                        ));
+                        self.e.nl();
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ traits & impls
+
+    fn trait_decl(&mut self, it: &Item, t: &TraitDecl, ctx: ItemCtx) {
+        self.docs(&it.docs);
+        self.attrs(&it.attrs, &[]);
+        let vis = self.vis(&it.vis, ctx);
+        let g = self.generics_decl(&t.generics);
+        let wc = self.where_clause(&t.generics);
+        let supers = if t.supertraits.is_empty() { String::new() } else { format!(": {}", self.bounds(&t.supertraits)) };
+        let uns = if t.is_unsafe { "unsafe " } else { "" };
+        self.e.w(&format!("{}{}trait {}{}{}{} {{", vis, uns, t.name, g, supers, wc));
+        self.e.indent();
+        let saved = self.class.take();
+        self.class = Some(ClassCtx { name: t.name.clone(), fields: HashMap::new(), methods: HashMap::new(), self_name: "self".into(), is_static: false });
+        let info = self.k.traits.get(&t.name).cloned();
+        for m in &t.members {
+            self.e.nl();
+            match &m.kind {
+                ItemKind::Fun(f) => {
+                    let recv = info.as_ref().and_then(|i| i.methods.get(&f.name)).map(|m| m.recv).unwrap_or(Recv::Ref);
+                    let recv = if f.self_param.is_none() && !f.mods.is_mut && !f.mods.is_static && !sema::STATIC_METHOD_NAMES.contains(&f.name.as_str()) && f.body.is_some() {
+                        // default methods: infer &mut from the body
+                        let facts = sema::analyze_fun(f, &HashSet::new(), &HashMap::new());
+                        if facts.mutates_self {
+                            Recv::RefMut
+                        } else {
+                            recv
+                        }
+                    } else {
+                        recv
+                    };
+                    self.method(m, f, recv, false, None);
+                }
+                _ => self.assoc_item(m, false),
+            }
+        }
+        self.class = saved;
+        self.e.dedent();
+        self.e.w("}");
+        self.e.nl();
+    }
+
+    fn impl_decl(&mut self, it: &Item, imp: &ImplDecl) {
+        self.docs(&it.docs);
+        self.attrs(&it.attrs, &[]);
+        let g = self.generics_decl(&imp.generics);
+        let wc = self.where_clause(&imp.generics);
+        let self_ty = self.ty(&imp.self_ty, TyPos::Plain);
+        let uns = if imp.is_unsafe { "unsafe " } else { "" };
+        match &imp.trait_ {
+            Some(tr) => {
+                let neg = if imp.negative { "!" } else { "" };
+                let tt = self.ty(tr, TyPos::Plain);
+                self.e.w(&format!("{}impl{} {}{} for {}{} {{", uns, g, neg, tt, self_ty, wc));
+            }
+            None => self.e.w(&format!("{}impl{} {}{} {{", uns, g, self_ty, wc)),
+        }
+        self.e.indent();
+        let owner = imp.self_ty.last_name().unwrap_or("").to_string();
+        let saved = self.class.take();
+        let decl_fields: Vec<Field> = Vec::new();
+        self.class = Some(self.class_ctx_for(&owner, &decl_fields));
+        let tinfo = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| self.k.traits.get(n)).cloned();
+        for m in &imp.members {
+            self.e.nl();
+            match &m.kind {
+                ItemKind::Fun(f) => {
+                    let recv = tinfo
+                        .as_ref()
+                        .and_then(|t| t.methods.get(&f.name))
+                        .filter(|_| f.self_param.is_none() && !f.mods.is_mut && !f.mods.is_static)
+                        .map(|m| m.recv)
+                        .unwrap_or_else(|| self.recv_of(&owner, f));
+                    self.method(m, f, recv, imp.trait_.is_none(), None);
+                }
+                _ => self.assoc_item(m, imp.trait_.is_none()),
+            }
+        }
+        self.class = saved;
+        self.e.dedent();
+        self.e.w("}");
+        self.e.nl();
+    }
+}
+
+// ------------------------------------------------------------------ helpers
+
+/// Text of literal string parts (already Rust-escaped).
+pub fn lit_parts(parts: &[StrPart]) -> String {
+    parts
+        .iter()
+        .map(|p| match p {
+            StrPart::Lit(s) => s.clone(),
+            StrPart::Interp { src, .. } => format!("${{{}}}", src),
+        })
+        .collect()
+}
+
+pub(crate) fn infer_lit_type(e: &Expr) -> Option<String> {
+    Some(match &e.kind {
+        ExprKind::Int(s) => int_suffix(s).unwrap_or("i32").to_string(),
+        ExprKind::Float(s) => if s.ends_with("f32") { "f32" } else { "f64" }.to_string(),
+        ExprKind::Bool(_) => "bool".into(),
+        ExprKind::Char(s) => if s.starts_with('b') { "u8" } else { "char" }.to_string(),
+        ExprKind::Str(_) | ExprKind::RawStr(_) => "&str".into(),
+        ExprKind::Unary(UnOp::Neg, x) => return infer_lit_type(x),
+        _ => return None,
+    })
+}
+
+pub(crate) fn int_suffix(s: &str) -> Option<&'static str> {
+    for suf in ["i128", "u128", "isize", "usize", "i64", "u64", "i32", "u32", "i16", "u16", "i8", "u8", "f32", "f64"] {
+        if s.ends_with(suf) && !s.starts_with("0x") {
+            return Some(suf);
+        }
+    }
+    None
+}
+
+fn infer_field_type(e: &Expr) -> Option<Type> {
+    match &e.kind {
+        ExprKind::Str(_) | ExprKind::Template(_) => Some(Type::simple("String")),
+        ExprKind::Call { callee, args } => {
+            let n = callee.ident()?;
+            if is_type_like(n) {
+                return Some(Type::simple(n));
+            }
+            match n {
+                "listOf" | "mutableListOf" | "arrayListOf" if args.is_empty() => None,
+                _ => None,
+            }
+        }
+        ExprKind::MethodCall { recv, name, .. } if name == "new" || name == "default" || name == "with_capacity" => {
+            let n = recv.ident()?;
+            if is_type_like(n) {
+                Some(Type::simple(n))
+            } else {
+                None
+            }
+        }
+        _ => infer_lit_type(e).map(|s| if s == "&str" { Type::simple("String") } else { Type::simple(&s) }),
+    }
+}
+
+pub(crate) fn ends_diverging(stmts: &[Stmt]) -> bool {
+    match stmts.last() {
+        Some(Stmt::Expr { expr, .. }) => expr.diverges(),
+        _ => false,
+    }
+}
+
+/// In error message templates `$0` / `${0}` refers to tuple field 0.
+fn rewrite_positional(e: &Expr) -> Expr {
+    let mut e = e.clone();
+    if let ExprKind::Template(parts) = &mut e.kind {
+        for p in parts.iter_mut() {
+            if let TemplatePart::Expr(x, _) = p {
+                if let ExprKind::Int(n) = &x.kind {
+                    x.kind = ExprKind::Path { segs: vec![format!("__{}", n)], generics: None, global: false };
+                }
+            }
+        }
+    }
+    e
+}
+

@@ -1,0 +1,8 @@
+[package]
+name = "brs-compiler"
+description = "Compiler from Brs (Better Rust) to Rust source code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
