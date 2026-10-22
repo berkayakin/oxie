@@ -836,6 +836,7 @@ impl<'a> Parser<'a> {
     }
 
     fn where_clause(&mut self, g: &mut Generics) -> PResult<()> {
+        self.eat_kw("where");
         loop {
             self.skip_nl_only();
             if let Tok::Lifetime(l) = self.tok().clone() {
@@ -1951,13 +1952,36 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
+    /// Kotlin infix words: `a to b` (pair), `0 until n`, `10 downTo 0`, `range step 2`.
     fn to_expr(&mut self) -> PResult<Expr> {
         let mut lhs = self.bitor_expr()?;
-        while self.is_kw("to") && self.can_start_expr_at(1) {
+        loop {
+            let word = match self.tok() {
+                Tok::Ident(w) if matches!(w.as_str(), "to" | "until" | "downTo" | "step") && self.can_start_expr_at(1) => w.clone(),
+                _ => break,
+            };
             self.bump();
             let rhs = self.bitor_expr()?;
             let sp = lhs.span.to(rhs.span);
-            lhs = Expr::new(ExprKind::Pair(Box::new(lhs), Box::new(rhs)), sp);
+            lhs = match word.as_str() {
+                "to" => Expr::new(ExprKind::Pair(Box::new(lhs), Box::new(rhs)), sp),
+                "until" => Expr::new(ExprKind::Range { start: Some(Box::new(lhs)), end: Some(Box::new(rhs)), inclusive: false }, sp),
+                "downTo" => {
+                    // (rhs..=lhs).rev()
+                    let range = Expr::new(ExprKind::Range { start: Some(Box::new(rhs)), end: Some(Box::new(lhs)), inclusive: true }, sp);
+                    let paren = Expr::new(ExprKind::Paren(Box::new(range)), sp);
+                    Expr::new(ExprKind::MethodCall { recv: Box::new(paren), name: "rev".into(), generics: None, args: vec![], safe: false }, sp)
+                }
+                _ => {
+                    // range.step_by(n as usize)
+                    let recv = match lhs.kind {
+                        ExprKind::Range { .. } => Expr::new(ExprKind::Paren(Box::new(lhs)), sp),
+                        _ => lhs,
+                    };
+                    let n = Expr::new(ExprKind::Cast(Box::new(rhs), Type::simple("usize")), sp);
+                    Expr::new(ExprKind::MethodCall { recv: Box::new(recv), name: "step_by".into(), generics: None, args: vec![Arg { name: None, value: n }], safe: false }, sp)
+                }
+            };
         }
         Ok(lhs)
     }

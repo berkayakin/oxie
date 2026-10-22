@@ -18,6 +18,8 @@ pub struct ParamInfo {
     pub name: Option<String>,
     pub ty: Type,
     pub default: Option<Expr>,
+    /// Generic parameter names of the declaring function (lambda arguments can't be annotated with them).
+    pub generics: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +28,8 @@ pub struct MethodInfo {
     pub params: Vec<ParamInfo>,
     pub throws: bool,
     pub ret: Option<Type>,
+    /// The receiver was written in the source (`self`, `mut fun`, `static fun`, ...).
+    pub explicit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +50,8 @@ pub struct ClassInfo {
     pub is_data: bool,
     pub is_tuple: bool,
     pub has_generics: bool,
+    /// Number of lifetime parameters (`data class Token<'a>`).
+    pub lifetimes: usize,
 }
 
 impl ClassInfo {
@@ -59,7 +65,7 @@ impl ClassInfo {
         self.fields
             .iter()
             .filter(|f| f.in_ctor)
-            .map(|f| ParamInfo { name: Some(f.name.clone()), ty: f.ty.clone(), default: f.default.clone() })
+            .map(|f| ParamInfo { name: Some(f.name.clone()), ty: f.ty.clone(), default: f.default.clone(), generics: Vec::new() })
             .collect()
     }
 }
@@ -326,14 +332,23 @@ fn insert_unique<V>(map: &mut HashMap<String, V>, amb: &mut HashSet<String>, key
 }
 
 pub fn params_info(f: &FunDecl) -> Vec<ParamInfo> {
+    let generics: Vec<String> = f
+        .generics
+        .params
+        .iter()
+        .filter_map(|g| match g {
+            GenericParam::Type { name, .. } | GenericParam::Const { name, .. } => Some(name.clone()),
+            GenericParam::Lifetime { .. } => None,
+        })
+        .collect();
     f.params
         .iter()
-        .map(|p| ParamInfo { name: p.name().map(|s| s.to_string()), ty: p.ty.clone(), default: p.default.clone() })
+        .map(|p| ParamInfo { name: p.name().map(|s| s.to_string()), ty: p.ty.clone(), default: p.default.clone(), generics: generics.clone() })
         .collect()
 }
 
 fn default_mi(f: &FunDecl) -> MethodInfo {
-    MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No), ret: f.ret.clone() }
+    MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No), ret: f.ret.clone(), explicit: false }
 }
 
 /// Receiver determined purely from syntax, or None if it must be inferred.
@@ -351,7 +366,7 @@ fn method_info_explicit(f: &FunDecl, trait_recv: Option<Recv>) -> Option<MethodI
         None if f.mods.is_operator => Some(Recv::Value),
         None => None,
     };
-    recv.map(|recv| MethodInfo { recv, params, throws, ret: f.ret.clone() })
+    recv.map(|recv| MethodInfo { recv, params, throws, ret: f.ret.clone(), explicit: trait_recv.is_none() || f.self_param.is_some() || f.mods.is_static || f.mods.is_mut })
 }
 
 fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
@@ -394,6 +409,7 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                         is_data: t.kind == TypeKind::Data,
                         is_tuple: t.kind == TypeKind::TupleStruct,
                         has_generics: !t.generics.is_empty(),
+                        lifetimes: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count(),
                     };
                     insert_unique(&mut k.classes, &mut k.ambiguous, t.name.clone(), info);
                 }
@@ -485,6 +501,8 @@ struct MethodRef<'a> {
     owner: String,
     fun: &'a FunDecl,
     trait_recv: Option<Recv>,
+    /// Implements this brs trait method (whose receiver is inferred from its implementations).
+    implements: Option<String>,
 }
 
 fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
@@ -496,18 +514,21 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                 ItemKind::Type(t) => {
                     for m in &t.members {
                         if let ItemKind::Fun(f) = &m.kind {
-                            // `override` methods implement a supertype; look it up when it's a brs trait
+                            // methods implementing a brs interface take its receiver
                             let mut trecv = None;
-                            if f.mods.is_override {
-                                for st in &t.supertypes {
-                                    if let Some(ti) = st.last_name().and_then(|n| k.traits.get(n)) {
-                                        if let Some(mi) = ti.methods.get(&f.name) {
+                            let mut implements = None;
+                            for st in &t.supertypes {
+                                if let Some(ti) = st.last_name().and_then(|n| k.traits.get(n)) {
+                                    if let Some(mi) = ti.methods.get(&f.name) {
+                                        if mi.explicit {
                                             trecv = Some(mi.recv);
+                                        } else {
+                                            implements = Some(ti.name.clone());
                                         }
                                     }
                                 }
                             }
-                            out.push(MethodRef { owner: t.name.clone(), fun: f, trait_recv: trecv });
+                            out.push(MethodRef { owner: t.name.clone(), fun: f, trait_recv: trecv, implements });
                         }
                     }
                 }
@@ -516,8 +537,10 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                     let tinfo = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| k.traits.get(n));
                     for m in &imp.members {
                         if let ItemKind::Fun(f) = &m.kind {
-                            let trecv = tinfo.and_then(|t| t.methods.get(&f.name)).map(|m| m.recv);
-                            out.push(MethodRef { owner: owner.to_string(), fun: f, trait_recv: trecv });
+                            let mi = tinfo.and_then(|t| t.methods.get(&f.name));
+                            let trecv = mi.filter(|m| m.explicit).map(|m| m.recv);
+                            let implements = mi.filter(|m| !m.explicit).and(tinfo.map(|t| t.name.clone()));
+                            out.push(MethodRef { owner: owner.to_string(), fun: f, trait_recv: trecv, implements });
                         }
                     }
                 }
@@ -552,7 +575,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             let returns_self = m.fun.ret.as_ref().map_or(false, |t| t.single_name() == Some("Self") || t.single_name() == Some(m.owner.as_str()));
             let recv = if facts.mutates_self {
                 Recv::RefMut
-            } else if !facts.uses_self && returns_self && m.trait_recv.is_none() {
+            } else if !facts.uses_self && returns_self && m.trait_recv.is_none() && m.implements.is_none() {
                 Recv::Static
             } else {
                 Recv::Ref
@@ -561,6 +584,34 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             if decided.get(&key) != Some(&recv) {
                 decided.insert(key, recv);
                 changed = true;
+            }
+        }
+        // An interface method is `&mut self` if any implementation needs it; then all implementations use it.
+        let mut trait_recv: HashMap<(String, String), Recv> = HashMap::new();
+        for m in &methods {
+            if let Some(t) = &m.implements {
+                let r = decided[&(m.owner.clone(), m.fun.name.clone())];
+                let e = trait_recv.entry((t.clone(), m.fun.name.clone())).or_insert(Recv::Ref);
+                if r == Recv::RefMut {
+                    *e = Recv::RefMut;
+                }
+            }
+        }
+        for m in &methods {
+            if let Some(t) = &m.implements {
+                let want = trait_recv[&(t.clone(), m.fun.name.clone())];
+                let key = (m.owner.clone(), m.fun.name.clone());
+                if want == Recv::RefMut && decided.get(&key) != Some(&Recv::RefMut) {
+                    decided.insert(key, Recv::RefMut);
+                    changed = true;
+                }
+            }
+        }
+        for ((t, name), r) in trait_recv {
+            if let Some(ti) = k.traits.get_mut(&t) {
+                if let Some(mi) = ti.methods.get_mut(&name) {
+                    mi.recv = r;
+                }
             }
         }
         if !changed {

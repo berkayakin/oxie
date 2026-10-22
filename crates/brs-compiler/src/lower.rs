@@ -227,6 +227,8 @@ pub struct Lowerer<'a> {
     pub(crate) force_safe: bool,
     /// Inside a `pub` class/enum: members default to `pub`.
     pub(crate) members_pub: bool,
+    /// Emitting a function signature, where `'_` may stand for elided lifetimes.
+    pub(crate) in_signature: std::cell::Cell<bool>,
 }
 
 pub fn esc(name: &str) -> String {
@@ -287,6 +289,7 @@ impl<'a> Lowerer<'a> {
             pending_trait_ret: None,
             force_safe: false,
             members_pub: false,
+            in_signature: std::cell::Cell::new(false),
         }
     }
 
@@ -639,6 +642,16 @@ impl<'a> Lowerer<'a> {
                     if !self.k.is_user_type(&seg.name) {
                         s.push_str(a);
                         continue;
+                    }
+                }
+                // `Token` for `data class Token<'a>`: spell the elided lifetime in signatures
+                if self.in_signature.get() {
+                    if let Some(c) = self.k.class(&seg.name) {
+                        if c.lifetimes > 0 && c.lifetimes == c_generic_count(c) {
+                            s.push_str(&esc(&seg.name));
+                            s.push_str(&format!("<{}>", vec!["'_"; c.lifetimes].join(", ")));
+                            continue;
+                        }
                     }
                 }
             }
@@ -1080,6 +1093,13 @@ impl<'a> Lowerer<'a> {
     // ------------------------------------------------------------------ functions
 
     fn ret_type(&self, f: &FunDecl, pos: TyPos) -> Option<String> {
+        self.in_signature.set(true);
+        let r = self.ret_type_inner(f, pos);
+        self.in_signature.set(false);
+        r
+    }
+
+    fn ret_type_inner(&self, f: &FunDecl, pos: TyPos) -> Option<String> {
         let value = f.ret.as_ref().filter(|t| !t.is_unit());
         match &f.throws {
             Throws::No => value.map(|t| self.ty(t, pos)),
@@ -1097,6 +1117,13 @@ impl<'a> Lowerer<'a> {
     }
 
     fn params_text(&mut self, f: &FunDecl, recv: Option<String>) -> String {
+        self.in_signature.set(true);
+        let text = self.params_text_inner(f, recv);
+        self.in_signature.set(false);
+        text
+    }
+
+    fn params_text_inner(&mut self, f: &FunDecl, recv: Option<String>) -> String {
         let mut parts = Vec::new();
         if let Some(r) = recv {
             parts.push(r);
@@ -2270,6 +2297,14 @@ pub(crate) fn ends_diverging(stmts: &[Stmt]) -> bool {
 
 /// Rust can't elide the lifetime of a returned reference when there are several reference
 /// parameters (or none). Brs ties the result to all of them (or `'static` when there are none).
+fn c_generic_count(c: &crate::sema::ClassInfo) -> usize {
+    if c.has_generics {
+        c.lifetimes
+    } else {
+        0
+    }
+}
+
 pub(crate) fn auto_lifetimes(f: &FunDecl, self_ref: bool) -> FunDecl {
     fn count(t: &Type, n: &mut usize) {
         match t {

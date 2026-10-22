@@ -1261,7 +1261,7 @@ impl<'a> Lowerer<'a> {
                 self.arg_list(args, None, TyPos::Field, span);
             }
             VariantShape::Named(fields) => {
-                let params: Vec<ParamInfo> = fields.iter().map(|(n, t)| ParamInfo { name: Some(n.clone()), ty: t.clone(), default: None }).collect();
+                let params: Vec<ParamInfo> = fields.iter().map(|(n, t)| ParamInfo { name: Some(n.clone()), ty: t.clone(), default: None, generics: Vec::new() }).collect();
                 let slots = self.fill_args(args, &params, span);
                 self.e.w(&format!("{} {{ ", path));
                 for (i, (p, a)) in params.iter().zip(slots.iter()).enumerate() {
@@ -1328,7 +1328,12 @@ impl<'a> Lowerer<'a> {
                             self.e.w(", ");
                         }
                         first = false;
-                        self.coerce(a, &p.ty, pos);
+                        // a lambda can't be annotated with the callee's type parameters
+                        if matches!(a.kind, ExprKind::Lambda { .. }) && type_mentions(&p.ty, &p.generics) {
+                            self.expr(a, P_LOWEST);
+                        } else {
+                            self.coerce(a, &p.ty, pos);
+                        }
                     }
                 }
             }
@@ -2568,6 +2573,14 @@ impl<'a> Lowerer<'a> {
         }
         self.e.w(" }");
     }
+}
+
+fn type_mentions(t: &Type, names: &[String]) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    let text = crate::symbols::type_text(t);
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| names.iter().any(|n| n == w))
 }
 
 fn strip_paren(e: &Expr) -> &Expr {

@@ -1,0 +1,180 @@
+import std::collections::{HashMap, BTreeMap}
+import std::fmt::Display
+import std::sync::{Arc, Mutex}
+import std::thread
+
+// ---- generic interface with an associated type and generic methods
+interface Repository<T> {
+    fun find(id: u32): &T?
+    fun save(item: T): u32
+    fun count(): usize
+}
+
+class MemoryRepo<T>(items: BTreeMap<u32, T> = BTreeMap(), next: u32 = 1) : Repository<T> {
+    override fun find(id: u32): &T? = items.get(&id)
+
+    override mut fun save(item: T): u32 {
+        val id = next
+        items.insert(id, item)
+        next += 1
+        id
+    }
+
+    override fun count(): usize = items.len()
+}
+
+fun describe_all<T>(items: &[T]): String where T: Display =
+    items.iter().map { "[$it]" }.collect::<Vec<_>>().join(" ")
+
+// ---- trait with associated type implemented for a class
+class Fib(var a: u64 = 0, var b: u64 = 1) : Iterator {
+    type Item = u64
+    override fun next(): u64? {
+        val r = a
+        a = b
+        b += r
+        r
+    }
+}
+
+// ---- data class with lifetime parameter
+data class Token<'a>(text: &'a str, pos: usize)
+
+fun tokens(s: &str): Vec<Token> {
+    var out = vec[]
+    var pos = 0
+    for (word in s.split(' ')) {
+        out.push(Token(word, pos))
+        pos += word.len() + 1
+    }
+    out
+}
+
+// ---- Option-returning function using `?` on options
+fun second_word_len(s: &str): usize? {
+    val w = s.split_whitespace().nth(1)?
+    return w.len()
+}
+
+// ---- operators with +=
+data class Money(cents: i64) {
+    operator fun plus(o: Money): Money = Money(cents + o.cents)
+    operator fun plusAssign(o: Money) {
+        cents += o.cents
+    }
+    override fun toString() = "$${cents / 100}.${cents % 100:02}"
+}
+
+// ---- generic function with closure parameter
+fun <T, R> map_all(items: &[T], f: (&T) -> R): Vec<R> {
+    var out = Vec.with_capacity(items.len())
+    for (x in items) out.push(f(x))
+    out
+}
+
+// ---- user macro and raw Rust
+macro_rules! square {
+    ($x:expr) => { $x * $x };
+}
+
+rust {
+    pub fn rust_helper(x: u32) -> u32 {
+        x.rotate_left(1)
+    }
+}
+
+fun classify(n: i32): &str = when (n) {
+    0 -> "zero"
+    x if x < 0 -> "negative"
+    1, 2, 3 -> "small"
+    in 4..=9 -> "medium"
+    else -> "large"
+}
+
+fun main() {
+    var repo = MemoryRepo<String>()
+    val a = repo.save("alpha".to_string())
+    val b = repo.save("beta".to_string())
+    println("found: ${repo.find(a):?} ${repo.find(b):?} ${repo.find(99):?} count=${repo.count()}")
+    println(describe_all(&[1, 2, 3]))
+
+    val fibs: Vec<u64> = Fib().take(10).collect()
+    println("fib: ${fibs:?}")
+
+    for (t in tokens("hello big world")) print("${t.text}@${t.pos} ")
+    println()
+
+    println("second word: ${second_word_len("one three"):?} ${second_word_len("single"):?}")
+
+    var wallet = Money(150)
+    wallet += Money(275)
+    val total = wallet + Money(5)
+    println("wallet: $wallet total: $total")
+
+    println("lengths: ${map_all(&["a", "bb", "ccc"]) { it.len() }:?}")
+    println("square: ${square!(7)} rust: ${rust_helper(3)}")
+
+    // destructuring and shadowing
+    val (q, r) = (17 / 5, 17 % 5)
+    val q = q * 10
+    println("q=$q r=$r")
+    var (lo, hi) = (1, 10)
+    lo += 1
+    hi -= 1
+    println("lo=$lo hi=$hi")
+
+    // ranges, Kotlin style
+    print("until:")
+    for (i in 0 until 3) print(" $i")
+    print(" downTo:")
+    for (i in 6 downTo 0 step 2) print(" $i")
+    println()
+    println("7 in 0 until 7: ${7 in 0 until 7}")
+
+    // threads with shared state
+    val counter = Arc.new(Mutex.new(0))
+    var handles = vec[]
+    for (i in 0..4) {
+        val c = Arc.clone(&counter)
+        handles.push(thread.spawn(move {
+            var guard = c.lock().unwrap()
+            *guard += i
+        }))
+    }
+    for (h in handles) h.join().unwrap()
+    println("threads sum: ${*counter.lock().unwrap()}")
+
+    // slices and maps
+    val nums = vec[5, 1, 4, 2, 3]
+    val middle = &nums[1..4]
+    println("middle: ${middle:?}")
+    var groups: HashMap<bool, Vec<i32>> = HashMap()
+    for (n in &nums) groups.entry(*n % 2 == 0).or_default().push(*n)
+    var keys: Vec<_> = groups.keys().copied().collect()
+    keys.sort()
+    for (k in keys) println("even=$k -> ${groups[&k]:?}")
+
+    for (n in listOf(0, -3, 2, 7, 42)) print("${classify(n)} ")
+    println()
+
+    // labeled break with value, unsafe, char/byte literals
+    val found = 'search: loop {
+        for (x in 1..100) {
+            if (x * x > 50) break 'search x
+        }
+        break 0
+    }
+    val bytes = b"hi"
+    val first = unsafe { *bytes.as_ptr() }
+    println("found=$found first=${first as char} c=${'c' as u32}")
+
+    // if-let and while-let, Rust style
+    var stack = vec[1, 2, 3]
+    while let Some(top) = stack.pop() {
+        print("$top")
+    }
+    println()
+    if let Some(x) = nums.first() {
+        println("first: $x")
+    }
+}
