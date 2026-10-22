@@ -11,10 +11,10 @@
   ],
   "metadata": {
     "version": "0.1.0",
-    "license": "MIT",
+    "license": "MIT OR Apache-2.0",
     "description": "Oxie grammar for tree-sitter",
     "links": {
-      "repository": "https://github.com/oxie-lang/tree-sitter-oxie"
+      "repository": "https://github.com/berkayakin/oxie"
     }
   }
 }

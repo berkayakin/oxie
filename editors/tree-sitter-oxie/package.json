@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Tree-sitter grammar for Oxie",
   "main": "grammar.js",
-  "license": "MIT",
+  "license": "MIT OR Apache-2.0",
+  "repository": "https://github.com/berkayakin/oxie",
   "scripts": {
     "generate": "tree-sitter generate",
     "test": "tree-sitter test"
