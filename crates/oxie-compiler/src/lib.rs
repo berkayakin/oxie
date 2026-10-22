@@ -1,4 +1,4 @@
-//! Oxie: a Kotlin/TypeScript-flavoured language that compiles to plain Rust.
+//! Compiler for the Oxie programming language, which compiles to plain Rust.
 //!
 //! The compiler is a source-to-source translator. Every construct lowers to the Rust you
 //! would write by hand, so programs keep Rust's performance and use any crate directly.

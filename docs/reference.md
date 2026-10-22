@@ -1,7 +1,8 @@
 # Oxie language reference
 
-Oxie is a syntax for Rust. Every construct below lowers to ordinary Rust; the semantics
-(ownership, borrowing, traits, generics, `Option`/`Result`, iterators, macros) are Rust's.
+Oxie is a programming language that compiles to Rust. Every construct below lowers to ordinary
+Rust, and the semantics (ownership, borrowing, traits, generics, `Option`/`Result`, iterators,
+macros) are Rust's.
 `oxie emit file.oxi` prints the generated Rust for any file.
 
 Contents: [Lexical structure](#lexical-structure) · [Declarations](#declarations) ·

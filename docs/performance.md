@@ -1,7 +1,7 @@
 # Performance
 
 Oxie programs perform exactly like the equivalent hand-written Rust, because they *are* that
-Rust: the Oxie compiler only translates syntax, and `rustc`/LLVM compile the result.
+Rust: the Oxie compiler produces ordinary Rust source, and `rustc`/LLVM compile it.
 
 ## Why there is no overhead
 

@@ -1,6 +1,6 @@
 # tree-sitter-oxie
 
-A [tree-sitter](https://tree-sitter.github.io) grammar for Oxie, made for editors: it recognizes
+A [tree-sitter](https://tree-sitter.github.io) grammar for the Oxie programming language, made for editors: it recognizes
 declarations, calls, member access and strings with interpolation and groups everything else
 by brackets, so it stays small, fast and tolerant of incomplete code.
 

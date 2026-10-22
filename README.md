@@ -1,6 +1,7 @@
 # Oxie
 
-**A concise, familiar syntax for Rust. Oxie code compiles to plain Rust.**
+**Oxie is a programming language for the Rust ecosystem: a concise, familiar syntax that compiles
+to plain Rust.**
 Every crate works, programs run exactly as fast as hand-written Rust, and you never write
 `let mut`, `impl` blocks, `Ok(...)`, `.to_string()` on literals or `#[derive(...)]` boilerplate
 unless you want to.

@@ -1,6 +1,6 @@
 # Oxie for Kuana
 
-Language support for [Oxie](../../README.md) in the Kuana editor:
+Support for the [Oxie programming language](../../README.md) in the Kuana editor:
 
 * syntax highlighting, outline, breadcrumbs and sticky scroll, bracket matching, indentation
   and text objects (tree-sitter grammar from `../tree-sitter-oxie`);

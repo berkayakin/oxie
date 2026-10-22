@@ -1,7 +1,7 @@
 # Coming from Kotlin or TypeScript
 
-Oxie reads like Kotlin with a few TypeScript conveniences, and runs as Rust. This page maps
-what you know to Oxie, and lists the Rust ideas you still need.
+Oxie is a programming language that reads like Kotlin with a few TypeScript conveniences and
+compiles to Rust. This page maps what you know to Oxie, and lists the Rust ideas you still need.
 
 ## Side by side
 

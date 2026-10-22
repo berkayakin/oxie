@@ -1,7 +1,7 @@
 {
   "name": "tree-sitter-oxie",
   "version": "0.1.0",
-  "description": "Tree-sitter grammar for Oxie",
+  "description": "Tree-sitter grammar for the Oxie programming language",
   "main": "grammar.js",
   "license": "MIT OR Apache-2.0",
   "repository": "https://github.com/berkayakin/oxie",

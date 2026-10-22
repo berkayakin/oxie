@@ -1,6 +1,6 @@
 # A tour of Oxie
 
-This tour shows Oxie by example. Every program here runs as-is: save it as `tour.oxi` and run
+This tour introduces the Oxie programming language by example. Every program here runs as-is: save it as `tour.oxi` and run
 `oxie run tour.oxi`. If you know Kotlin or TypeScript you can read most Oxie code already; the
 notes point out where Oxie follows Rust instead.
 
