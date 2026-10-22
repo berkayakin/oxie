@@ -223,7 +223,8 @@ fn cmd_run(args: &[String]) -> R {
 fn cmd_test(args: &[String]) -> R {
     let (opts, extra) = split_dashdash(args);
     let file = opts.iter().find(|a| a.ends_with(".brs")).cloned();
-    let filter: Vec<String> = opts.iter().filter(|a| !a.starts_with('-') && !a.ends_with(".brs")).cloned().collect();
+    // `test "adds numbers"` becomes the Rust test `test_adds_numbers`; accept the readable name too
+    let filter: Vec<String> = opts.iter().filter(|a| !a.starts_with('-') && !a.ends_with(".brs")).map(|f| test_filter(f)).collect();
     let (p, script) = match &file {
         Some(f) => {
             let abs = std::fs::canonicalize(f).map_err(|e| e.to_string())?;
@@ -259,6 +260,17 @@ fn cmd_test(args: &[String]) -> R {
     }
     let status = cmd.status().map_err(|e| e.to_string())?;
     Ok(if status.success() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+fn test_filter(name: &str) -> String {
+    if name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ':') {
+        return name.to_string();
+    }
+    let mut s: String = name.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+    while s.contains("__") {
+        s = s.replace("__", "_");
+    }
+    s.trim_matches('_').to_string()
 }
 
 fn collect_brs(path: &Path, out: &mut Vec<PathBuf>) {

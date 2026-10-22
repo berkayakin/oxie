@@ -1,0 +1,21 @@
+{
+  "name": "tree-sitter-brs",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for brs (Better Rust)",
+  "main": "grammar.js",
+  "license": "MIT",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "0.25.10"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.brs",
+      "file-types": ["brs"],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

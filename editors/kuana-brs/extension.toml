@@ -1,0 +1,17 @@
+id = "brs"
+name = "brs (Better Rust)"
+version = "0.1.0"
+schema_version = 1
+description = "brs language support: syntax highlighting, outline, run and test buttons, and the brs language server (diagnostics, completion, hover, go to definition, rename, formatting)."
+authors = ["Berkay Akin"]
+
+# The grammar is bundled in grammars/brs/src (generated from editors/tree-sitter-brs).
+[grammars.brs]
+
+[language_servers.brs]
+name = "brs"
+languages = ["brs"]
+command = "brs"
+args = ["lsp"]
+install = "cargo install --path crates/brs-cli (from the better-rust repository)"
+root_markers = ["Cargo.toml"]

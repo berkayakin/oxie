@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "brs",
+      "camelcase": "Brs",
+      "scope": "source.brs",
+      "path": ".",
+      "file-types": ["brs"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "brs (Better Rust) grammar for tree-sitter",
+    "links": {
+      "repository": "https://github.com/brs-lang/tree-sitter-brs"
+    }
+  }
+}
