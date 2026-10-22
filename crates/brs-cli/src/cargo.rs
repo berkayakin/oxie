@@ -135,7 +135,8 @@ pub fn render(d: &MappedDiag, root: &Path) -> String {
     let c = color();
     let (red, yellow, blue, bold, reset) = if c { ("\x1b[31m", "\x1b[33m", "\x1b[34m", "\x1b[1m", "\x1b[0m") } else { ("", "", "", "", "") };
     let lc = if d.level == "error" { red } else { yellow };
-    let shown = d.file.strip_prefix(root).unwrap_or(&d.file).display().to_string();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let shown = d.file.strip_prefix(&cwd).or_else(|_| d.file.strip_prefix(root)).unwrap_or(&d.file).display().to_string();
     let text = std::fs::read_to_string(&d.file).unwrap_or_default();
     let line_text = text.lines().nth(d.line as usize).unwrap_or("");
     let num = (d.line + 1).to_string();

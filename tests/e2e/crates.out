@@ -1,0 +1,4 @@
+parsed 2 orders, second note: Some("ripe")
+spawned: [10, 20, 30]
+total: 3.50
+{"id":3,"item":"kiwi","qty":1,"note":null}

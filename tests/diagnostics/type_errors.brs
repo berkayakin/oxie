@@ -1,0 +1,13 @@
+data class Point(x: i32, y: i32)
+
+fun add(a: i32, b: i32): i32 = a + b
+
+fun main() {
+    val p = Point(1, 2)
+    val s: String = add(1, 2)
+    // error: 7: mismatched types
+    println(p.z)
+    // error: 9: no field `z`
+    val n = add("one", 2)
+    // error: 11: mismatched types
+}

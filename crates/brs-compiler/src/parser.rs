@@ -171,7 +171,14 @@ impl<'a> Parser<'a> {
     }
 
     fn err<T>(&mut self, msg: impl Into<String>) -> PResult<T> {
-        let sp = self.span();
+        let mut sp = self.span();
+        // if the offending token is on a later line, point at the end of the previous one
+        if self.pos > 0 {
+            let prev = self.prev_span();
+            if (prev.end as usize) <= (sp.start as usize) && self.src.get(prev.end as usize..sp.start as usize).map_or(false, |gap| gap.contains('\n')) {
+                sp = Span::empty_at(prev.end);
+            }
+        }
         self.diags.push(Diag::error(sp, msg));
         Err(())
     }
