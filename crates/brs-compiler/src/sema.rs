@@ -151,11 +151,25 @@ impl Crate {
     }
     /// The enum owning a variant, if the variant name is unique among brs enums.
     pub fn variant_enum(&self, variant: &str) -> Option<&EnumInfo> {
+        self.variant_enum_in(variant, None)
+    }
+
+    /// Like `variant_enum`, but when several enums have the variant, prefers the one declared in `module`.
+    pub fn variant_enum_in(&self, variant: &str, module: Option<&[String]>) -> Option<&EnumInfo> {
         if matches!(variant, "Some" | "None" | "Ok" | "Err") {
             return None;
         }
         match self.variant_owner.get(variant) {
             Some(v) if v.len() == 1 => self.enum_(&v[0]),
+            Some(v) => {
+                let m = module?;
+                let local: Vec<&EnumInfo> = v.iter().filter_map(|n| self.enum_(n)).filter(|e| e.module == m).collect();
+                if local.len() == 1 {
+                    Some(local[0])
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }

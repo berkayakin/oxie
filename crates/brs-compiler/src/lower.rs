@@ -854,7 +854,7 @@ impl<'a> Lowerer<'a> {
         if segs.len() == 1 {
             let n = &segs[0];
             if !self.k.classes.contains_key(n) && !self.is_local(n) {
-                if let Some(en) = self.k.variant_enum(n) {
+                if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
                     let shape = en.variant(n).cloned();
                     return (format!("{}::{}", en.name, n), shape);
                 }

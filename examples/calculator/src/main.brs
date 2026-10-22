@@ -1,0 +1,56 @@
+import std::collections::HashMap
+import lexer::tokenize
+import parser::{Expr, Parser}
+
+error enum EvalError {
+    UnknownVariable(name: String) = "unknown variable '$name'"
+    UnknownFunction(name: String) = "unknown function '$name'"
+    DivisionByZero = "division by zero"
+}
+
+/// Evaluates an expression with the given variables.
+fun eval(e: &Expr, vars: &HashMap<String, f64>): f64 throws EvalError = when (e) {
+    Expr.Num(n) -> *n
+    Expr.Var(name) -> vars.get(name).copied() ?: throw EvalError.UnknownVariable(name.clone())
+    Expr.Neg(inner) -> -eval(inner, vars)?
+    Expr.Bin(op, l, r) -> {
+        val a = eval(l, vars)?
+        val b = eval(r, vars)?
+        when (op) {
+            '+' -> a + b
+            '-' -> a - b
+            '*' -> a * b
+            '/' -> if (b == 0.0) throw EvalError.DivisionByZero else a / b
+            '^' -> a.powf(b)
+            else -> unreachable()
+        }
+    }
+    Expr.Call(name, arg) -> {
+        val x = eval(arg, vars)?
+        when (name.as_str()) {
+            "sqrt" -> x.sqrt()
+            "abs" -> x.abs()
+            "sin" -> x.sin()
+            else -> throw EvalError.UnknownFunction(name.clone())
+        }
+    }
+}
+
+fun calculate(input: &str, vars: &HashMap<String, f64>): f64 throws {
+    val tokens = tokenize(input)?
+    val ast = Parser(tokens).parse()?
+    eval(&ast, vars)?
+}
+
+fun main() {
+    val vars = mapOf("pi".to_string() to 3.14159, "x".to_string() to 4.0)
+    val inputs = listOf("1 + 2 * 3", "(1 + 2) * 3", "2 ^ 3 ^ 2", "-x + sqrt(16)", "pi * x ^ 2", "10 / (5 - 5)", "y + 1", "2 $ 3", "(1 + 2")
+    for (input in inputs) {
+        try {
+            val v = calculate(input, &vars)?
+            println("$input = $v")
+        } catch (e) {
+            println("$input -> error: $e")
+        }
+    }
+}

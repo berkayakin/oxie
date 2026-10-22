@@ -1,0 +1,103 @@
+import lexer::Token
+
+/// Expression tree.
+enum Expr {
+    Num(f64)
+    Var(String)
+    Neg(Box<Expr>)
+    Bin(op: char, left: Box<Expr>, right: Box<Expr>)
+    Call(name: String, arg: Box<Expr>)
+}
+
+error enum ParseError {
+    UnexpectedEnd = "unexpected end of input"
+    Unexpected(found: String) = "unexpected token: $found"
+}
+
+/// Recursive-descent parser with operator precedence.
+class Parser(tokens: Vec<Token>, var pos: usize = 0) {
+    fun parse(): Expr throws ParseError {
+        val e = expression()?
+        if (pos < tokens.len()) throw ParseError.Unexpected("${tokens[pos]:?}")
+        e
+    }
+
+    fun peek(): &Token? = tokens.get(pos)
+
+    fun advance(): Token? {
+        val t = tokens.get(pos).cloned()
+        pos += 1
+        t
+    }
+
+    fun expression(): Expr throws ParseError {
+        var left = term()?
+        while (val Some(Token.Op(op)) = peek().cloned()) {
+            if (op != '+' && op != '-') break
+            advance()
+            val right = term()?
+            left = Expr.Bin(op, Box.new(left), Box.new(right))
+        }
+        left
+    }
+
+    fun term(): Expr throws ParseError {
+        var left = power()?
+        while (val Some(Token.Op(op)) = peek().cloned()) {
+            if (op != '*' && op != '/') break
+            advance()
+            val right = power()?
+            left = Expr.Bin(op, Box.new(left), Box.new(right))
+        }
+        left
+    }
+
+    fun power(): Expr throws ParseError {
+        val base = unary()?
+        if (peek() == Some(&Token.Op('^'))) {
+            advance()
+            val exp = power()?
+            return Expr.Bin('^', Box.new(base), Box.new(exp))
+        }
+        base
+    }
+
+    fun unary(): Expr throws ParseError {
+        if (peek() == Some(&Token.Op('-'))) {
+            advance()
+            return Expr.Neg(Box.new(unary()?))
+        }
+        primary()
+    }
+
+    fun primary(): Expr throws ParseError {
+        val tok = advance() ?: throw ParseError.UnexpectedEnd
+        return when (tok) {
+            Token.Num(n) -> Expr.Num(n)
+            Token.Ident(name) -> {
+                if (peek() == Some(&Token.LParen)) {
+                    advance()
+                    val arg = expression()?
+                    expect_rparen()?
+                    Expr.Call(name, Box.new(arg))
+                } else {
+                    Expr.Var(name)
+                }
+            }
+            Token.LParen -> {
+                val e = expression()?
+                expect_rparen()?
+                e
+            }
+            other -> throw ParseError.Unexpected("${other:?}")
+        }
+    }
+
+    fun expect_rparen() throws ParseError {
+        when (advance()) {
+            Some(Token.RParen) -> {}
+            Some(t) -> throw ParseError.Unexpected("${t:?}")
+            null -> throw ParseError.UnexpectedEnd
+        }
+    }
+}

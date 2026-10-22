@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/brs-compiler", "crates/brs-build", "crates/brs-cli"]
+members = ["crates/*", "examples/*"]
 
 [workspace.package]
 version = "0.1.0"

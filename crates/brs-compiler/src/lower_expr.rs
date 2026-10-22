@@ -101,6 +101,11 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Expr { expr, semi } => {
                 self.e.mark(expr.span);
+                if self.in_throwing_fn() && self.is_throwing_call(expr) {
+                    self.expr(expr, P_POSTFIX);
+                    self.e.w("?;");
+                    return;
+                }
                 let block_like = self.stmt_expr(expr);
                 if !block_like || *semi {
                     self.e.w(";");
@@ -268,12 +273,19 @@ impl<'a> Lowerer<'a> {
             ExprKind::Paren(x) => self.tail(x, t),
             _ => {
                 let wrap = t.wrap.clone().filter(|_| !is_ok_err_call(e));
+                // calling a throwing function propagates its error, like an exception would
+                let auto_try = wrap.is_some() && self.in_throwing_fn() && self.is_throwing_call(e);
                 if let Some(w) = &wrap {
                     self.e.w(&format!("{}(", w));
                 }
-                match &t.ty {
-                    Some(ty) => self.coerce(e, ty, TyPos::Local),
-                    None => self.expr(e, P_LOWEST),
+                if auto_try {
+                    self.expr(e, P_POSTFIX);
+                    self.e.w("?");
+                } else {
+                    match &t.ty {
+                        Some(ty) => self.coerce(e, ty, TyPos::Local),
+                        None => self.expr(e, P_LOWEST),
+                    }
                 }
                 if wrap.is_some() {
                     self.e.w(")");
@@ -361,6 +373,46 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Values that can never be an `Option` themselves (safe to wrap in `Some`).
+    /// Is this a call to a brs function or method declared with `throws`?
+    pub(crate) fn is_throwing_call(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Call { callee, .. } => {
+                if let Some(n) = callee.ident() {
+                    if self.is_local(n) {
+                        return false;
+                    }
+                    if let Some(m) = self.class.as_ref().and_then(|c| c.methods.get(n)) {
+                        return m.throws;
+                    }
+                    return self.k.funs.get(n).map_or(false, |f| f.throws) && !self.k.ambiguous.contains(n);
+                }
+                false
+            }
+            ExprKind::MethodCall { recv, name, safe: false, .. } => {
+                if matches!(recv.kind, ExprKind::SelfValue) {
+                    return self.class.as_ref().and_then(|c| c.methods.get(name)).map_or(false, |m| m.throws);
+                }
+                if let Some((p, _)) = self.as_path(recv) {
+                    let owner = p.last().cloned().unwrap_or_default();
+                    let owner = if owner == "Self" { self.class.as_ref().map(|c| c.name.clone()).unwrap_or_default() } else { owner };
+                    return self.k.class(&owner).and_then(|c| c.methods.get(name)).map_or(false, |m| m.throws);
+                }
+                let owner = match self.infer_type(recv) {
+                    Some(Type::Ref { inner, .. }) => inner.single_name().map(|s| s.to_string()),
+                    Some(t) => t.single_name().map(|s| s.to_string()),
+                    None => None,
+                };
+                owner.and_then(|o| self.k.class(&o).and_then(|c| c.methods.get(name)).cloned()).map_or(false, |m| m.throws)
+            }
+            ExprKind::Await(x) => self.is_throwing_call(x),
+            _ => false,
+        }
+    }
+
+    fn in_throwing_fn(&self) -> bool {
+        self.fns.last().map_or(false, |f| f.throws && !f.is_lambda)
+    }
+
     fn is_value_like(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Str(_) | ExprKind::RawStr(_)
@@ -928,7 +980,7 @@ impl<'a> Lowerer<'a> {
                 return;
             }
             if !self.is_local(n) && !self.k.classes.contains_key(n) && !self.k.funs.contains_key(n) {
-                if let Some(en) = self.k.variant_enum(n) {
+                if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
                     s.push_str(&format!("{}::{}", en.name, n));
                     self.e.w(&s);
                     return;
@@ -970,7 +1022,7 @@ impl<'a> Lowerer<'a> {
                     return Some((segs.clone(), PathKind::Type));
                 }
                 if is_type_like(n) {
-                    if self.k.variant_enum(n).is_some() && !self.k.is_user_type(n) {
+                    if self.k.variant_enum_in(n, Some(&self.module)).is_some() && !self.k.is_user_type(n) {
                         return None;
                     }
                     return Some((segs.clone(), PathKind::Type));
@@ -1103,7 +1155,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 if !self.k.is_user_type(&name) {
-                    if let Some(en) = self.k.variant_enum(&name).cloned() {
+                    if let Some(en) = self.k.variant_enum_in(&name, Some(&self.module)).cloned() {
                         let shape = en.variant(&name).cloned().unwrap();
                         self.variant_ctor(&format!("{}::{}", en.name, name), &shape, args, span);
                         return;
@@ -1852,6 +1904,11 @@ impl<'a> Lowerer<'a> {
             Some(f) if !f.is_lambda => {
                 let wrap = f.throws && !v.map_or(false, is_ok_err_call) && !v.map_or(false, |x| x.diverges());
                 match v {
+                    Some(x) if wrap && self.is_throwing_call(x) => {
+                        self.e.w(" Ok(");
+                        self.expr(x, P_POSTFIX);
+                        self.e.w("?)");
+                    }
                     Some(x) => {
                         self.e.w(" ");
                         if wrap {

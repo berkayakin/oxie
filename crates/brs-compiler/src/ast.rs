@@ -658,7 +658,7 @@ impl Expr {
             ExprKind::Return(_) | ExprKind::Break { .. } | ExprKind::Continue(_) | ExprKind::Throw(_) => true,
             ExprKind::BuiltinMacro { name, .. } => matches!(name.as_str(), "panic" | "todo" | "unimplemented" | "unreachable"),
             ExprKind::Macro { path, .. } => matches!(path.as_str(), "panic" | "todo" | "unimplemented" | "unreachable"),
-            ExprKind::Call { callee, .. } => matches!(callee.ident(), Some("exit")),
+            ExprKind::Call { callee, .. } => matches!(callee.ident(), Some("exit") | Some("panic") | Some("todo") | Some("unimplemented") | Some("unreachable")),
             _ => false,
         }
     }

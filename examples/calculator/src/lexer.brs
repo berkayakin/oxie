@@ -1,0 +1,55 @@
+/// A token of an arithmetic expression.
+enum Token {
+    Num(f64)
+    Ident(String)
+    Op(char)
+    LParen
+    RParen
+}
+
+error enum LexError {
+    UnexpectedChar(ch: char, pos: usize) = "unexpected character '$ch' at position $pos"
+}
+
+/// Splits `input` into tokens.
+fun tokenize(input: &str): Vec<Token> throws LexError {
+    var tokens = vec[]
+    val chars: Vec<char> = input.chars().collect()
+    var i = 0
+    while (i < chars.len()) {
+        val c = chars[i]
+        when {
+            c.is_whitespace() -> i += 1
+            c.is_ascii_digit() || c == '.' -> {
+                val start = i
+                while (i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.')) i += 1
+                val text: String = chars[start..i].iter().collect()
+                tokens.push(Num(text.parse().unwrap()))
+            }
+            c.is_alphabetic() -> {
+                val start = i
+                while (i < chars.len() && chars[i].is_alphanumeric()) i += 1
+                tokens.push(Ident(chars[start..i].iter().collect()))
+            }
+            c in "+-*/^" -> {
+                tokens.push(Op(c))
+                i += 1
+            }
+            c == '(' -> {
+                tokens.push(LParen)
+                i += 1
+            }
+            c == ')' -> {
+                tokens.push(RParen)
+                i += 1
+            }
+            else -> throw LexError.UnexpectedChar(c, i)
+        }
+    }
+    tokens
+}
+
+test "tokenizes numbers and operators" {
+    val t = tokenize("1 + 2.5").unwrap()
+    assert_eq(t, vec[Num(1.0), Op('+'), Num(2.5)])
+}

@@ -1,0 +1,9 @@
+1 + 2 * 3 = 7
+(1 + 2) * 3 = 9
+2 ^ 3 ^ 2 = 512
+-x + sqrt(16) = 0
+pi * x ^ 2 = 50.26544
+10 / (5 - 5) -> error: division by zero
+y + 1 -> error: unknown variable 'y'
+2 $ 3 -> error: unexpected character '$' at position 2
+(1 + 2 -> error: unexpected end of input

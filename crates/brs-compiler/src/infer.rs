@@ -64,7 +64,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(f) = self.k.funs.get(n) {
                     return if f.throws { None } else { f.ret.clone() };
                 }
-                if let Some(en) = self.k.variant_enum(n) {
+                if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
                     return Some(ty(&en.name));
                 }
                 None
