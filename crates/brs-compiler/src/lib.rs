@@ -15,6 +15,7 @@ pub mod lower_expr;
 pub mod parser;
 pub mod runtime;
 pub mod sema;
+pub mod symbols;
 pub mod visit;
 
 pub use compile::{compile, compile_one, discover, Input, Options, Output, SourceMap};
