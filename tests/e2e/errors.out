@@ -1,0 +1,14 @@
+8080
+error: invalid digit found in string
+error: invalid value '-5' for port
+20
+error: value 500 exceeds limit 100
+brs
+missing: missing key: other
+caught: invalid digit found in string
+result: -1
+ok: 9
+error: could not read config file '/definitely/not/here.toml'
+  caused by: No such file or directory (os error 2)
+fallback port: 80
+parsed: 42

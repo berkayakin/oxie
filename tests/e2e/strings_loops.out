@@ -1,0 +1,18 @@
+Hello, World! n=42 pi=3.14 next=43
+escaped: $name {braces} "quoted"
+Dear World,
+  indented line
+Bye
+HEY!
+ab42c
+3 items
+i=3
+after do-while i=0
+0 1 2 
+0a 2c 
+found 23
+grades: A B C
+x is a consonant
+racecar palindrome: true
+contains: true true true
+loop result: 42

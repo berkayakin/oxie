@@ -1,0 +1,17 @@
+city: Some("London")
+bob city: None
+zed age: -1
+len: 3
+name: anonymous
+first even: Some(4)
+none even: None
+found Ada
+bob is 20
+x=Some(5) y=None sum=15
+count: None
+count: Some(3)
+nobody
+zip: NW1
+nums: [10, 30]
+y is none
+x is five

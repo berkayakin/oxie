@@ -565,7 +565,7 @@ pub enum ExprKind {
     /// `a to b` -> `(a, b)`
     Pair(Box<Expr>, Box<Expr>),
     If { cond: Box<Cond>, then: Block, else_: Option<Box<Expr>> },
-    When { subject: Option<Box<Expr>>, arms: Vec<WhenArm>, rust_match: bool },
+    When { subject: Option<Box<Expr>>, binding: Option<Pat>, arms: Vec<WhenArm>, rust_match: bool },
     Block(Block),
     Unsafe(Block),
     Async { is_move: bool, block: Block },

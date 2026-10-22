@@ -8,6 +8,7 @@ pub mod compile;
 pub mod diag;
 pub mod emit;
 pub mod format;
+pub mod infer;
 pub mod lexer;
 pub mod lower;
 pub mod lower_expr;

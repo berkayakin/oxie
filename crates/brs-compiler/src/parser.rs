@@ -1883,7 +1883,7 @@ impl<'a> Parser<'a> {
                 Tok::Punct(">") if !(self.is_punct_at(1, ">") && self.adjacent(0, 1)) && !(self.is_punct_at(1, ">=") && self.adjacent(0, 1)) => BinOp::Gt,
                 Tok::Ident(s) if s == "in" => {
                     self.bump();
-                    let rhs = self.elvis_expr()?;
+                    let rhs = self.in_rhs()?;
                     let sp = lhs.span.to(rhs.span);
                     lhs = Expr::new(ExprKind::In { item: Box::new(lhs), coll: Box::new(rhs), negated: false }, sp);
                     continue;
@@ -1891,7 +1891,7 @@ impl<'a> Parser<'a> {
                 Tok::Punct("!") if self.is_kw_at(1, "in") => {
                     self.bump();
                     self.bump();
-                    let rhs = self.elvis_expr()?;
+                    let rhs = self.in_rhs()?;
                     let sp = lhs.span.to(rhs.span);
                     lhs = Expr::new(ExprKind::In { item: Box::new(lhs), coll: Box::new(rhs), negated: true }, sp);
                     continue;
@@ -1916,6 +1916,19 @@ impl<'a> Parser<'a> {
             self.bump();
             let rhs = self.elvis_expr()?;
             lhs = bin(op, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    /// Right side of `in`: a collection or a range (`x in 1..10`).
+    fn in_rhs(&mut self) -> PResult<Expr> {
+        let lhs = self.elvis_expr()?;
+        if self.is_punct("..") || self.is_punct("..=") || self.is_punct("..<") {
+            let inclusive = self.is_punct("..=");
+            self.bump();
+            let end = self.elvis_expr()?;
+            let sp = lhs.span.to(end.span);
+            return Ok(Expr::new(ExprKind::Range { start: Some(Box::new(lhs)), end: Some(Box::new(end)), inclusive }, sp));
         }
         Ok(lhs)
     }
@@ -2937,10 +2950,16 @@ impl<'a> Parser<'a> {
 
     fn when_expr(&mut self) -> PResult<Expr> {
         let start = self.bump().span;
+        let mut binding = None;
         let subject = if self.is_punct("(") {
             self.bump();
             let saved = self.no_struct;
             self.no_struct = false;
+            if self.is_kw("val") || self.is_kw("var") || self.is_kw("let") {
+                self.bump();
+                binding = Some(self.pattern_no_or()?);
+                self.expect_punct("=")?;
+            }
             let e = self.expr();
             self.no_struct = saved;
             let e = e?;
@@ -3011,7 +3030,7 @@ impl<'a> Parser<'a> {
             }
             self.eat_punct(",");
         }
-        Ok(Expr::new(ExprKind::When { subject, arms, rust_match: false }, start.to(self.prev_span())))
+        Ok(Expr::new(ExprKind::When { subject, binding, arms, rust_match: false }, start.to(self.prev_span())))
     }
 
     /// Expression in a `when` condition: stops before `->` and `,`.
@@ -3080,7 +3099,7 @@ impl<'a> Parser<'a> {
             }
             self.eat_punct(",");
         }
-        Ok(Expr::new(ExprKind::When { subject: Some(Box::new(subject)), arms, rust_match: true }, start.to(self.prev_span())))
+        Ok(Expr::new(ExprKind::When { subject: Some(Box::new(subject)), binding: None, arms, rust_match: true }, start.to(self.prev_span())))
     }
 
     // ------------------------------------------------------------------ patterns

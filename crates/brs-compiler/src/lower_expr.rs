@@ -107,7 +107,13 @@ impl<'a> Lowerer<'a> {
     }
 
     fn let_stmt(&mut self, pat: &Pat, ty: Option<&Type>, init: Option<&Expr>, else_: Option<&Block>) {
-        let p = self.pat(pat);
+        let mut p = self.pat(pat);
+        // closures that assign to captured variables are FnMut and must be `let mut` to be called
+        if let (Some(Expr { kind: ExprKind::Lambda { body, .. }, .. }), Pat::Ident { mutable: false, .. }) = (init, pat) {
+            if visit::has_assignment(body) {
+                p = format!("mut {}", p);
+            }
+        }
         self.e.w(&format!("let {}", p));
         let fn_lambda = matches!(ty, Some(Type::Fn { .. })) && init.map_or(false, |e| matches!(e.kind, ExprKind::Lambda { .. } | ExprKind::Path { .. }));
         if let Some(t) = ty {
@@ -145,8 +151,8 @@ impl<'a> Lowerer<'a> {
                 self.if_expr(cond, then, else_.as_deref(), None);
                 true
             }
-            ExprKind::When { subject, arms, rust_match } => {
-                self.when_expr(subject.as_deref(), arms, *rust_match, None, e.span);
+            ExprKind::When { subject, binding, arms, rust_match } => {
+                self.when_with_binding(subject.as_deref(), binding.as_ref(), arms, *rust_match, None, e.span);
                 true
             }
             ExprKind::Block(b) => {
@@ -237,13 +243,20 @@ impl<'a> Lowerer<'a> {
 
     /// Emits a value-producing expression: coercion to the target type and `Ok` wrapping.
     fn tail(&mut self, e: &Expr, t: &Target) {
+        // `return x` as the last statement is just the value
+        if let ExprKind::Return(Some(v)) = &e.kind {
+            if self.fns.last().map_or(false, |f| !f.is_lambda) && self.fns.last().map_or(false, |f| f.tries.is_empty()) && !v.diverges() {
+                self.tail(v, t);
+                return;
+            }
+        }
         if e.diverges() {
             self.expr(e, P_LOWEST);
             return;
         }
         match &e.kind {
             ExprKind::If { cond, then, else_ } if else_.is_some() => self.if_expr(cond, then, else_.as_deref(), Some(t)),
-            ExprKind::When { subject, arms, rust_match } => self.when_expr(subject.as_deref(), arms, *rust_match, Some(t), e.span),
+            ExprKind::When { subject, binding, arms, rust_match } => self.when_with_binding(subject.as_deref(), binding.as_ref(), arms, *rust_match, Some(t), e.span),
             ExprKind::Block(b) => self.block_value(b, t),
             ExprKind::Paren(x) => self.tail(x, t),
             _ => {
@@ -553,6 +566,10 @@ impl<'a> Lowerer<'a> {
                 self.e.w(&format!(" as {}", tt));
             }
             Elvis(l, r) => self.elvis(l, r),
+            In { item, coll, negated } if matches!(strip_paren(coll).kind, Range { .. }) => {
+                let Range { start, end, inclusive } = &strip_paren(coll).kind else { unreachable!() };
+                self.in_range(item, start.as_deref(), end.as_deref(), *inclusive, *negated);
+            }
             In { item, coll, negated } => {
                 if *negated {
                     self.e.w("!");
@@ -591,9 +608,9 @@ impl<'a> Lowerer<'a> {
                     self.if_expr(cond, then, None, None);
                 }
             }
-            When { subject, arms, rust_match } => {
+            When { subject, binding, arms, rust_match } => {
                 let t = Target::none();
-                self.when_expr(subject.as_deref(), arms, *rust_match, Some(&t), e.span);
+                self.when_with_binding(subject.as_deref(), binding.as_ref(), arms, *rust_match, Some(&t), e.span);
             }
             Block(b) => self.block_value(b, &Target::none()),
             Unsafe(b) => {
@@ -702,13 +719,13 @@ impl<'a> Lowerer<'a> {
             },
             Throw(x) => {
                 if let Some(label) = self.fns.last().and_then(|f| f.tries.last().cloned()) {
-                    self.e.w(&format!("break '{} Err(::std::convert::From::from(", label));
-                    self.expr(x, P_LOWEST);
-                    self.e.w("))");
+                    self.e.w(&format!("break '{} Err(", label));
+                    self.expr(x, P_POSTFIX);
+                    self.e.w(".into())");
                 } else {
-                    self.e.w("return Err(::std::convert::From::from(");
-                    self.expr(x, P_LOWEST);
-                    self.e.w("))");
+                    self.e.w("return Err(");
+                    self.expr(x, P_POSTFIX);
+                    self.e.w(".into())");
                 }
             }
             Tuple(v) => {
@@ -792,6 +809,48 @@ impl<'a> Lowerer<'a> {
             Raw(s) => self.e.raw_lines(s),
             Error => self.e.w("()"),
         }
+    }
+
+    /// `x in a..b` -> `a <= x && x < b` (x is evaluated once)
+    fn in_range(&mut self, item: &Expr, start: Option<&Expr>, end: Option<&Expr>, inclusive: bool, negated: bool) {
+        let simple = self.is_place(item) || is_literal(item);
+        let var = if simple { None } else { Some(self.fresh("x")) };
+        if negated {
+            self.e.w("!");
+        }
+        self.e.w("(");
+        if let Some(v) = &var {
+            self.e.w(&format!("{{ let {} = ", v));
+            self.expr(item, P_LOWEST);
+            self.e.w("; ");
+        }
+        let emit_item = |l: &mut Self| match &var {
+            Some(v) => l.e.w(v),
+            None => l.expr(item, 6),
+        };
+        let mut first = true;
+        if let Some(s) = start {
+            self.expr(s, 6);
+            self.e.w(" <= ");
+            emit_item(self);
+            first = false;
+        }
+        if let Some(x) = end {
+            if !first {
+                self.e.w(" && ");
+            }
+            emit_item(self);
+            self.e.w(if inclusive { " <= " } else { " < " });
+            self.expr(x, 6);
+            first = false;
+        }
+        if first {
+            self.e.w("true");
+        }
+        if var.is_some() {
+            self.e.w(" }");
+        }
+        self.e.w(")");
     }
 
     fn comma_list(&mut self, v: &[Expr]) {
@@ -1506,6 +1565,22 @@ impl<'a> Lowerer<'a> {
         (prefix, segs)
     }
 
+    /// Does this expression produce an `Option` of a reference (so `?.field` must borrow)?
+    fn yields_borrowed_option(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Call { callee, .. } => {
+                let ret = callee.ident().and_then(|n| self.k.funs.get(n)).and_then(|f| f.ret.clone());
+                matches!(ret, Some(Type::Option(inner)) if matches!(*inner, Type::Ref { .. }))
+            }
+            ExprKind::MethodCall { name, .. } => matches!(
+                name.as_str(),
+                "get" | "first" | "last" | "find" | "iter" | "max_by_key" | "min_by_key" | "max_by" | "min_by" | "max" | "min" | "get_mut" | "peek" | "next" | "as_ref" | "as_deref" | "last_mut" | "first_mut"
+            ),
+            ExprKind::Paren(x) => self.yields_borrowed_option(x),
+            _ => false,
+        }
+    }
+
     fn emit_chain_base(&mut self, base: &Expr, prefix: &[&Expr]) -> bool {
         let place = self.is_place(base) && prefix.iter().all(|l| matches!(l.kind, ExprKind::Field { .. } | ExprKind::Index(..)));
         self.expr(base, P_POSTFIX);
@@ -1530,14 +1605,17 @@ impl<'a> Lowerer<'a> {
     fn safe_chain(&mut self, e: &Expr) {
         let (base, links) = chain_links(e);
         let (prefix, segs) = Self::split_segments(&links);
+        let base_expr_borrowed = prefix.last().map_or_else(|| self.yields_borrowed_option(base), |l| self.yields_borrowed_option(l));
         let place = self.emit_chain_base(base, &prefix);
         if place {
             self.e.w(".as_ref()");
         }
+        let mut borrowed = place || base_expr_borrowed;
         let n = segs.len();
         for (i, seg) in segs.iter().enumerate() {
             let last = i == n - 1;
-            let method = if last { "map" } else { "and_then" };
+            let flatten = !last || self.segment_yields_option(seg);
+            let method = if flatten { "and_then" } else { "map" };
             if let Some(lam) = Self::let_lambda(seg) {
                 self.e.w(&format!(".{}(", method));
                 self.lambda(&lam, None, None);
@@ -1545,15 +1623,65 @@ impl<'a> Lowerer<'a> {
                 continue;
             }
             let v = self.fresh("v");
-            self.e.w(&format!(".{}(|{}| {}", method, v, v));
+            let ends_in_field = matches!(seg.last().unwrap().kind, ExprKind::Field { .. } | ExprKind::Index(..));
+            // a field read through a reference is borrowed (`&v.name`), like Kotlin's reference semantics
+            let amp = borrowed && !flatten && ends_in_field;
+            self.e.w(&format!(".{}(|{}| {}{}", method, v, if amp { "&" } else { "" }, v));
             for l in seg {
                 self.link_suffix(l);
             }
-            if !last && matches!(seg.last().unwrap().kind, ExprKind::Field { .. } | ExprKind::Index(..)) {
+            if flatten && ends_in_field {
                 self.e.w(".as_ref()");
             }
             self.e.w(")");
+            borrowed = flatten && ends_in_field;
         }
+    }
+
+    /// Does a `?.` segment produce an `Option` (so the chain must be flattened like Kotlin)?
+    /// Decided from brs declarations: `T?` fields and methods returning `T?`.
+    fn segment_yields_option(&self, seg: &[&Expr]) -> bool {
+        let is_opt = |t: &Type| matches!(t, Type::Option(_)) || t.single_name() == Some("Option");
+        let field_opt = |name: &str| {
+            let mut any = false;
+            for c in self.k.classes.values() {
+                if let Some(f) = c.fields.iter().find(|f| f.name == name) {
+                    if !is_opt(&f.ty) {
+                        return false;
+                    }
+                    any = true;
+                }
+            }
+            any
+        };
+        let method_opt = |name: &str| {
+            let mut any = false;
+            for c in self.k.classes.values() {
+                if let Some(m) = c.methods.get(name) {
+                    match &m.ret {
+                        Some(t) if is_opt(t) => any = true,
+                        _ => return false,
+                    }
+                }
+            }
+            any
+        };
+        let mut opt = false;
+        for (i, l) in seg.iter().enumerate() {
+            match &l.kind {
+                ExprKind::Field { name, .. } => opt = (i == 0 || !opt) && field_opt(name) || (opt && false),
+                ExprKind::MethodCall { name, .. } => {
+                    if opt {
+                        // these keep an Option an Option
+                        opt = matches!(name.as_str(), "clone" | "as_ref" | "as_deref" | "cloned" | "copied" | "as_mut" | "take" | "filter" | "or" | "xor");
+                    } else {
+                        opt = method_opt(name);
+                    }
+                }
+                _ => opt = false,
+            }
+        }
+        opt
     }
 
     /// Statement form: `if let Some(v) = &a { v.b(); }`. Returns false if not applicable.
@@ -1567,7 +1695,11 @@ impl<'a> Lowerer<'a> {
         let lam = Self::let_lambda(seg);
         let var = match &lam {
             Some(l) => match &l.kind {
-                ExprKind::Lambda { params, .. } => params.first().map(|p| self.pat(&p.pat)).unwrap_or_else(|| "it".into()),
+                ExprKind::Lambda { params, body, .. } => match params.first() {
+                    Some(p) => self.pat(&p.pat),
+                    None if visit::uses_it(body) => "it".into(),
+                    None => "_".into(),
+                },
                 _ => unreachable!(),
             },
             None => self.fresh("v"),
@@ -1764,6 +1896,32 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// `when (val x = e) { ... }` -> `{ let x = e; match x { ... } }`
+    fn when_with_binding(&mut self, subject: Option<&Expr>, binding: Option<&Pat>, arms: &[WhenArm], rust_match: bool, mode: Option<&Target>, span: Span) {
+        let Some(b) = binding else {
+            self.when_expr(subject, arms, rust_match, mode, span);
+            return;
+        };
+        let p = self.pat(b);
+        self.e.w("{");
+        self.e.indent();
+        self.e.nl();
+        self.e.w(&format!("let {} = ", p));
+        if let Some(s) = subject {
+            self.expr(s, P_LOWEST);
+        }
+        self.e.w(";");
+        self.e.nl();
+        self.push_scope();
+        self.bind_pat(b, None);
+        let var = Expr::new(ExprKind::Path { segs: vec![match b { Pat::Ident { name, .. } => name.clone(), _ => "_".into() }], generics: None, global: false }, span);
+        self.when_expr(Some(&var), arms, rust_match, mode, span);
+        self.pop_scope();
+        self.e.dedent();
+        self.e.nl();
+        self.e.w("}");
+    }
+
     fn when_expr(&mut self, subject: Option<&Expr>, arms: &[WhenArm], rust_match: bool, mode: Option<&Target>, span: Span) {
         match subject {
             Some(s) => {
@@ -1796,11 +1954,19 @@ impl<'a> Lowerer<'a> {
                             }
                             match c {
                                 WhenCond::In { expr, negated } => {
-                                    if *negated {
-                                        self.e.w("!");
+                                    if let ExprKind::Range { start, end, inclusive } = &strip_paren(expr).kind {
+                                        let item = Expr::new(ExprKind::Unary(UnOp::Deref, Box::new(Expr::new(ExprKind::Path { segs: vec![w.clone()], generics: None, global: false }, expr.span))), expr.span);
+                                        self.push_scope();
+                                        self.bind_name(&w, None);
+                                        self.in_range(&item, start.as_deref(), end.as_deref(), *inclusive, *negated);
+                                        self.pop_scope();
+                                    } else {
+                                        if *negated {
+                                            self.e.w("!");
+                                        }
+                                        self.expr(expr, P_POSTFIX);
+                                        self.e.w(&format!(".contains({})", w));
                                     }
-                                    self.expr(expr, P_POSTFIX);
-                                    self.e.w(&format!(".contains({})", w));
                                 }
                                 WhenCond::Pat(p) => {
                                     let ps = self.pat(p);
@@ -2145,6 +2311,13 @@ impl<'a> Lowerer<'a> {
             self.expr(b, P_LOWEST);
         }
         self.e.w(" }");
+    }
+}
+
+fn strip_paren(e: &Expr) -> &Expr {
+    match &e.kind {
+        ExprKind::Paren(x) => strip_paren(x),
+        _ => e,
     }
 }
 

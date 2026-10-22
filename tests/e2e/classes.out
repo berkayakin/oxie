@@ -1,0 +1,11 @@
+circle with area 12.57
+shape with area 12.00
+equal: true
+debug: Circle { radius: 2.0 }
+copy: Rect { w: 10.0, h: 4.0 }, original: Rect { w: 3.0, h: 4.0 }
+total area: 24.566
+circle with area 3.14
+counter: 10 history: [5, 10]
+after reset: 0
+peek: Some(3), size: 3
+popped: Some(3), empty: false

@@ -25,6 +25,7 @@ pub struct MethodInfo {
     pub recv: Recv,
     pub params: Vec<ParamInfo>,
     pub throws: bool,
+    pub ret: Option<Type>,
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +98,7 @@ pub struct FunInfo {
     pub module: Vec<String>,
     pub params: Vec<ParamInfo>,
     pub throws: bool,
+    pub ret: Option<Type>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -283,11 +285,7 @@ fn collect_traits(k: &mut Crate, module: &[String], items: &[Item]) {
                 for m in &t.members {
                     match &m.kind {
                         ItemKind::Fun(f) => {
-                            methods.insert(f.name.clone(), method_info_explicit(f, None).unwrap_or(MethodInfo {
-                                recv: Recv::Ref,
-                                params: params_info(f),
-                                throws: !matches!(f.throws, Throws::No),
-                            }));
+                            methods.insert(f.name.clone(), method_info_explicit(f, None).unwrap_or_else(|| default_mi(f)));
                         }
                         ItemKind::TypeAlias { name, .. } => assoc.push(name.clone()),
                         _ => {}
@@ -320,6 +318,10 @@ pub fn params_info(f: &FunDecl) -> Vec<ParamInfo> {
         .collect()
 }
 
+fn default_mi(f: &FunDecl) -> MethodInfo {
+    MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No), ret: f.ret.clone() }
+}
+
 /// Receiver determined purely from syntax, or None if it must be inferred.
 fn method_info_explicit(f: &FunDecl, trait_recv: Option<Recv>) -> Option<MethodInfo> {
     let params = params_info(f);
@@ -335,14 +337,14 @@ fn method_info_explicit(f: &FunDecl, trait_recv: Option<Recv>) -> Option<MethodI
         None if f.mods.is_operator => Some(Recv::Value),
         None => None,
     };
-    recv.map(|recv| MethodInfo { recv, params, throws })
+    recv.map(|recv| MethodInfo { recv, params, throws, ret: f.ret.clone() })
 }
 
 fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
     for it in items {
         match &it.kind {
             ItemKind::Fun(f) if f.receiver.is_none() => {
-                let info = FunInfo { module: module.to_vec(), params: params_info(f), throws: !matches!(f.throws, Throws::No) };
+                let info = FunInfo { module: module.to_vec(), params: params_info(f), throws: !matches!(f.throws, Throws::No), ret: f.ret.clone() };
                 insert_unique(&mut k.funs, &mut k.ambiguous, f.name.clone(), info);
             }
             ItemKind::Fun(f) => {
@@ -365,7 +367,7 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                             if let Some(mi) = method_info_explicit(f, None) {
                                 methods.insert(f.name.clone(), mi);
                             } else {
-                                methods.insert(f.name.clone(), MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No) });
+                                methods.insert(f.name.clone(), default_mi(f));
                             }
                         }
                     }
@@ -400,7 +402,7 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                     let mut methods = HashMap::new();
                     for m in &t.members {
                         if let ItemKind::Fun(f) = &m.kind {
-                            let mi = method_info_explicit(f, None).unwrap_or(MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No) });
+                            let mi = method_info_explicit(f, None).unwrap_or_else(|| default_mi(f));
                             methods.insert(f.name.clone(), mi);
                         }
                     }
@@ -426,7 +428,7 @@ fn collect_impls(k: &mut Crate, items: &[Item]) {
                 for m in &imp.members {
                     if let ItemKind::Fun(f) = &m.kind {
                         let trecv = trait_info.as_ref().and_then(|t| t.methods.get(&f.name)).map(|m| m.recv);
-                        let mi = method_info_explicit(f, trecv).unwrap_or(MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No) });
+                        let mi = method_info_explicit(f, trecv).unwrap_or_else(|| default_mi(f));
                         if let Some(c) = k.classes.get_mut(name) {
                             if f.name == "new" && imp.trait_.is_none() {
                                 c.user_new = true;
@@ -743,9 +745,12 @@ impl<'a> Walker<'a> {
                     self.expr(e);
                 }
             }
-            When { subject, arms, .. } => {
+            When { subject, binding, arms, .. } => {
                 if let Some(s) = subject {
                     self.expr(s);
+                }
+                if let Some(b) = binding {
+                    self.bind(b);
                 }
                 for a in arms {
                     self.push();

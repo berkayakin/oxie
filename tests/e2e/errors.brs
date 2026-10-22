@@ -1,0 +1,94 @@
+import std::fs
+import std::num::ParseIntError
+
+error enum ConfigError {
+    Missing(key: String) = "missing key: $key"
+    Invalid(key: String, value: String) = "invalid value '$value' for $key"
+    Parse(ParseIntError)
+    Io(std::io::Error)
+}
+
+error class TooBig(value: i64, limit: i64) = "value $value exceeds limit $limit"
+
+fun parse_port(text: &str): u16 throws ConfigError {
+    val n: i64 = text.trim().parse()?
+    if (n <= 0) throw ConfigError.Invalid("port", text.to_string())
+    return n as u16
+}
+
+fun check(value: i64): i64 throws TooBig {
+    if (value > 100) {
+        throw TooBig(value, 100)
+    }
+    value * 2
+}
+
+fun lookup(key: &str): String throws {
+    when (key) {
+        "name" -> "brs"
+        "lang" -> "rust"
+        else -> throw ConfigError.Missing(key.to_string())
+    }
+}
+
+fun read_config(path: &str): String throws {
+    val text = fs.read_to_string(path).context("could not read config file '$path'")?
+    text
+}
+
+fun sum_all(items: &[&str]): i64 throws {
+    var total = 0i64
+    for (item in items) {
+        total += item.parse::<i64>()?
+    }
+    total
+}
+
+fun main() {
+    println(parse_port("8080").unwrap())
+    when (parse_port("abc")) {
+        Ok(p) -> println("port $p")
+        Err(e) -> println("error: $e")
+    }
+    when (val r = parse_port("-5")) {
+        Ok(p) -> println("port $p")
+        Err(e) -> println("error: $e")
+    }
+    println(check(10).unwrap())
+    match check(500) {
+        Ok(v) => println(v),
+        Err(e) => println("error: $e"),
+    }
+    println(lookup("name").unwrap())
+    val missing = lookup("other")
+    println("missing: ${missing.unwrap_err()}")
+
+    val result = try {
+        val a = sum_all(&["1", "2", "3"])?
+        val b = sum_all(&["10", "x"])?
+        a + b
+    } catch (e) {
+        println("caught: $e")
+        -1
+    }
+    println("result: $result")
+
+    val ok = try { sum_all(&["4", "5"])? }
+    println("ok: ${ok.unwrap()}")
+
+    when (val r = read_config("/definitely/not/here.toml")) {
+        Ok(text) -> println(text)
+        Err(e) -> {
+            println("error: $e")
+            var source = e.source()
+            while (val s = source) {
+                println("  caused by: $s")
+                source = s.source()
+            }
+        }
+    }
+    val port = parse_port("0") ?: 80
+    println("fallback port: $port")
+    val n = "42".parse::<i32>().ok() ?: 0
+    println("parsed: $n")
+}

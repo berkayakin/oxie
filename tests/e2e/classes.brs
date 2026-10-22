@@ -1,0 +1,77 @@
+interface Shape {
+    fun area(): f64
+    fun name(): String = "shape"
+    fun describe(): String = "${name()} with area ${area():.2}"
+}
+
+data class Circle(radius: f64) : Shape {
+    override fun area(): f64 = std.f64.consts.PI * radius * radius
+    override fun name(): String = "circle"
+}
+
+data class Rect(w: f64, h: f64) : Shape {
+    override fun area() = w * h
+}
+
+class Counter(var count: i32 = 0, step: i32 = 1) {
+    var history: Vec<i32> = vec[]
+
+    fun increment() {
+        count += step
+        history.push(count)
+    }
+
+    fun current(): i32 = count
+
+    fun reset() {
+        count = 0
+    }
+}
+
+class Stack<T>(items: Vec<T>) {
+    fun push(item: T) {
+        items.push(item)
+    }
+
+    fun pop(): T? = items.pop()
+
+    fun peek(): &T? = items.last()
+
+    fun size(): usize = items.len()
+
+    fun is_empty(): bool = items.is_empty()
+}
+
+fun total_area(shapes: &[Box<Shape>]): f64 = shapes.iter().map { it.area() }.sum()
+
+fun print_shape(s: &Shape) {
+    println(s.describe())
+}
+
+fun main() {
+    val c = Circle(2.0)
+    val r = Rect(w = 3.0, h = 4.0)
+    println(c.describe())
+    println(r.describe())
+    println("equal: ${c == Circle(2.0)}")
+    println("debug: ${c:?}")
+    val bigger = r.copy(w = 10.0)
+    println("copy: ${bigger:?}, original: ${r:?}")
+
+    val shapes: Vec<Box<Shape>> = vec[Box.new(c), Box.new(r)]
+    println("total area: ${total_area(&shapes):.3}")
+    print_shape(&Circle(1.0))
+
+    var counter = Counter(step = 5)
+    counter.increment()
+    counter.increment()
+    println("counter: ${counter.current()} history: ${counter.history:?}")
+    counter.reset()
+    println("after reset: ${counter.count}")
+
+    var stack = Stack(vec[1, 2])
+    stack.push(3)
+    println("peek: ${stack.peek():?}, size: ${stack.size()}")
+    val top = stack.pop()
+    println("popped: ${top:?}, empty: ${stack.is_empty()}")
+}

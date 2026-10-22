@@ -222,6 +222,7 @@ pub struct Lowerer<'a> {
     pub(crate) tmp: usize,
     pub(crate) tests: Vec<(Vec<Attr>, TestDecl)>,
     pub(crate) in_test_mod: bool,
+    pub(crate) pending_trait_ret: Option<Type>,
 }
 
 pub fn esc(name: &str) -> String {
@@ -279,6 +280,7 @@ impl<'a> Lowerer<'a> {
             tmp: 0,
             tests: Vec::new(),
             in_test_mod: false,
+            pending_trait_ret: None,
         }
     }
 
@@ -1088,13 +1090,18 @@ impl<'a> Lowerer<'a> {
         for p in &f.params {
             let fn_typed = matches!(p.ty, Type::Fn { .. });
             let mut pat = self.pat(&p.pat);
+            let mut pos = TyPos::Param;
             if fn_typed {
+                let captured = p.name().map_or(false, |n| f.body.as_ref().map_or(false, |b| visit::ident_in_lambda(b, n)));
                 let called = p.name().map_or(false, |n| f.body.as_ref().map_or(false, |b| visit::calls_ident(b, n)));
-                if called && !pat.starts_with("mut ") {
+                if captured {
+                    // used from a closure: `impl Fn` keeps that closure callable without `mut`
+                    pos = TyPos::Ret;
+                } else if called && !pat.starts_with("mut ") {
                     pat = format!("mut {}", pat);
                 }
             }
-            let ty = self.ty(&p.ty, TyPos::Param);
+            let ty = self.ty(&p.ty, pos);
             parts.push(format!("{}: {}", pat, ty));
         }
         parts.join(", ")
@@ -1124,6 +1131,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn free_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), false);
         let is_main = f.name == "main" && ctx == ItemCtx::Top && self.is_root && self.module.is_empty();
         let wrap_main = is_main && !matches!(f.throws, Throws::No);
         self.docs(&it.docs);
@@ -1208,6 +1216,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn ext_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
+        let by_ref = !matches!(f.self_param, Some(SelfParam::Value { .. }) | Some(SelfParam::Typed(_)));
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), by_ref);
         let recv_ty = f.receiver.as_ref().unwrap();
         let tname = sema::ext_trait_name(&self.module, &f.name);
         let recv = match &f.self_param {
@@ -1257,6 +1267,13 @@ impl<'a> Lowerer<'a> {
 
     /// Emits a method inside an impl/trait block.
     pub(crate) fn method(&mut self, it: &Item, f: &FunDecl, recv: Recv, vis_allowed: bool, rename: Option<&str>) {
+        let trait_ret = self.pending_trait_ret.take();
+        let by_ref = match &f.self_param {
+            Some(SelfParam::Ref) | Some(SelfParam::RefMut) => true,
+            Some(_) => false,
+            None => matches!(recv, Recv::Ref | Recv::RefMut),
+        };
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), by_ref);
         self.e.mark(it.span);
         self.docs(&it.docs);
         let attrs: Vec<Attr> = it.attrs.clone();
@@ -1305,7 +1322,7 @@ impl<'a> Lowerer<'a> {
 
     // ------------------------------------------------------------------ classes
 
-    fn class_ctx_for(&self, name: &str, decl_fields: &[Field]) -> ClassCtx {
+    fn class_ctx_for(&self, name: &str, decl_fields: &[Field], supertypes: &[Type]) -> ClassCtx {
         let info = self.k.class(name);
         let mut fields: HashMap<String, Type> = decl_fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect();
         if let Some(c) = info {
@@ -1313,10 +1330,23 @@ impl<'a> Lowerer<'a> {
                 fields.entry(f.name.clone()).or_insert_with(|| f.ty.clone());
             }
         }
-        let methods = info
+        let mut methods = info
             .map(|c| c.methods.clone())
             .or_else(|| self.k.enum_(name).map(|e| e.methods.clone()))
             .unwrap_or_default();
+        // methods inherited from interfaces (default methods) are callable without `this.`
+        let mut stack: Vec<String> = supertypes.iter().filter_map(|t| t.last_name().map(|s| s.to_string())).collect();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(tn) = stack.pop() {
+            if !seen.insert(tn.clone()) {
+                continue;
+            }
+            if let Some(ti) = self.k.traits.get(&tn) {
+                for (n, m) in &ti.methods {
+                    methods.entry(n.clone()).or_insert_with(|| m.clone());
+                }
+            }
+        }
         ClassCtx { name: name.to_string(), fields, methods, self_name: "self".into(), is_static: false }
     }
 
@@ -1390,7 +1420,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let saved_class = self.class.take();
-        self.class = Some(self.class_ctx_for(&t.name, &t.fields));
+        self.class = Some(self.class_ctx_for(&t.name, &t.fields, &t.supertypes));
         let info = self.k.class(&t.name).cloned();
 
         // inherent impl: constructor + methods
@@ -1658,6 +1688,7 @@ impl<'a> Lowerer<'a> {
                         .filter(|_| f.self_param.is_none() && !f.mods.is_mut && !f.mods.is_static)
                         .map(|m| m.recv)
                         .unwrap_or_else(|| self.recv_of(&owner, f));
+                    self.pending_trait_ret = trait_info.as_ref().and_then(|t| t.methods.get(&f.name)).and_then(|m| m.ret.clone());
                     self.method(m, f, recv, false, None);
                 }
                 _ => self.assoc_item(m, false),
@@ -1861,7 +1892,7 @@ impl<'a> Lowerer<'a> {
         self.e.nl();
 
         let saved_class = self.class.take();
-        self.class = Some(self.class_ctx_for(&t.name, &[]));
+        self.class = Some(self.class_ctx_for(&t.name, &[], &t.supertypes));
         if !inherent.is_empty() {
             self.e.nl();
             self.e.w(&format!("impl{} {}{} {{", g, self_ty, wc));
@@ -2057,8 +2088,16 @@ impl<'a> Lowerer<'a> {
         self.e.w(&format!("{}{}trait {}{}{}{} {{", vis, uns, t.name, g, supers, wc));
         self.e.indent();
         let saved = self.class.take();
-        self.class = Some(ClassCtx { name: t.name.clone(), fields: HashMap::new(), methods: HashMap::new(), self_name: "self".into(), is_static: false });
         let info = self.k.traits.get(&t.name).cloned();
+        let mut tmethods = info.as_ref().map(|i| i.methods.clone()).unwrap_or_default();
+        for st in &t.supertraits {
+            if let Some(si) = st.last_name().and_then(|n| self.k.traits.get(n)) {
+                for (n, m) in &si.methods {
+                    tmethods.entry(n.clone()).or_insert_with(|| m.clone());
+                }
+            }
+        }
+        self.class = Some(ClassCtx { name: t.name.clone(), fields: HashMap::new(), methods: tmethods, self_name: "self".into(), is_static: false });
         for m in &t.members {
             self.e.nl();
             match &m.kind {
@@ -2105,7 +2144,8 @@ impl<'a> Lowerer<'a> {
         let owner = imp.self_ty.last_name().unwrap_or("").to_string();
         let saved = self.class.take();
         let decl_fields: Vec<Field> = Vec::new();
-        self.class = Some(self.class_ctx_for(&owner, &decl_fields));
+        let supers: Vec<Type> = imp.trait_.iter().cloned().collect();
+        self.class = Some(self.class_ctx_for(&owner, &decl_fields, &supers));
         let tinfo = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| self.k.traits.get(n)).cloned();
         for m in &imp.members {
             self.e.nl();
@@ -2117,6 +2157,7 @@ impl<'a> Lowerer<'a> {
                         .filter(|_| f.self_param.is_none() && !f.mods.is_mut && !f.mods.is_static)
                         .map(|m| m.recv)
                         .unwrap_or_else(|| self.recv_of(&owner, f));
+                    self.pending_trait_ret = tinfo.as_ref().and_then(|t| t.methods.get(&f.name)).and_then(|m| m.ret.clone());
                     self.method(m, f, recv, imp.trait_.is_none(), None);
                 }
                 _ => self.assoc_item(m, imp.trait_.is_none()),
@@ -2193,6 +2234,83 @@ pub(crate) fn ends_diverging(stmts: &[Stmt]) -> bool {
         Some(Stmt::Expr { expr, .. }) => expr.diverges(),
         _ => false,
     }
+}
+
+/// Rust can't elide the lifetime of a returned reference when there are several reference
+/// parameters (or none). Brs ties the result to all of them (or `'static` when there are none).
+pub(crate) fn auto_lifetimes(f: &FunDecl, self_ref: bool) -> FunDecl {
+    fn count(t: &Type, n: &mut usize) {
+        match t {
+            Type::Ref { lifetime: None, inner, .. } => {
+                *n += 1;
+                count(inner, n);
+            }
+            Type::Ref { inner, .. } | Type::Ptr { inner, .. } | Type::Slice(inner) | Type::Array(inner, _) | Type::Option(inner) => count(inner, n),
+            Type::Tuple(v) => v.iter().for_each(|t| count(t, n)),
+            Type::Path { segs, .. } => {
+                for s in segs {
+                    if let Some(g) = &s.generics {
+                        for a in g {
+                            if let GenericArg::Type(t) = a {
+                                count(t, n);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn set(t: &mut Type, l: &str) {
+        match t {
+            Type::Ref { lifetime, inner, .. } => {
+                if lifetime.is_none() {
+                    *lifetime = Some(l.to_string());
+                }
+                set(inner, l);
+            }
+            Type::Ptr { inner, .. } | Type::Slice(inner) | Type::Array(inner, _) | Type::Option(inner) => set(inner, l),
+            Type::Tuple(v) => v.iter_mut().for_each(|t| set(t, l)),
+            Type::Path { segs, .. } => {
+                for s in segs {
+                    if let Some(g) = &mut s.generics {
+                        for a in g {
+                            if let GenericArg::Type(t) = a {
+                                set(t, l);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(ret) = &f.ret else { return f.clone() };
+    let mut in_ret = 0;
+    count(ret, &mut in_ret);
+    if in_ret == 0 || self_ref {
+        return f.clone();
+    }
+    let mut in_params = 0;
+    for p in &f.params {
+        count(&p.ty, &mut in_params);
+    }
+    if in_params == 1 {
+        return f.clone();
+    }
+    let mut f2 = f.clone();
+    if in_params == 0 {
+        set(f2.ret.as_mut().unwrap(), "static");
+        return f2;
+    }
+    let used: Vec<String> = f.generics.params.iter().filter_map(|g| if let GenericParam::Lifetime { name, .. } = g { Some(name.clone()) } else { None }).collect();
+    let l = if used.iter().any(|u| u == "a") { "brs".to_string() } else { "a".to_string() };
+    f2.generics.params.insert(0, GenericParam::Lifetime { name: l.clone(), bounds: Vec::new() });
+    for p in &mut f2.params {
+        set(&mut p.ty, &l);
+    }
+    set(f2.ret.as_mut().unwrap(), &l);
+    f2
 }
 
 /// In error message templates `$0` / `${0}` refers to tuple field 0.

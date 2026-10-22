@@ -222,3 +222,37 @@ pub fn idents_in(e: &Expr, out: &mut Vec<String>) {
         true
     });
 }
+
+/// Is `name` referenced inside any lambda within the function body?
+pub fn ident_in_lambda(b: &FunBody, name: &str) -> bool {
+    let mut found = false;
+    let mut f = |e: &Expr| {
+        if let ExprKind::Lambda { body, .. } = &e.kind {
+            walk_expr(body, &mut |x| {
+                if x.ident() == Some(name) {
+                    found = true;
+                }
+                !found
+            });
+            return false;
+        }
+        !found
+    };
+    match b {
+        FunBody::Block(b) => walk_block(b, &mut f),
+        FunBody::Expr(e) => walk_expr(e, &mut f),
+    }
+    found
+}
+
+/// Does the expression contain an assignment (used to make closures `mut`)?
+pub fn has_assignment(e: &Expr) -> bool {
+    let mut found = false;
+    walk_expr(e, &mut |x| {
+        if matches!(x.kind, ExprKind::Assign(..)) {
+            found = true;
+        }
+        !found
+    });
+    found
+}
