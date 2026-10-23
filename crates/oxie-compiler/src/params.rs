@@ -344,6 +344,28 @@ impl<'a> Analysis<'a> {
         });
         uses.into_iter().filter(|u| !ok.contains(u)).chain(captured).min()
     }
+
+    /// Why a candidate stays owned: the first use that needs the owned value, and what that use
+    /// does ("it returns `v`"). None when it is borrowed.
+    fn kept_why(&self, c: &Cand) -> Option<(Span, String)> {
+        let at = self.first_owned_use(c)?;
+        Some(kept_use(c, at))
+    }
+}
+
+/// What happened to a `String` or `Vec<T>` parameter that could be borrowed, and why.
+#[derive(Clone, Debug)]
+pub struct ParamNote {
+    /// The index of the file declaring the function.
+    pub file: usize,
+    pub fun: String,
+    pub index: usize,
+    /// Lent as `&str` / `&[T]` (else kept owned).
+    pub borrowed: bool,
+    /// "it only reads `s`", "it returns `v`"
+    pub why: String,
+    /// The use that keeps it owned.
+    pub cause: Option<Span>,
 }
 
 /// Why the top-level function `fun` keeps its `String` or `Vec` parameter number `index`
@@ -353,7 +375,13 @@ impl<'a> Analysis<'a> {
 pub fn kept_reason(files: &[&File], fun: &str, index: usize) -> Option<(usize, Span, String)> {
     let a = Analysis::new(files);
     let c = a.cands.iter().find(|c| c.fun.name == fun && c.index == index)?;
-    let at = a.first_owned_use(c)?;
+    let (span, why) = a.kept_why(c)?;
+    Some((c.file, span, why))
+}
+
+/// The use of the candidate's parameter at `at` that needs the owned value, as a span and a
+/// clause ("it returns `v`").
+fn kept_use(c: &Cand, at: u32) -> (Span, String) {
     let name = c.name;
     let is_at = |x: &Expr| x.span.start == at && x.ident() == Some(name);
     let mut what: Option<String> = None;
@@ -384,16 +412,31 @@ pub fn kept_reason(files: &[&File], fun: &str, index: usize) -> Option<(usize, S
         true
     });
     let len = if what.as_deref().is_some_and(|w| w.starts_with("a `move`")) { 1 } else { name.len() as u32 };
-    Some((c.file, Span { start: at, end: at + len }, what.unwrap_or_else(|| format!("it uses `{}` by value", name))))
+    (Span { start: at, end: at + len }, what.unwrap_or_else(|| format!("it uses `{}` by value", name)))
 }
 
-pub fn borrow_params(files: &mut [&mut File]) {
-    let alive = {
+/// Lends the `String` and `Vec<T>` parameters that functions only read, and says what happened
+/// to each one that could have been lent.
+pub fn borrow_params(files: &mut [&mut File]) -> Vec<ParamNote> {
+    let notes: Vec<ParamNote> = {
         let views: Vec<&File> = files.iter().map(|f| &**f).collect();
-        Analysis::new(&views).alive
+        let a = Analysis::new(&views);
+        a.cands
+            .iter()
+            .map(|c| {
+                let kept = a.kept_why(c);
+                let borrowed = kept.is_none();
+                let (cause, why) = match kept {
+                    Some((span, why)) => (Some(span), why),
+                    None => (None, format!("it only reads `{}`", c.name)),
+                };
+                ParamNote { file: c.file, fun: c.fun.name.clone(), index: c.index, borrowed, why, cause }
+            })
+            .collect()
     };
+    let alive: HashSet<(String, usize)> = notes.iter().filter(|n| n.borrowed).map(|n| (n.fun.clone(), n.index)).collect();
     if alive.is_empty() {
-        return;
+        return notes;
     }
     fn apply(items: &mut [Item], alive: &HashSet<(String, usize)>) {
         for it in items {
@@ -423,6 +466,7 @@ pub fn borrow_params(files: &mut [&mut File]) {
     for f in files.iter_mut() {
         apply(&mut f.items, &alive);
     }
+    notes
 }
 
 #[cfg(test)]
@@ -456,5 +500,17 @@ data class Holder(name: String)
         // borrowed, so nothing keeps them
         assert_eq!(reason(src, "reads"), None);
         assert_eq!(reason(src, "forwards"), None);
+    }
+
+    #[test]
+    fn borrow_params_says_what_it_did() {
+        let src = "fun reads(s: String): usize = s.len()\nfun keeps(v: Vec<i32>): Vec<i32> = v\npub fun api(s: String): usize = s.len()\n";
+        let (mut file, _) = crate::parser::parse_file(src);
+        let notes = borrow_params(&mut [&mut file]);
+        let note = |f: &str| notes.iter().find(|n| n.fun == f).map(|n| (n.borrowed, n.why.clone(), n.cause.map(|s| &src[s.start as usize..s.end as usize])));
+        assert_eq!(note("reads"), Some((true, "it only reads `s`".into(), None)));
+        assert_eq!(note("keeps"), Some((false, "it returns `v`".into(), Some("v"))));
+        // `pub` signatures are never changed, so there's nothing to say
+        assert_eq!(note("api"), None);
     }
 }

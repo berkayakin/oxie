@@ -29,7 +29,7 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
         "E0382" => moved_value(d, sources, &lines, &first),
         "E0384" => assign_twice(d, &lines, &first),
         "E0596" => borrow_mut(d, sources, &lines, &first),
-        "E0499" | "E0502" | "E0505" | "E0506" => borrow_conflict(d, &lines, &first, &code),
+        "E0499" | "E0502" | "E0505" | "E0506" => borrow_conflict(d, sources, &lines, &first, &code),
         "E0507" => {
             rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
             d.notes.retain(|n| !n.contains("`mut "));
@@ -223,8 +223,34 @@ fn borrow_mut(d: &mut MappedDiag, sources: &Sources, lines: &[&str], first: &str
     }
     if d.message.contains("not declared as mutable") {
         rewrite(d, format!("`{}` is a `val`, so it can't be changed", name));
+        mut_self_call(d, sources, d.line, d.col, &name);
         make_var(d, lines, &name);
     }
+}
+
+/// `name.method(` at `col` of the line: the method's name.
+fn method_called_on(line: &str, col: u32, name: &str) -> Option<String> {
+    let rest: String = line.chars().skip(col as usize).collect();
+    let after = rest.strip_prefix(name)?.strip_prefix('.')?;
+    let m: String = after.chars().take_while(|c| is_ident_char(*c)).collect();
+    (!m.is_empty() && after[m.len()..].starts_with('(')).then_some(m)
+}
+
+/// When `name.method()` at this position calls a method that Oxie made `&mut self`, says why
+/// the call changes `name`: a label where the method changes its object, and a note.
+fn mut_self_call(d: &mut MappedDiag, sources: &Sources, line: u32, col: u32, name: &str) -> bool {
+    let text = sources.file(&d.file).and_then(|f| f.text.lines().nth(line as usize)).unwrap_or("").to_string();
+    let Some(m) = method_called_on(&text, col, name) else { return false };
+    let Some((file, cause, why)) = sources.mut_self(&m) else { return false };
+    if let Some(c) = cause {
+        let idx = oxie_compiler::LineIndex::new(&file.text);
+        let (l, cc) = idx.line_col(&file.text, c.start as usize);
+        let (el, ec) = idx.line_col(&file.text, c.end as usize);
+        let end_col = if el == l { ec as u32 } else { cc as u32 + 1 };
+        d.secondary.push(Label { file: sources.elsewhere(&file.path, &d.file), line: l as u32, col: cc as u32, end_col, text: format!("`{}` changes its object here, so it takes `&mut self`", m), exact: true });
+    }
+    d.notes.push(help(&format!("calling `{}.{}()` changes `{}`: Oxie made `{}` take `&mut self` because {}.", name, m, name, m, why)));
+    true
 }
 
 fn make_var(d: &mut MappedDiag, lines: &[&str], name: &str) {
@@ -244,7 +270,7 @@ fn make_var(d: &mut MappedDiag, lines: &[&str], name: &str) {
     }
 }
 
-fn borrow_conflict(d: &mut MappedDiag, lines: &[&str], name: &str, code: &str) {
+fn borrow_conflict(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str, code: &str) {
     refine(d, lines, name);
     // `*self` in a method is `this`
     let is_this = name == "*self" || name == "self";
@@ -309,6 +335,18 @@ fn borrow_conflict(d: &mut MappedDiag, lines: &[&str], name: &str, code: &str) {
             )));
             d.fixes.push(Fix { title: format!("loop over a copy of `{}`", field), edits: vec![edit(l, end, end, ".clone()")] });
             return;
+        }
+    }
+    // a change made by calling a method that Oxie made `&mut self`: say why it changes the value
+    let changes = |t: &str| t.contains("is changed here") || t.contains("for changing");
+    let mut at: Vec<(u32, u32)> = d.label.as_deref().filter(|l| changes(l)).map(|_| (d.line, d.col)).into_iter().collect();
+    at.extend(d.secondary.iter().filter(|s| s.file.is_none() && changes(&s.text)).map(|s| (s.line, s.col)));
+    let receivers: &[&str] = if is_this { &["this", "self"] } else { &[name] };
+    'calls: for (l, c) in at {
+        for r in receivers {
+            if mut_self_call(d, sources, l, c, r) {
+                break 'calls;
+            }
         }
     }
     d.notes.push(help(&format!(

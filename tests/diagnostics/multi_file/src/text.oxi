@@ -9,3 +9,8 @@ fun describe(t: Tag): String = "#${t.name}"
 data class Total(sum: i32)
 
 fun first_word(text: &str, sep: &str): &str = text.split(sep).next().unwrap_or(text)
+
+class Counter(var hits: Vec<i32> = vec[]) {
+    fun hit() { hits.push(1) }
+    // error: 14: `hit` changes its object here, so it takes `&mut self`
+}

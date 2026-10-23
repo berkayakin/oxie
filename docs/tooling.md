@@ -61,7 +61,7 @@ it to the checkout it runs in.
 | `oxie check` | Type-check without producing binaries (fast) |
 | `oxie test [name] [--release]` | Run `test` blocks; `name` may be the test's description (`oxie test "adds numbers"`) or part of it |
 | `oxie fmt [--check] [paths]` | Format `.oxi` files (the project's `src/` by default) |
-| `oxie emit file.oxi [--annotate]` | Print the Rust generated for a file; `--annotate` puts a `// file.oxi:line` comment above each statement |
+| `oxie emit file.oxi [--annotate]` | Print the Rust generated for a file; `--annotate` puts a `// file.oxi:line` comment above each statement and says why at each choice Oxie made (see [What Oxie decided](#what-oxie-decided)) |
 | `oxie from-rust file.rs [-o out.oxi]` | Translate Rust to Oxie (`-` reads stdin); see [Translating Rust](#translating-rust) |
 | `oxie lsp` | Start the language server on stdin/stdout |
 | `oxie clean` | `cargo clean` |
@@ -162,6 +162,27 @@ index out of bounds: the len is 3 but the index is 7
 To do this, `oxie` reads the program's error output (and, for `oxie test`, its normal output)
 as it is written and passes it on. A program run with `cargo run` writes straight to the
 terminal and reports the generated file.
+
+### What Oxie decided
+
+Some of the generated Rust isn't spelled out in the source: `&mut self` for a method that
+changes its object, `&str` or `&[T]` for a `String` or `Vec` parameter that a function only
+reads, a lifetime for a function that returns a reference, and the `&` or `&mut` of an
+argument or a loop. `oxie emit --annotate` shows each of these choices where it lands, with
+the reason:
+
+```rust
+// borrowing.oxi:4
+pub(crate) fn shout(s: &str /* oxie: &str because it only reads `s` */) -> String {
+...
+    // borrowing.oxi:10
+    pub(crate) fn hit(&mut self /* oxie: &mut self because it passes `hits` to `add_one`, which takes `&mut` */) {
+        add_one(&mut self.hits /* oxie: &mut because the parameter is `&mut Vec<i32>` */);
+```
+
+In editors, hovering a function or method lists the choices about its signature. An error that
+one of them causes says so: calling a method Oxie made `&mut self` on a `val`, or while the
+value is borrowed, points at the line in the method that changes its object.
 
 ### Scripts
 
@@ -270,7 +291,7 @@ if a file would change (useful in CI).
 | Diagnostics | Oxie errors on every keystroke; rustc errors and warnings (mapped to `.oxi`, explained in Oxie terms, with related locations) after `cargo check` on open and save |
 | Quick fixes | code actions for the fixes listed under [Diagnostics](#diagnostics) (`var` instead of `val`, `.clone()`, `&mut` parameters, imports, `move` lambdas, `throws`, ...) |
 | Completion | locals, members after `.` (using declared types), project declarations, keywords, snippets, std types, builtins; module names in `import` lines |
-| Hover | Oxie signature, doc comment, and the generated Rust signature |
+| Hover | Oxie signature, doc comment, the generated Rust signature, and for a function or method what Oxie decided about it (an inferred `&mut self`, a lent parameter, a lifetime) and why |
 | Go to definition / declaration | functions, classes, enums, variants, fields, methods, locals and parameters, across files |
 | References, document highlight | whole-word occurrences in the project (locals: within their function) |
 | Rename | project-wide for declarations; function-local for locals |

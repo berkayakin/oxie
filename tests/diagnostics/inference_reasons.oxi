@@ -13,3 +13,21 @@ fun main() {
     // error: 12: fun first_word<'a>(text: &'a str, sep: &str): &'a str
     println(w)
 }
+
+class Counter(var hits: Vec<i32> = vec[0]) {
+    fun hit() { hits.push(1) }
+    fun first(): &i32 = &hits[0]
+}
+
+// calling a method Oxie made `&mut self` says why it changes the value
+fun count() {
+    val c = Counter()
+    c.hit()
+    // error: 25: `hit` changes its object here, so it takes `&mut self`
+    // error: 25: calling `c.hit()` changes `c`: Oxie made `hit` take `&mut self` because it calls `hits.push()`
+    var d = Counter()
+    val f = d.first()
+    d.hit()
+    // error: 30: calling `d.hit()` changes `d`: Oxie made `hit` take `&mut self`
+    println(f)
+}

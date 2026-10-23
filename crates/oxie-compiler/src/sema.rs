@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
+use crate::diag::Span;
 use crate::parser::is_type_like;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub struct MethodInfo {
     pub ret: Option<Type>,
     /// The receiver was written in the source (`self`, `mut fun`, `static fun`, ...).
     pub explicit: bool,
+    /// Why an inferred receiver is `&mut self` ("it assigns `hits`"), and the use that decided it.
+    pub recv_why: Option<(String, Option<Span>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -530,7 +533,7 @@ pub fn params_info(f: &FunDecl) -> Vec<ParamInfo> {
 }
 
 fn default_mi(f: &FunDecl) -> MethodInfo {
-    MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No), ret: f.ret.clone(), explicit: false }
+    MethodInfo { recv: Recv::Ref, params: params_info(f), throws: !matches!(f.throws, Throws::No), ret: f.ret.clone(), explicit: false, recv_why: None }
 }
 
 /// Receiver determined purely from syntax, or None if it must be inferred.
@@ -550,7 +553,7 @@ fn method_info_explicit(f: &FunDecl, trait_recv: Option<Recv>) -> Option<MethodI
         None if f.mods.is_operator => Some(Recv::Value),
         None => None,
     };
-    recv.map(|recv| MethodInfo { recv, params, throws, ret: f.ret.clone(), explicit: trait_recv.is_none() || f.self_param.is_some() || f.mods.is_static || f.mods.is_mut })
+    recv.map(|recv| MethodInfo { recv, params, throws, ret: f.ret.clone(), explicit: trait_recv.is_none() || f.self_param.is_some() || f.mods.is_static || f.mods.is_mut, recv_why: None })
 }
 
 fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
@@ -708,6 +711,8 @@ pub fn ext_trait_name(module: &[String], fun: &str) -> String {
 pub struct BodyFacts {
     pub uses_self: bool,
     pub mutates_self: bool,
+    /// The first use that changes `self`, and what it does ("it assigns `hits`").
+    pub mut_cause: Option<(Span, String)>,
 }
 
 struct MethodRef<'a> {
@@ -793,6 +798,8 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             mut_params.entry(m.fun.name.clone()).or_insert(idx);
         }
     }
+    // why an inferred receiver is `&mut self`, from the last round
+    let mut whys: HashMap<(String, String), (String, Option<Span>)> = HashMap::new();
     // fixpoint
     for _round in 0..8 {
         let mut changed = false;
@@ -810,32 +817,39 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                 Recv::Ref
             };
             let key = (m.owner.clone(), m.fun.name.clone());
+            match facts.mut_cause {
+                Some((at, why)) => whys.insert(key.clone(), (why, Some(at))),
+                None => whys.remove(&key),
+            };
             if decided.get(&key) != Some(&recv) {
                 decided.insert(key, recv);
                 changed = true;
             }
         }
         // An interface method is `&mut self` if any implementation needs it; then all implementations use it.
-        let mut trait_recv: HashMap<(String, String), Recv> = HashMap::new();
+        let mut trait_recv: HashMap<(String, String), (Recv, String)> = HashMap::new();
         for m in &methods {
             if let Some(t) = &m.implements {
                 let r = decided[&(m.owner.clone(), m.fun.name.clone())];
-                let e = trait_recv.entry((t.clone(), m.fun.name.clone())).or_insert(Recv::Ref);
-                if r == Recv::RefMut {
-                    *e = Recv::RefMut;
+                let e = trait_recv.entry((t.clone(), m.fun.name.clone())).or_insert((Recv::Ref, String::new()));
+                if r == Recv::RefMut && e.0 != Recv::RefMut {
+                    *e = (Recv::RefMut, m.owner.clone());
                 }
             }
         }
         for m in &methods {
             if let Some(t) = &m.implements {
-                let want = trait_recv[&(t.clone(), m.fun.name.clone())];
+                let (want, by) = &trait_recv[&(t.clone(), m.fun.name.clone())];
                 let key = (m.owner.clone(), m.fun.name.clone());
-                if want == Recv::RefMut && decided.get(&key) != Some(&Recv::RefMut) {
+                if *want == Recv::RefMut && decided.get(&key) != Some(&Recv::RefMut) {
+                    let why = format!("the interface method `{}.{}` changes its object in `{}`, so every implementation takes `&mut self`", t, m.fun.name, by);
+                    whys.insert(key.clone(), (why, None));
                     decided.insert(key, Recv::RefMut);
                     changed = true;
                 }
             }
         }
+        let trait_recv: HashMap<(String, String), Recv> = trait_recv.into_iter().map(|(k, (r, _))| (k, r)).collect();
         for ((t, name), r) in trait_recv {
             if let Some(ti) = k.traits.get_mut(&t) {
                 if let Some(mi) = ti.methods.get_mut(&name) {
@@ -848,13 +862,16 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
         }
     }
     for ((owner, name), recv) in decided {
+        let why = (recv == Recv::RefMut).then(|| whys.remove(&(owner.clone(), name.clone()))).flatten();
         if let Some(c) = k.classes.get_mut(&owner) {
             if let Some(mi) = c.methods.get_mut(&name) {
                 mi.recv = recv;
+                mi.recv_why = why;
             }
         } else if let Some(e) = k.enums.get_mut(&owner) {
             if let Some(mi) = e.methods.get_mut(&name) {
                 mi.recv = recv;
+                mi.recv_why = why;
             }
         }
     }
@@ -914,12 +931,39 @@ impl<'a> Walker<'a> {
         self.scopes.pop();
     }
 
+    /// The body changes `self` at `at`; the first such use is the reason for `&mut self`.
+    fn mutates(&mut self, at: Span, why: String) {
+        self.facts.mutates_self = true;
+        if self.facts.mut_cause.is_none() {
+            self.facts.mut_cause = Some((at, why));
+        }
+    }
+
     /// A field passed to a `&mut` parameter is borrowed mutably.
     fn mut_args(&mut self, fun: &str, args: &[Arg]) {
         let Some(idx) = self.mut_params.get(fun) else { return };
         for (i, a) in args.iter().enumerate() {
             if a.name.is_none() && idx.contains(&i) && self.rooted_in_self(&a.value) {
-                self.facts.mutates_self = true;
+                let why = format!("it passes `{}` to `{}`, which takes `&mut`", self.self_field(&a.value), fun);
+                self.mutates(a.value.span, why);
+            }
+        }
+    }
+
+    /// The field of `self` a place starts from (`hits` for `hits[0]` or `self.hits.len`), or
+    /// `this` for `self` itself.
+    fn self_field(&self, e: &Expr) -> String {
+        let mut cur = e;
+        let mut field = None;
+        loop {
+            match &cur.kind {
+                ExprKind::Field { recv, name, .. } => {
+                    field = Some(name.clone());
+                    cur = recv;
+                }
+                ExprKind::Index(r, _) | ExprKind::MethodCall { recv: r, .. } | ExprKind::Unary(UnOp::Deref, r) | ExprKind::Paren(r) => cur = r,
+                ExprKind::Path { .. } => return cur.ident().unwrap_or("this").to_string(),
+                _ => return field.unwrap_or_else(|| "this".into()),
             }
         }
     }
@@ -1001,7 +1045,8 @@ impl<'a> Walker<'a> {
             }
             Unary(op, x) => {
                 if *op == UnOp::RefMut && self.rooted_in_self(x) {
-                    self.facts.mutates_self = true;
+                    let why = format!("it takes `&mut {}`", self.self_field(x));
+                    self.mutates(x.span, why);
                 }
                 self.expr(x);
             }
@@ -1014,9 +1059,10 @@ impl<'a> Walker<'a> {
                 self.expr(coll);
             }
             Is { expr, .. } => self.expr(expr),
-            Assign(_, t, v) => {
+            Assign(op, t, v) => {
                 if self.rooted_in_self(t) {
-                    self.facts.mutates_self = true;
+                    let why = format!("it {} `{}`", if op.is_some() { "changes" } else { "assigns" }, self.self_field(t));
+                    self.mutates(t.span, why);
                 }
                 self.expr(t);
                 self.expr(v);
@@ -1024,12 +1070,12 @@ impl<'a> Walker<'a> {
             Call { callee, args } => {
                 if let Some(n) = callee.ident() {
                     if !self.is_local(n) {
-                        if let Some(r) = self.methods.get(n) {
-                            if *r != Recv::Static {
+                        if let Some(r) = self.methods.get(n).copied() {
+                            if r != Recv::Static {
                                 self.facts.uses_self = true;
                             }
-                            if *r == Recv::RefMut {
-                                self.facts.mutates_self = true;
+                            if r == Recv::RefMut {
+                                self.mutates(e.span, format!("it calls `{}()`, which changes `this`", n));
                             }
                         }
                     }
@@ -1045,11 +1091,12 @@ impl<'a> Walker<'a> {
             MethodCall { recv, name, args, .. } => {
                 if matches!(recv.kind, SelfValue) {
                     if let Some(Recv::RefMut) = self.methods.get(name) {
-                        self.facts.mutates_self = true;
+                        self.mutates(e.span, format!("it calls `{}()`, which changes `this`", name));
                     }
                     self.mut_args(name, args);
                 } else if MUTATING_METHODS.contains(&name.as_str()) && self.rooted_in_self(recv) {
-                    self.facts.mutates_self = true;
+                    let why = format!("it calls `{}.{}()`", self.self_field(recv), name);
+                    self.mutates(e.span, why);
                 }
                 self.expr(recv);
                 for a in args {
@@ -1239,4 +1286,54 @@ pub fn is_hash_simple(t: &Type, hash_types: &HashSet<String>) -> bool {
 
 pub fn is_type_name_like(s: &str) -> bool {
     is_type_like(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The receiver of each method of `owner`, with the reason and the source it points at.
+    fn receivers(src: &str, owner: &str) -> HashMap<String, (Recv, Option<(String, Option<String>)>)> {
+        let (file, diags) = crate::parser::parse_file(src);
+        assert!(diags.is_empty(), "{:?}", diags);
+        let k = collect(&[SourceUnit { module: Vec::new(), file: &file }], "main", HashSet::new(), false);
+        let text = |s: Span| src[s.start as usize..s.end as usize].to_string();
+        let methods = k.classes.get(owner).map(|c| c.methods.clone()).or_else(|| k.enums.get(owner).map(|e| e.methods.clone())).unwrap();
+        methods.into_iter().map(|(n, m)| (n, (m.recv, m.recv_why.map(|(w, s)| (w, s.map(text)))))).collect()
+    }
+
+    #[test]
+    fn mut_self_says_why() {
+        let src = r#"
+fun fill(v: &mut Vec<i32>) { v.push(1) }
+class Counter(var n: i32 = 0, var hits: Vec<i32> = vec[]) {
+    fun reset() { n = 0 }
+    fun bump() { n += 1 }
+    fun hit() { hits.push(1) }
+    fun refill() { fill(hits) }
+    fun again() { reset() }
+    fun peek(): i32 = n
+}
+"#;
+        let r = receivers(src, "Counter");
+        assert_eq!(r["reset"], (Recv::RefMut, Some(("it assigns `n`".into(), Some("n".into())))));
+        assert_eq!(r["bump"].1, Some(("it changes `n`".into(), Some("n".into()))));
+        assert_eq!(r["hit"].1, Some(("it calls `hits.push()`".into(), Some("hits.push(1)".into()))));
+        assert_eq!(r["refill"].1, Some(("it passes `hits` to `fill`, which takes `&mut`".into(), Some("hits".into()))));
+        assert_eq!(r["again"].1, Some(("it calls `reset()`, which changes `this`".into(), Some("reset()".into()))));
+        assert_eq!(r["peek"], (Recv::Ref, None));
+    }
+
+    #[test]
+    fn interface_methods_say_which_implementation_changes_its_object() {
+        let src = r#"
+interface Shape { fun grow() }
+class Circle(var r: i32) : Shape { override fun grow() { r += 1 } }
+class Dot() : Shape { override fun grow() {} }
+"#;
+        assert_eq!(receivers(src, "Circle")["grow"].1, Some(("it changes `r`".into(), Some("r".into()))));
+        let (recv, why) = receivers(src, "Dot")["grow"].clone();
+        assert_eq!(recv, Recv::RefMut);
+        assert_eq!(why, Some(("the interface method `Shape.grow` changes its object in `Circle`, so every implementation takes `&mut self`".into(), None)));
+    }
 }

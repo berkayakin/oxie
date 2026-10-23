@@ -252,10 +252,14 @@ pub struct Lowerer<'a> {
     pub(crate) lambda_params: Vec<(usize, String)>,
     /// The next lambda lowered is a predicate whose parameters are element references.
     pub(crate) next_lambda_refs: bool,
-    /// Span starts of `for` iterables that are used again after the loop (see `visit::reused_loop_iters`).
-    pub(crate) reused_iters: HashSet<u32>,
+    /// Span starts of `for` iterables that are used again after the loop, with the start of
+    /// that use (none when a loop around it runs again; see `visit::reused_loop_iters`).
+    pub(crate) reused_iters: HashMap<u32, Option<u32>>,
     /// Lowering a method that takes `self` by value, so its fields can be moved out.
     pub(crate) self_by_value: bool,
+    /// What happened to the `String`/`Vec` parameters of this file's functions that could be
+    /// lent, by (function, parameter index).
+    pub param_notes: HashMap<(String, usize), crate::params::ParamNote>,
 }
 
 pub fn esc(name: &str) -> String {
@@ -322,8 +326,9 @@ impl<'a> Lowerer<'a> {
             root_lints: Vec::new(),
             lambda_params: Vec::new(),
             next_lambda_refs: false,
-            reused_iters: HashSet::new(),
+            reused_iters: HashMap::new(),
             self_by_value: false,
+            param_notes: HashMap::new(),
         }
     }
 
@@ -1221,13 +1226,55 @@ impl<'a> Lowerer<'a> {
     }
 
     fn params_text(&mut self, f: &FunDecl, recv: Option<String>) -> String {
-        self.in_signature.set(true);
-        let text = self.params_text_inner(f, recv);
-        self.in_signature.set(false);
-        text
+        self.params_parts(f, recv).join(", ")
     }
 
-    fn params_text_inner(&mut self, f: &FunDecl, recv: Option<String>) -> String {
+    /// The receiver (if any) and each parameter, as written in the signature.
+    fn params_parts(&mut self, f: &FunDecl, recv: Option<String>) -> Vec<String> {
+        self.in_signature.set(true);
+        let parts = self.params_parts_inner(f, recv);
+        self.in_signature.set(false);
+        parts
+    }
+
+    /// Writes the parameter list `(..)`, each parameter followed by the decision about it: an
+    /// inferred `&mut self` (`recv_why`), a `String`/`Vec` parameter lent or kept.
+    fn write_params(&mut self, f: &FunDecl, parts: &[String], recv_why: Option<(String, Option<Span>)>) {
+        let has_recv = parts.len() > f.params.len();
+        self.e.w("(");
+        for (i, part) in parts.iter().enumerate() {
+            if i > 0 {
+                self.e.w(", ");
+            }
+            self.e.w(part);
+            if i == 0 && has_recv {
+                if let Some((why, cause)) = &recv_why {
+                    self.e.decide(f.name_span, part.clone(), why.clone(), *cause);
+                }
+                continue;
+            }
+            let index = i - has_recv as usize;
+            if let Some(n) = self.param_notes.get(&(f.name.clone(), index)) {
+                let chosen = if n.borrowed { part.split_once(": ").map_or(part.as_str(), |(_, t)| t).to_string() } else { "owned".to_string() };
+                let (why, cause) = (n.why.clone(), n.cause);
+                self.e.decide(f.params[index].span, chosen, why, cause);
+            }
+        }
+        self.e.w(")");
+    }
+
+    /// After the return type: why the signature got a lifetime that the source doesn't name
+    /// (`orig_lifetimes` were written), tying the result to every reference parameter.
+    fn lifetime_decision(&mut self, f: &FunDecl, orig_lifetimes: usize) {
+        let lifetimes: Vec<&str> = f.generics.params.iter().filter_map(|g| if let GenericParam::Lifetime { name, .. } = g { Some(name.as_str()) } else { None }).collect();
+        if lifetimes.len() <= orig_lifetimes {
+            return;
+        }
+        let refs: Vec<String> = f.params.iter().filter(|p| self.ty(&p.ty, TyPos::Param).contains('&')).filter_map(|p| p.name().map(|n| format!("`{}`", n))).collect();
+        self.e.decide(f.name_span, format!("'{}", lifetimes[0]), format!("the result borrows from {}", refs.join(" or ")), None);
+    }
+
+    fn params_parts_inner(&mut self, f: &FunDecl, recv: Option<String>) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some(r) = recv {
             parts.push(r);
@@ -1249,7 +1296,7 @@ impl<'a> Lowerer<'a> {
             let ty = self.ty(&p.ty, pos);
             parts.push(format!("{}: {}", pat, ty));
         }
-        parts.join(", ")
+        parts
     }
 
     fn fn_header(&self, f: &FunDecl) -> String {
@@ -1276,6 +1323,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn free_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
+        let lifetimes = f.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count();
         let f = &auto_lifetimes(&self.with_inferred_ret(f, None), false, &|n| self.k.type_lifetimes(n));
         let f = &crate::bounds::with_inferred_bounds(f, &[], &[]);
         let is_main = f.name == "main" && ctx == ItemCtx::Top && self.is_root && self.module.is_empty();
@@ -1292,13 +1340,15 @@ impl<'a> Lowerer<'a> {
         let header = self.fn_header(f);
         let g = self.generics_decl(&f.generics);
         self.push_scope();
-        let params = self.params_text(f, None);
+        let params = self.params_parts(f, None);
         let ret = self.ret_type(f, TyPos::Ret);
         let wc = self.where_clause(&f.generics);
-        self.e.w(&format!("{}{}fn {}{}({})", vis, header, name, g, params));
+        self.e.w(&format!("{}{}fn {}{}", vis, header, name, g));
+        self.write_params(f, &params, None);
         if let Some(r) = &ret {
             self.e.w(&format!(" -> {}", r));
         }
+        self.lifetime_decision(f, lifetimes);
         self.e.w(&wc);
         self.bind_params(f);
         match &f.body {
@@ -1434,6 +1484,9 @@ impl<'a> Lowerer<'a> {
     /// Emits a method inside an impl/trait block.
     pub(crate) fn method(&mut self, it: &Item, f: &FunDecl, recv: Recv, vis_allowed: bool, rename: Option<&str>) {
         let trait_ret = self.pending_trait_ret.take();
+        let lifetimes = f.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count();
+        // an inferred `&mut self` says why
+        let recv_why = (recv == Recv::RefMut && f.self_param.is_none() && !f.mods.is_mut).then(|| self.class.as_ref()?.methods.get(&f.name)?.recv_why.clone()).flatten();
         let by_ref = match &f.self_param {
             Some(SelfParam::Ref) | Some(SelfParam::RefMut) => true,
             Some(_) => false,
@@ -1465,14 +1518,16 @@ impl<'a> Lowerer<'a> {
         let header = self.fn_header(f);
         let g = self.generics_decl(&f.generics);
         self.push_scope();
-        let params = self.params_text(f, recv_text);
+        let params = self.params_parts(f, recv_text);
         let ret = self.ret_type(f, TyPos::Ret);
         let wc = self.where_clause(&f.generics);
         let name = rename.map(|s| s.to_string()).unwrap_or_else(|| esc(&f.name));
-        self.e.w(&format!("{}{}fn {}{}({})", vis, header, name, g, params));
+        self.e.w(&format!("{}{}fn {}{}", vis, header, name, g));
+        self.write_params(f, &params, recv_why);
         if let Some(r) = &ret {
             self.e.w(&format!(" -> {}", r));
         }
+        self.lifetime_decision(f, lifetimes);
         self.e.w(&wc);
         self.bind_params(f);
         let saved_static = self.class.as_ref().map(|c| c.is_static);

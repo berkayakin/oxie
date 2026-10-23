@@ -12,12 +12,12 @@ pub(crate) fn total(v: &[i32]) -> i32 {
 }
 
 // borrowing.oxi:4
-pub(crate) fn shout(s: &str) -> String {
+pub(crate) fn shout(s: &str /* oxie: &str because it only reads `s` */) -> String {
     s.to_uppercase()
 }
 
 // borrowing.oxi:5
-pub(crate) fn keep(v: Vec<i32>) -> Vec<i32> {
+pub(crate) fn keep(v: Vec<i32> /* oxie: owned because it returns `v` */) -> Vec<i32> {
     v
 }
 
@@ -27,7 +27,7 @@ pub(crate) fn add_one(v: &mut Vec<i32>) {
 }
 
 // borrowing.oxi:7
-pub(crate) fn longest<'a>(a: &'a str, b: &'a str) -> &'a str {
+pub(crate) fn longest<'a>(a: &'a str, b: &'a str) -> &'a str /* oxie: 'a because the result borrows from `a` or `b` */ {
     if a.len() >= b.len() {
         a
     } else {
@@ -49,8 +49,8 @@ impl Counter {
     }
 
     // borrowing.oxi:10
-    pub(crate) fn hit(&mut self) {
-        add_one(&mut self.hits);
+    pub(crate) fn hit(&mut self /* oxie: &mut self because it passes `hits` to `add_one`, which takes `&mut` */) {
+        add_one(&mut self.hits /* oxie: &mut because the parameter is `&mut Vec<i32>` */);
     }
 
     // borrowing.oxi:11
@@ -66,11 +66,11 @@ fn main() {
     // borrowing.oxi:16
     let name = "ada".to_string();
     // borrowing.oxi:17
-    add_one(&mut nums);
+    add_one(&mut nums /* oxie: &mut because the parameter is `&mut Vec<i32>` */);
     // borrowing.oxi:18
-    println!("{} {} {name}", total(&nums), shout(&name));
+    println!("{} {} {name}", total(&nums /* oxie: & because the parameter is `&[i32]` */), shout(&name /* oxie: & because the parameter is `&str` */));
     // borrowing.oxi:19
-    for &n in &nums {
+    for &n in &nums /* oxie: &nums because `nums` is used after the loop */ {
         println!("{}", n);
     }
     // borrowing.oxi:20
@@ -80,7 +80,7 @@ fn main() {
     // borrowing.oxi:22
     c.hit();
     // borrowing.oxi:23
-    println!("{} {}", c.count(), longest(&name, "bob"));
+    println!("{} {}", c.count(), longest(&name /* oxie: & because the parameter is `&str` */, "bob"));
     // borrowing.oxi:24
     let kept = keep(nums);
     // borrowing.oxi:25

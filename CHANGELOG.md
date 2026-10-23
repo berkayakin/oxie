@@ -47,6 +47,12 @@
   arm on its own line instead of one long line; names Oxie introduces (`__oxie_v1`) are
   numbered per function, so changing a function doesn't renumber the rest of the file; the
   header of a script's generated file names the script instead of `main.oxi`.
+* Oxie says why it decided what the source doesn't spell out. `oxie emit --annotate` marks
+  each choice with the reason (`fn hit(&mut self /* oxie: &mut self because it calls
+  `hits.push()` */)`, `s: &str /* oxie: &str because it only reads `s` */`, the `&` of an
+  argument, a loop's borrow, a lifetime). Hovering a function or method in an editor lists the
+  choices about its signature. Calling a method Oxie made `&mut self` on a `val`, or while the
+  value is borrowed, points at the line in the method that changes its object.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

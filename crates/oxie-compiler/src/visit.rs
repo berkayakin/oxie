@@ -306,8 +306,9 @@ pub fn has_assignment(e: &Expr) -> bool {
 /// `for` loops over a local variable that is used again after the loop: later in the scope that
 /// declares it, or by the next round of a loop that encloses the `for` but not the declaration.
 /// Such loops borrow the collection instead of consuming it. Returns the span starts of their
-/// iterables. `outer` are the names already in scope (parameters).
-pub fn reused_loop_iters(outer: Vec<String>, body: &Block) -> std::collections::HashSet<u32> {
+/// iterables, each with the start of the first use after the loop (none when only an enclosing
+/// loop uses it again). `outer` are the names already in scope (parameters).
+pub fn reused_loop_iters(outer: Vec<String>, body: &Block) -> std::collections::HashMap<u32, Option<u32>> {
     struct Scope {
         names: Vec<String>,
         end: u32,
@@ -316,7 +317,7 @@ pub fn reused_loop_iters(outer: Vec<String>, body: &Block) -> std::collections::
     struct Walk {
         scopes: Vec<Scope>,
         uses: Vec<(String, u32)>,
-        found: std::collections::HashSet<u32>,
+        found: std::collections::HashMap<u32, Option<u32>>,
     }
     impl Walk {
         fn block(&mut self, b: &Block, is_loop: bool, names: Vec<String>) {
@@ -443,8 +444,9 @@ pub fn reused_loop_iters(outer: Vec<String>, body: &Block) -> std::collections::
             let Some(d) = self.scopes.iter().rposition(|s| s.names.iter().any(|n| n == name)) else { return };
             let in_loop = self.scopes[d + 1..].iter().any(|s| s.is_loop);
             let scope_end = self.scopes[d].end;
-            if in_loop || self.uses.iter().any(|(n, p)| n == name && *p >= end && *p < scope_end) {
-                self.found.insert(start);
+            let later = self.uses.iter().filter(|(n, p)| n == name && *p >= end && *p < scope_end).map(|(_, p)| *p).min();
+            if in_loop || later.is_some() {
+                self.found.insert(start, later);
             }
         }
     }

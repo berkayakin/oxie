@@ -189,7 +189,7 @@ impl<'a> Lowerer<'a> {
             ExprKind::Path { .. } => {
                 let n = iter.ident()?;
                 match self.local(n) {
-                    Some(t) if self.reused_iters.contains(&iter.span.start) => t.clone()?,
+                    Some(t) if self.reused_iters.contains_key(&iter.span.start) => t.clone()?,
                     Some(_) => return None,
                     None => {
                         self.implicit_field(n)?;
@@ -217,6 +217,21 @@ impl<'a> Lowerer<'a> {
             Some([GenericArg::Type(t)]) => crate::sema::is_copy_simple(t, &copy),
             _ => false,
         })
+    }
+
+    /// Why `for (x in iter)` borrows `iter` (just written): it is used after the loop, a loop
+    /// around this one uses it again, or it is a field of `this`.
+    fn loop_borrow_decision(&mut self, iter: &Expr) {
+        let name = match &iter.kind {
+            ExprKind::Field { name, .. } => name.clone(),
+            _ => iter.ident().unwrap_or_default().to_string(),
+        };
+        let (why, cause) = match self.reused_iters.get(&iter.span.start) {
+            Some(Some(at)) if self.local(&name).is_some() => (format!("`{}` is used after the loop", name), Some(Span::new(*at as usize, *at as usize + name.len()))),
+            Some(None) if self.local(&name).is_some() => (format!("the loop around this one uses `{}` again", name), None),
+            _ => (format!("`{}` belongs to `this`", name), None),
+        };
+        self.e.decide(iter.span, format!("&{}", name), why, cause);
     }
 
     /// `Box(5)` for a generic class `Box<T>`: `Box<_>`, so its methods are known on the variable.
@@ -419,6 +434,8 @@ impl<'a> Lowerer<'a> {
                 self.e.mark(e.span);
                 self.e.w(if *mutable { "&mut " } else { "&" });
                 self.expr(e, P_UNARY);
+                let param = self.ty(ty, TyPos::Param);
+                self.e.decide(e.span, if *mutable { "&mut" } else { "&" }, format!("the parameter is `{}`", param), None);
             }
             Type::Option(inner) => match &e.kind {
                 ExprKind::Null => self.e.w("None"),
@@ -999,6 +1016,7 @@ impl<'a> Lowerer<'a> {
                             self.e.w(&format!("for {} in &", p));
                         }
                         self.expr(iter, P_POSTFIX);
+                        self.loop_borrow_decision(iter);
                     }
                     None => {
                         self.e.w(&format!("for {} in ", p));

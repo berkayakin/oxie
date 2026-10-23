@@ -64,7 +64,8 @@ The compiler is a library (`oxie-compiler`) with no dependencies. `oxie-build` c
   assigns into `self` (directly or through implicit fields), calls a known mutating method on
   a field, takes `&mut` of a field, or calls a `&mut self` method of the same type. Interface
   methods without an explicit receiver take `&mut self` if any implementation needs it, and
-  then all implementations use it;
+  then all implementations use it. The first use that changes `self` is kept as the reason
+  (`MethodInfo::recv_why`: "it assigns `hits`", with its span);
 * **automatic derives**: a fixpoint deciding `Copy` and `Eq + Hash` for data classes and enums
   from their field types.
 
@@ -77,6 +78,15 @@ since rustc points inside the string for errors about it. Names Oxie introduces 
 `'__oxie_try1`) are numbered per function, so changing a function renumbers only its own.
 Multi-arm `match` lowerings (`?:` with a default that isn't a literal, `?` inside `try`) put
 each arm on its own line, as rustfmt does.
+
+The choices the source doesn't spell out are recorded as `Decision`s where their result is
+written (`Emitter::decide`): an inferred `&mut self` (with the reason from receiver inference),
+a `String`/`Vec` parameter lent or kept (`params::ParamNote`), a lifetime added to a signature,
+and the `&`/`&mut` added to an argument or a loop's collection. Each has the source it is about,
+what was generated, the reason and the source that decided it, and lands in
+`GenFile::decisions`. `oxie emit --annotate` prints them as `/* oxie: ... */` comments, the
+language server's hover lists those of a signature, and error explanations use them: the CLI
+compiles the crate in memory (`sources.rs`) to find, say, why a method takes `&mut self`.
 
 Contexts tracked while lowering:
 

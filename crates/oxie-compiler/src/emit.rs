@@ -9,6 +9,24 @@ pub struct Mark {
     pub src: u32,
 }
 
+/// A choice the source doesn't spell out (an inferred `&mut self`, a borrowed parameter, a
+/// lifetime, a borrow at a call or a loop), with the reason: shown by `oxie emit --annotate`,
+/// in hovers and in the explanations of errors it causes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Decision {
+    /// Where its result ends in the generated text (zero-based).
+    pub gen_line: u32,
+    pub gen_col: u32,
+    /// What it is about: a method or parameter, a loop's collection, an argument.
+    pub span: Span,
+    /// What Oxie generated: `&mut self`, `&str`, `&mut nums`.
+    pub chosen: String,
+    /// Why, as a clause: "it assigns `hits`".
+    pub why: String,
+    /// The source that decided it (the assignment, the use after the loop), if there is one.
+    pub cause: Option<Span>,
+}
+
 #[derive(Default)]
 pub struct Emitter {
     pub buf: String,
@@ -17,6 +35,7 @@ pub struct Emitter {
     indent: usize,
     at_line_start: bool,
     pub marks: Vec<Mark>,
+    pub decisions: Vec<Decision>,
 }
 
 impl Emitter {
@@ -89,6 +108,12 @@ impl Emitter {
         self.line
     }
 
+    /// Records a decision whose result was just written.
+    pub fn decide(&mut self, span: Span, chosen: impl Into<String>, why: impl Into<String>, cause: Option<Span>) {
+        let col = if self.at_line_start { (self.indent * 4) as u32 } else { self.col };
+        self.decisions.push(Decision { gen_line: self.line, gen_col: col, span, chosen: chosen.into(), why: why.into(), cause });
+    }
+
     /// Inserts `prefix` lines before every top-level paragraph (an unindented line after a blank
     /// line), keeping source-map marks in place. Used to apply crate-level lint attributes.
     pub fn prefix_paragraphs(&mut self, prefix: &[String]) {
@@ -118,6 +143,9 @@ impl Emitter {
         self.buf = out;
         for m in &mut self.marks {
             m.gen_line += shift.get(m.gen_line as usize).copied().unwrap_or(count);
+        }
+        for d in &mut self.decisions {
+            d.gen_line += shift.get(d.gen_line as usize).copied().unwrap_or(count);
         }
         self.line += count;
     }

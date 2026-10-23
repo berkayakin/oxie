@@ -158,6 +158,11 @@ fn language_server_features() {
     assert!(text.contains("A point."), "{text}");
     assert!(text.contains("struct Point"), "{text}");
 
+    // hover on a method says why Oxie gave it `&mut self`, and which line decided it
+    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": uri}, "position": pos(SRC, "inc()", 1)}));
+    let text = h["contents"]["value"].as_str().unwrap();
+    assert!(text.contains("Oxie decided:\n- `&mut self`: it changes `n` (line 8)"), "{text}");
+
     // go to definition of a method through a typed local
     let d = c.request("textDocument/definition", json!({"textDocument": {"uri": uri}, "position": pos(SRC, "moved(3)", 1)}));
     assert_eq!(d[0]["range"]["start"]["line"], 2, "{d}");

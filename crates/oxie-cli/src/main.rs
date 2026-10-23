@@ -384,7 +384,8 @@ fn cmd_emit(args: &[String]) -> R {
 }
 
 /// The generated text with a `// file.oxi:line` comment above each line where code from
-/// another source line starts.
+/// another source line starts, and a `/* oxie: ... */` comment after each choice the source
+/// doesn't spell out (an inferred `&mut self`, a lent parameter, a `&` added to an argument).
 fn annotated(f: &oxie_compiler::compile::GenFile) -> String {
     let Some(map) = &f.map else { return f.text.clone() };
     let name = map.source.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -399,7 +400,15 @@ fn annotated(f: &oxie_compiler::compile::GenFile) -> String {
                 last = Some(sl);
             }
         }
-        out += line;
+        // from the right, so the columns of the others stay valid
+        let mut line = line.to_string();
+        let mut here: Vec<_> = f.decisions.iter().filter(|d| d.gen_line == i as u32).collect();
+        here.sort_by_key(|d| std::cmp::Reverse(d.gen_col));
+        for d in here {
+            let at = line.char_indices().nth(d.gen_col as usize).map_or(line.len(), |(b, _)| b);
+            line.insert_str(at, &format!(" /* oxie: {} because {} */", d.chosen, d.why));
+        }
+        out += &line;
         out.push('\n');
     }
     out

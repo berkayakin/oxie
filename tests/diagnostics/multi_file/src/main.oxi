@@ -1,6 +1,6 @@
 // Errors explained from declarations in another file of the crate (text.oxi).
 
-import text::{describe, first_word, keep, Tag, Total}
+import text::{describe, first_word, keep, Counter, Tag, Total}
 
 fun main() {
     val nums = vec[1, 2, 3]
@@ -20,4 +20,10 @@ fun main() {
 fun show(t: Total) {
     println("$t")
     // error: 21: print its debug form with a `:?` spec
+}
+
+fun count() {
+    val counter = Counter()
+    counter.hit()
+    // error: 27: calling `counter.hit()` changes `counter`: Oxie made `hit` take `&mut self` because it calls `hits.push()`
 }

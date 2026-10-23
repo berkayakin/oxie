@@ -2,22 +2,28 @@
 //! the error's own file: the declaration of the function it calls, of a type it names.
 
 use std::cell::OnceCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use oxie_compiler::ast::File;
 use oxie_compiler::compile::canonicalize;
+use oxie_compiler::diag::Span;
+use oxie_compiler::emit::Decision;
+use oxie_compiler::{Input, Options};
 
 use crate::project::Project;
 
 pub struct SourceFile {
     pub path: PathBuf,
+    /// The path relative to the crate's `src/` (`main.oxi` for a script).
+    pub rel: PathBuf,
     pub text: String,
     ast: OnceCell<File>,
 }
 
 impl SourceFile {
-    pub fn new(path: PathBuf, text: String) -> SourceFile {
-        SourceFile { path, text, ast: OnceCell::new() }
+    pub fn new(path: PathBuf, rel: PathBuf, text: String) -> SourceFile {
+        SourceFile { path, rel, text, ast: OnceCell::new() }
     }
 
     pub fn lines(&self) -> Vec<&str> {
@@ -32,6 +38,10 @@ impl SourceFile {
 
 pub struct Sources {
     pub files: Vec<SourceFile>,
+    /// A single-file script rather than a project.
+    script: bool,
+    /// What compiling the crate decided, by file (see `decisions`).
+    decisions: OnceCell<Vec<(PathBuf, Vec<Decision>)>>,
 }
 
 impl Sources {
@@ -39,22 +49,51 @@ impl Sources {
     pub fn of(file: &Path) -> Sources {
         let file = canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
         let project = file.parent().and_then(Project::find).filter(|p| file.starts_with(canonicalize(p.src_dir()).unwrap_or_else(|_| p.src_dir())));
+        let script = project.is_none();
         let mut files: Vec<SourceFile> = project
             .and_then(|p| oxie_compiler::discover(&p.src_dir()).ok())
             .unwrap_or_default()
             .into_iter()
-            .map(|i| SourceFile::new(canonicalize(&i.abs_path).unwrap_or(i.abs_path), i.text))
+            .map(|i| SourceFile::new(canonicalize(&i.abs_path).unwrap_or(i.abs_path), i.rel_path, i.text))
             .collect();
         if !files.iter().any(|f| f.path == file) {
-            files.push(SourceFile::new(file.clone(), std::fs::read_to_string(&file).unwrap_or_default()));
+            files.push(SourceFile::new(file.clone(), PathBuf::from("main.oxi"), std::fs::read_to_string(&file).unwrap_or_default()));
         }
-        Sources { files }
+        Sources { files, script, decisions: OnceCell::new() }
     }
 
     /// A crate of in-memory files (for tests).
     #[cfg(test)]
     pub fn from_texts(files: &[(&str, &str)]) -> Sources {
-        Sources { files: files.iter().map(|(p, t)| SourceFile::new(PathBuf::from(p), t.to_string())).collect() }
+        let files = files.iter().map(|(p, t)| SourceFile::new(PathBuf::from(p), PathBuf::from(Path::new(p).file_name().unwrap()), t.to_string())).collect();
+        Sources { files, script: false, decisions: OnceCell::new() }
+    }
+
+    /// What the compiler decided for each file that the source doesn't spell out (an inferred
+    /// `&mut self`, a lent parameter): the crate is compiled again, in memory, on first use.
+    pub fn decisions(&self) -> &[(PathBuf, Vec<Decision>)] {
+        self.decisions.get_or_init(|| {
+            let inputs = self.files.iter().map(|f| Input { rel_path: f.rel.clone(), abs_path: f.path.clone(), text: f.text.clone() }).collect();
+            let opts = Options { crate_name: "main".into(), extern_crates: HashSet::new(), out_dir: PathBuf::from("/oxie"), script: self.script };
+            let out = oxie_compiler::compile(inputs, &opts);
+            self.files.iter().zip(out.files).map(|(f, g)| (f.path.clone(), g.decisions)).collect()
+        })
+    }
+
+    /// Why the method `name` takes `&mut self` when Oxie inferred it: its file, the use that
+    /// decided it and the reason. None when no method of that name, or several, have one.
+    pub fn mut_self(&self, name: &str) -> Option<(&SourceFile, Option<Span>, String)> {
+        let mut found: Vec<(&SourceFile, Span, Option<Span>, String)> = Vec::new();
+        for (path, ds) in self.decisions() {
+            let Some(file) = self.file(path) else { continue };
+            for d in ds.iter().filter(|d| d.chosen == "&mut self" && file.text.get(d.span.start as usize..d.span.end as usize) == Some(name)) {
+                if !found.iter().any(|(f, s, ..)| f.path == file.path && *s == d.span) {
+                    found.push((file, d.span, d.cause, d.why.clone()));
+                }
+            }
+        }
+        let [(file, _, cause, why)] = <[_; 1]>::try_from(found).ok()?;
+        Some((file, cause, why))
     }
 
     pub fn file(&self, path: &Path) -> Option<&SourceFile> {

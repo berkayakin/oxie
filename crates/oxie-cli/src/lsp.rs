@@ -132,6 +132,8 @@ struct Analysis {
     diags: HashMap<PathBuf, Vec<Value>>,
     /// generated Rust per file
     rust: HashMap<PathBuf, String>,
+    /// what Oxie decided that the source doesn't spell out, per file
+    decisions: HashMap<PathBuf, Vec<oxie_compiler::emit::Decision>>,
 }
 
 impl Analysis {
@@ -207,6 +209,7 @@ impl Server {
         let krate = sema::collect(&units, &opts.crate_name, opts.extern_crates.clone(), false);
         let mut diags = HashMap::new();
         let mut rust = HashMap::new();
+        let mut decisions = HashMap::new();
         for (k, (path, text, ds)) in output.diags.iter().enumerate() {
             let idx = LineIndex::new(text);
             let list: Vec<Value> = ds
@@ -227,9 +230,10 @@ impl Server {
             diags.insert(canonical(path), list);
             if let Some(g) = output.files.get(k) {
                 rust.insert(canonical(path), g.text.clone());
+                decisions.insert(canonical(path), g.decisions.clone());
             }
         }
-        Analysis { root, is_script, files, krate, diags, rust }
+        Analysis { root, is_script, files, krate, diags, rust, decisions }
     }
 
     fn publish(&self, files: &HashSet<PathBuf>) {
@@ -647,7 +651,7 @@ fn location(a: &Analysis, path: &Path, span: Span) -> Value {
     json!({"uri": path_to_uri(path), "range": range(&text, &idx, span.start as usize, span.end as usize)})
 }
 
-fn hover_markdown(s: &Symbol, rust: Option<&str>) -> String {
+fn hover_markdown(s: &Symbol, rust: Option<&str>, decided: &[String]) -> String {
     let mut md = format!("```oxie\n{}\n```", s.detail);
     if let Some(c) = &s.container {
         if s.kind != SymKind::Variant {
@@ -661,7 +665,40 @@ fn hover_markdown(s: &Symbol, rust: Option<&str>) -> String {
     if let Some(r) = rust {
         md.push_str(&format!("\n\n---\nCompiles to:\n```rust\n{}\n```", r));
     }
+    if !decided.is_empty() {
+        md.push_str("\n\nOxie decided:");
+        for d in decided {
+            md.push_str(&format!("\n- {}", d));
+        }
+    }
     md
+}
+
+/// What Oxie decided about a function's or method's signature (an inferred `&mut self`, a lent
+/// or kept parameter, a lifetime), each with its reason and the line that decided it.
+fn signature_decisions(a: &Analysis, path: &Path, s: &Symbol) -> Vec<String> {
+    if !matches!(s.kind, SymKind::Function | SymKind::Method) {
+        return Vec::new();
+    }
+    let Some(f) = a.file(path) else { return Vec::new() };
+    let Some((_, fun)) = symbols::enclosing_fun(&f.ast, s.span.start).filter(|(_, fun)| fun.name_span == s.span) else { return Vec::new() };
+    let params: Vec<Span> = fun.params.iter().map(|p| p.span).collect();
+    a.decisions
+        .get(path)
+        .into_iter()
+        .flatten()
+        .filter(|d| d.span == fun.name_span || params.contains(&d.span))
+        .map(|d| {
+            let line = d.cause.map(|c| format!(" (line {})", f.idx.line_col(&f.text, c.start as usize).0 + 1)).unwrap_or_default();
+            // `&mut self`, `s: &str`, `v` stays owned, `'a`
+            let what = match params.iter().position(|p| *p == d.span) {
+                Some(i) if d.chosen == "owned" => format!("`{}` stays owned", fun.params[i].name().unwrap_or("_")),
+                Some(i) => format!("`{}: {}`", fun.params[i].name().unwrap_or("_"), d.chosen),
+                None => format!("`{}`", d.chosen),
+            };
+            format!("{}: {}{}", what, d.why, line)
+        })
+        .collect()
 }
 
 /// The generated Rust signature line for a symbol, found by name in the generated file.
@@ -699,7 +736,8 @@ fn handle(server: &mut Server, method: &str, params: &Value) -> Result<Value, St
                 return Ok(Value::Null);
             };
             let rust = rust_signature(&a, p, s);
-            Ok(json!({"contents": {"kind": "markdown", "value": hover_markdown(s, rust.as_deref())}}))
+            let decided = signature_decisions(&a, p, s);
+            Ok(json!({"contents": {"kind": "markdown", "value": hover_markdown(s, rust.as_deref(), &decided)}}))
         }
         "textDocument/definition" | "textDocument/declaration" | "textDocument/typeDefinition" | "textDocument/implementation" => {
             let (path, line, ch) = position(params);
