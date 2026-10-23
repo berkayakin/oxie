@@ -1,14 +1,18 @@
 # The documentation site in website/. Its pages are generated from docs/, README.md and
 # CHANGELOG.md, with the Rust that this checkout's `oxie emit` produces, so the build needs cargo.
+# Netlify's image has rustup without a default toolchain, so install one.
 [build]
   base = "website"
   publish = "dist"
   command = """
-    (command -v cargo >/dev/null || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal) &&
-    PATH="$HOME/.cargo/bin:$PATH" npm run build
+    (command -v rustup >/dev/null || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none) &&
+    export PATH="$HOME/.cargo/bin:$PATH" &&
+    rustup toolchain install stable --profile minimal &&
+    rustup default stable &&
+    npm run build
   """
   # rebuild only when something the site is generated from changed
-  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- . ../docs ../README.md ../CHANGELOG.md ../crates ../Cargo.toml ../Cargo.lock ../editors/vscode-oxie/syntaxes"
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- . ../netlify.toml ../docs ../README.md ../CHANGELOG.md ../crates ../Cargo.toml ../Cargo.lock ../editors/vscode-oxie/syntaxes"
 
 [build.environment]
   NODE_VERSION = "24"

@@ -14,9 +14,9 @@ oxie run
 scripts, shows the Rust generated for a file (`oxie emit`), translates Rust to Oxie
 (`oxie from-rust`) and serves editors over LSP (`oxie lsp`).
 
-* [A tour of Oxie](https://github.com/oxie-lang/oxie/blob/main/docs/guide.md)
-* [Tooling](https://github.com/oxie-lang/oxie/blob/main/docs/tooling.md)
-* [Language reference](https://github.com/oxie-lang/oxie/blob/main/docs/reference.md)
+* [A tour of Oxie](https://oxie.bkymz.net/guide/)
+* [Tooling](https://oxie.bkymz.net/tooling/)
+* [Language reference](https://oxie.bkymz.net/reference/)
 
 Licensed under either of [Apache License, Version 2.0](https://github.com/oxie-lang/oxie/blob/main/LICENSE-APACHE) or
 [MIT license](https://github.com/oxie-lang/oxie/blob/main/LICENSE-MIT) at your option.

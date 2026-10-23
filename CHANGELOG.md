@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* A documentation site at [oxie.bkymz.net](https://oxie.bkymz.net), generated from `docs/`: every
+  example shows the Rust that `oxie emit` produces for it and its output, kept current by the tests.
 * Panics point at the `.oxi` source: `oxie run` and `oxie test` rewrite the location of a
   panic, backtrace frames and failed assertions in tests from the generated Rust to the `.oxi`
   line they came from.
@@ -26,6 +28,10 @@
 * Clearer errors: a borrow conflict on `self` says `this`, and a loop over a field whose body
   changes `this` offers to loop over a copy; a `shared class` handle sent to another thread (or
   held across an `await` in a spawned task) offers to declare the class `@sync`.
+* `fun city(u: &User): String = u.address?.city ?: "unknown"` used to fail with a bare
+  "expected `String`, found `&str`". The chain reads `city` through a reference, so the result is
+  borrowed text; Oxie still doesn't copy the field silently, but the error now explains this and
+  offers the fix `u.address?.city.clone() ?: "unknown"`.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

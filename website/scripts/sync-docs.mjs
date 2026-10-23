@@ -58,14 +58,17 @@ function emit(source) {
 	tmpDir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'oxie-docs-'));
 	const file = path.join(tmpDir, 'example.oxi');
 	fs.writeFileSync(file, source);
+	// outside the try below: a failed build of oxie stops the site build
+	const bin = oxie();
 	let rust = null;
 	try {
-		const out = execFileSync(oxie(), ['emit', file], { cwd: tmpDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, NO_COLOR: '1' } });
+		const out = execFileSync(bin, ['emit', file], { cwd: tmpDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, NO_COLOR: '1' } });
 		const lines = out.split('\n');
 		const prelude = lines.findIndex((l) => l.startsWith('use crate::__oxie::prelude::*;'));
 		rust = lines.slice(prelude + 1).join('\n').trim() + '\n';
-	} catch {
-		// does not compile on its own (a fragment, or an example of an error)
+	} catch (e) {
+		// a non-zero exit: the example doesn't compile on its own (a fragment, or an example of an error)
+		if (typeof e.status !== 'number') throw new Error(`running ${bin} failed: ${e.message}`);
 	}
 	emitted.set(source, rust);
 	return rust;

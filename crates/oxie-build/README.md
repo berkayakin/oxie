@@ -20,8 +20,8 @@ fn main() {
 include!(concat!(env!("OUT_DIR"), "/oxie/main.rs"));
 ```
 
-See [Tooling](https://github.com/oxie-lang/oxie/blob/main/docs/tooling.md) for the project layout and
-[Rust interop](https://github.com/oxie-lang/oxie/blob/main/docs/rust-interop.md) for adding Oxie to an existing crate.
+See [Tooling](https://oxie.bkymz.net/tooling/) for the project layout and
+[Rust interop](https://oxie.bkymz.net/rust-interop/) for adding Oxie to an existing crate.
 
 Licensed under either of [Apache License, Version 2.0](https://github.com/oxie-lang/oxie/blob/main/LICENSE-APACHE) or
 [MIT license](https://github.com/oxie-lang/oxie/blob/main/LICENSE-MIT) at your option.

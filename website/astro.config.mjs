@@ -56,8 +56,7 @@ function oxieDocs() {
 }
 
 export default defineConfig({
-	// Netlify sets URL to the site's address
-	site: process.env.URL,
+	site: 'https://oxie.bkymz.net',
 	integrations: [
 		oxieDocs(),
 		starlight({

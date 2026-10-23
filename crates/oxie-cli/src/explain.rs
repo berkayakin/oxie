@@ -46,7 +46,7 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
             imports(d, &lines);
         }
         "E0277" => trait_missing(d, &lines, &names),
-        "E0308" => mismatched(d),
+        "E0308" => mismatched(d, &lines),
         "E0615" => getter_call(d, &lines, &first),
         // reported without a code
         _ if d.message.starts_with("future cannot be sent between threads safely") => thread_safety(d, &lines, ""),
@@ -618,11 +618,65 @@ fn getter_call(d: &mut MappedDiag, lines: &[&str], name: &str) {
     }
 }
 
-fn mismatched(d: &mut MappedDiag) {
+fn mismatched(d: &mut MappedDiag, lines: &[&str]) {
+    let borrowed_text = d.label.as_deref().is_some_and(|l| l.contains("expected `String`, found `&str`"));
     if let Some(l) = d.label.clone() {
         let l = l.replace("found `&str`", "found `&str` (borrowed text)").replace("found `String`", "found `String` (owned text)");
         d.label = Some(oxie_types(&l));
     }
+    if borrowed_text {
+        elvis_borrowed_text(d, lines);
+    }
+}
+
+/// `u.address?.city ?: "unknown"` where a `String` is expected: the chain reads `city` through a
+/// reference, so the text default makes the result a `&str`. Oxie doesn't copy the field
+/// silently; the fix is `u.address?.city.clone() ?: "unknown"`.
+fn elvis_borrowed_text(d: &mut MappedDiag, lines: &[&str]) {
+    if d.line != d.end_line {
+        return;
+    }
+    let line = lines.get(d.line as usize).copied().unwrap_or("");
+    let span: Vec<char> = line.chars().skip(d.col as usize).take(d.end_col.saturating_sub(d.col) as usize).collect();
+    let Some(op) = top_level_elvis(&span) else { return };
+    let left: String = span[..op].iter().collect::<String>().trim_end().to_string();
+    let right: String = span[op + 2..].iter().collect::<String>().trim().to_string();
+    if !left.contains("?.") || !right.starts_with('"') || left.ends_with(".clone()") {
+        return;
+    }
+    rewrite(d, format!("`{} ?: {}` is borrowed text (`&str`), but a `String` is expected", left, right));
+    d.notes.retain(|n| !n.contains("conversion method"));
+    d.notes.push(help(&format!(
+        "`{}` reads the field through a reference, so `?:` with a text default gives a `&str` borrowed from it. Oxie doesn't copy the field silently: take a copy with `.clone()` before `?:`, or declare the result as `&str`.",
+        left
+    )));
+    let end = d.col + left.chars().count() as u32;
+    d.fixes.push(Fix { title: "use a copy (`.clone()`)".to_string(), edits: vec![edit(d.line, end, end, ".clone()")] });
+}
+
+/// Index of the first `?:` outside brackets and string literals.
+fn top_level_elvis(s: &[char]) -> Option<usize> {
+    let (mut depth, mut in_str, mut escaped) = (0i32, false, false);
+    for i in 0..s.len() {
+        let c = s[i];
+        if in_str {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '?' if depth == 0 && s.get(i + 1) == Some(&':') => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn unused_mut(d: &mut MappedDiag, lines: &[&str]) {
@@ -1093,5 +1147,9 @@ mod tests {
         assert_eq!(param_decl(&["fun add_one(v: &Vec<i32>) {", "    v.push(1)"], "v", 1), Some((0, 15, "add_one".into(), 0)));
         assert_eq!(oxie_types("expected `Option<Vec<i32>>`"), "expected `Vec<i32>?`");
         assert_eq!(snake_case("toUpperCase"), "to_upper_case");
+        let elvis = |s: &str| top_level_elvis(&s.chars().collect::<Vec<_>>());
+        assert_eq!(elvis(r#"a?.b ?: "x""#), Some(5));
+        assert_eq!(elvis(r#"f("?:", a ?: 1) ?: "x""#), Some(16));
+        assert_eq!(elvis("a?.b"), None);
     }
 }
