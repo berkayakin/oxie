@@ -199,14 +199,20 @@ fn borrow_mut(d: &mut MappedDiag, sources: &Sources, lines: &[&str], first: &str
             let rest: String = line.chars().skip(pc as usize).collect();
             if rest.starts_with('&') && !rest.starts_with("&mut ") && !rest.starts_with("&'") {
                 let mut edits = vec![edit(pl, pc, pc + 1, "&mut ")];
-                // callers that pass `&x` now need `&mut x`: in every file of the crate, unless
-                // another file declares a function with the same name
-                let unique = sources.count_declaring(|ls| ls.iter().any(|t| declares_fun(t, &fname))) <= 1;
+                // callers that pass `&x` now need `&mut x`. For a top-level function, its calls
+                // `f(..)` outside class bodies (where `f` may be a method), in every file of the
+                // crate unless another file declares a top-level `f` too; for a method, the calls
+                // `x.f(..)` in this file, which may also be of another type's method
+                use crate::sources::{declares_top_level_fun, owner_at};
+                let here = sources.file(&d.file);
+                let is_method = here.is_some_and(|f| owner_at(&f.ast().items, byte_offset(&f.text, pl, pc) as u32).is_some());
+                let unique = !is_method && sources.files.iter().filter(|f| declares_top_level_fun(&f.ast().items, &fname)).count() <= 1;
                 for file in sources.files.iter().filter(|f| unique || sources.elsewhere(&f.path, &d.file).is_none()) {
                     let other = sources.elsewhere(&file.path, &d.file);
                     for (cl, cline) in file.lines().iter().enumerate() {
-                        for (start, args) in calls_of(cline, &fname) {
-                            if let Some((ac, atext)) = args.get(index) {
+                        for (start, args) in calls_of(cline, &fname, is_method) {
+                            let in_class = || owner_at(&file.ast().items, byte_offset(&file.text, cl as u32, start as u32) as u32).is_some();
+                            if let Some((ac, atext)) = args.get(index).filter(|_| is_method || !in_class()) {
                                 if atext.starts_with('&') && !atext.starts_with("&mut ") && (other.is_some() || cl as u32 != pl) {
                                     let c = (start + ac) as u32;
                                     edits.push(Edit { file: other.clone(), ..edit(cl as u32, c, c + 1, "&mut ") });
@@ -228,6 +234,24 @@ fn borrow_mut(d: &mut MappedDiag, sources: &Sources, lines: &[&str], first: &str
     }
 }
 
+/// The class of the variable `name` used at `line`: the type its `val`/`var` declares or the
+/// class its initializer constructs (`val c = Counter()`), or the type of a parameter `name`.
+fn local_class(lines: &[&str], name: &str, line: u32) -> Option<String> {
+    let after: String = match [find_decl(lines, name, line, "val"), find_decl(lines, name, line, "var")].into_iter().flatten().max() {
+        Some((l, c)) => {
+            let rest: String = lines[l as usize].chars().skip(c as usize + 3).collect();
+            let rest = rest.trim_start().strip_prefix(name)?.trim_start();
+            rest.strip_prefix(':').or_else(|| rest.strip_prefix('='))?.to_string()
+        }
+        None => {
+            let (pl, pc, ..) = param_decl(lines, name, line)?;
+            lines[pl as usize].chars().skip(pc as usize).collect()
+        }
+    };
+    let ty: String = after.trim_start().trim_start_matches('&').trim_start_matches("mut ").chars().take_while(|c| is_ident_char(*c)).collect();
+    ty.chars().next().is_some_and(char::is_uppercase).then_some(ty)
+}
+
 /// `name.method(` at `col` of the line: the method's name.
 fn method_called_on(line: &str, col: u32, name: &str) -> Option<String> {
     let rest: String = line.chars().skip(col as usize).collect();
@@ -237,11 +261,15 @@ fn method_called_on(line: &str, col: u32, name: &str) -> Option<String> {
 }
 
 /// When `name.method()` at this position calls a method that Oxie made `&mut self`, says why
-/// the call changes `name`: a label where the method changes its object, and a note.
+/// the call changes `name`: a label where the method changes its object, and a note. Only when
+/// the class of `name` is known (a constructor call or a declared type), so a method of another
+/// type with the same name isn't blamed.
 fn mut_self_call(d: &mut MappedDiag, sources: &Sources, line: u32, col: u32, name: &str) -> bool {
-    let text = sources.file(&d.file).and_then(|f| f.text.lines().nth(line as usize)).unwrap_or("").to_string();
-    let Some(m) = method_called_on(&text, col, name) else { return false };
-    let Some((file, cause, why)) = sources.mut_self(&m) else { return false };
+    let Some(here) = sources.file(&d.file) else { return false };
+    let lines = here.lines();
+    let Some(m) = method_called_on(lines.get(line as usize).copied().unwrap_or(""), col, name) else { return false };
+    let class = if name == "this" || name == "self" { crate::sources::owner_at(&here.ast().items, byte_offset(&here.text, line, col) as u32) } else { local_class(&lines, name, line) };
+    let Some((file, cause, why)) = class.and_then(|c| sources.mut_self(&m, &c)) else { return false };
     if let Some(c) = cause {
         let idx = oxie_compiler::LineIndex::new(&file.text);
         let (l, cc) = idx.line_col(&file.text, c.start as usize);
@@ -452,8 +480,46 @@ fn lambda_outlives(d: &mut MappedDiag, lines: &[&str], names: &[String]) {
     let line = lines.get(d.line as usize).copied().unwrap_or("");
     let rest: String = line.chars().skip(d.col as usize).collect();
     if rest.starts_with('{') || rest.starts_with('|') || rest.starts_with('(') {
-        d.fixes.push(Fix { title: "make it a `move` lambda".into(), edits: vec![edit(d.line, d.col, d.col, "move ")] });
+        // `move { }` can't follow a call as a trailing lambda (`spawn { .. }`, `f(x) { .. }`),
+        // so it goes inside the parentheses
+        let before: String = line.chars().take(d.col as usize).collect();
+        let before = before.trim_end();
+        let close = if rest.starts_with('{') { matching_brace(lines, d.line, d.col) } else { None };
+        let edits = match (close, before.chars().last()) {
+            (Some((cl, cc)), Some(')')) => {
+                let paren = before.chars().count() as u32 - 1;
+                let empty = before[..before.len() - 1].trim_end().ends_with('(');
+                vec![edit(d.line, paren, d.col, if empty { "move " } else { ", move " }), edit(cl, cc + 1, cc + 1, ")")]
+            }
+            (Some((cl, cc)), Some(c)) if is_ident_char(c) || c == '>' => vec![edit(d.line, before.chars().count() as u32, d.col, "(move "), edit(cl, cc + 1, cc + 1, ")")],
+            _ => vec![edit(d.line, d.col, d.col, "move ")],
+        };
+        d.fixes.push(Fix { title: "make it a `move` lambda".into(), edits });
     }
+}
+
+/// The `}` that closes the `{` at (line, col), skipping string literals: (line, column).
+fn matching_brace(lines: &[&str], line: u32, col: u32) -> Option<(u32, u32)> {
+    let (mut depth, mut in_str, mut escaped) = (0, false, false);
+    for (l, text) in lines.iter().enumerate().skip(line as usize) {
+        let skip = if l == line as usize { col as usize } else { 0 };
+        for (c, ch) in text.chars().enumerate().skip(skip) {
+            match ch {
+                _ if escaped => escaped = false,
+                '\\' if in_str => escaped = true,
+                '"' => in_str = !in_str,
+                '{' if !in_str => depth += 1,
+                '}' if !in_str => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((l as u32, c as u32));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// Kotlin/Java method names and their Rust equivalents.
@@ -816,9 +882,17 @@ fn not_optional(d: &mut MappedDiag, src: &str) -> bool {
     let at = byte_offset(src, d.line, d.col) as u32;
     // (the value, the text the fix removes or replaces, its replacement)
     let mut found: Option<(Span, Span, &str)> = None;
+    // `a ?: b ?: c` is `(a ?: b) ?: c`: both start at `a`, and rustc's error doesn't tell which
+    // one has the value that isn't optional
+    let (mut elvises, mut chain) = (0, None);
     oxie_compiler::visit::walk_items(&file.items, &mut |e| {
         match &e.kind {
-            ExprKind::Elvis(l, r) if elvis && l.span.start == at => found = Some((l.span, Span { start: l.span.end, end: r.span.end }, "")),
+            ExprKind::Elvis(l, r) if elvis && l.span.start == at => {
+                // the outermost comes first: its left side is the whole chain before the last `?:`
+                chain = chain.or(Some(l.span));
+                elvises += 1;
+                found = Some((l.span, Span { start: l.span.end, end: r.span.end }, ""));
+            }
             // in `a?.b?.c` every link starts at `a`; the first `?.` is the one after the value
             ExprKind::Field { recv, safe: true, .. } | ExprKind::MethodCall { recv, safe: true, .. } if !elvis && recv.span.start == at && found.is_none_or(|(v, ..)| recv.span.end < v.end) => {
                 if let Some(q) = src.get(recv.span.end as usize..e.span.end as usize).and_then(|t| t.find("?.")) {
@@ -831,11 +905,21 @@ fn not_optional(d: &mut MappedDiag, src: &str) -> bool {
         true
     });
     let Some((value, removed, replacement)) = found else { return false };
+    let value = if elvises > 1 { chain.unwrap_or(value) } else { value };
     let shown = source_text(src, value).filter(|t| t.chars().count() <= 40).map(|t| format!("`{}`", t)).unwrap_or_else(|| "the value".into());
     let ty = ty.filter(|t| t != "_");
-    // `opt ?: 0` with a `String?`: the default has another type than the value
-    if let Some(inner) = ty.as_deref().and_then(|t| t.trim_start_matches('&').strip_prefix("Option<").or_else(|| t.trim_start_matches('&').strip_prefix("Result<"))) {
-        let inner = inner.split(',').next().unwrap_or(inner).trim_end_matches('>').trim();
+    if elvises > 1 {
+        // a chain: say what's wrong without naming the operand
+        rewrite(d, "a `?:` here has a left side that can't be null".to_string());
+        d.label = Some(match ty.as_deref() {
+            Some(t) if !t.starts_with('{') => format!("one of these is a `{}`, not a `{}?`", t, t),
+            _ => "one of these is never null".into(),
+        });
+        d.notes = vec![help("`a ?: b ?: c` is `(a ?: b) ?: c`. When `a`, or `a ?: b`, always has a value, the `?:` after it is never used: remove that default, or make the value optional.")];
+        d.fixes.clear();
+    } else if let Some(inner) = ty.as_deref().and_then(|t| t.trim_start_matches('&').strip_prefix("Option<").or_else(|| t.trim_start_matches('&').strip_prefix("Result<"))) {
+        // `opt ?: 0` with a `String?`: the default has another type than the value
+        let inner = first_generic_arg(inner);
         rewrite(d, format!("the default after `?:` doesn't have the type of the value in {}", shown));
         d.label = Some(format!("holds a `{}`", inner));
         d.notes = vec![help(&format!("`a ?: default` gives the value in `a`, or the default when there is none, so the default must be a `{}` too.", inner))];
@@ -854,7 +938,8 @@ fn not_optional(d: &mut MappedDiag, src: &str) -> bool {
         });
         let removed_text = source_text(src, removed).unwrap_or_default();
         let (advice, title) = if elvis {
-            let title = if removed_text.trim().chars().count() <= 30 { format!("remove `{}`", removed_text.trim()) } else { "remove the default (`?: ...`)".to_string() };
+            let short = !removed_text.trim().is_empty() && removed_text.trim().chars().count() <= 30;
+            let title = if short { format!("remove `{}`", removed_text.trim()) } else { "remove the default (`?: ...`)".to_string() };
             // a variable or field can be declared optional; a call's result can't
             let declared = source_text(src, value).filter(|t| t.chars().all(|c| is_ident_char(c) || c == '.')).zip(ty.as_deref().filter(|t| !t.starts_with('{')));
             let or = declared.map(|(v, t)| format!(", or declare `{}` as `{}?` if it can be missing", v, t)).unwrap_or_default();
@@ -908,6 +993,21 @@ fn byte_offset(src: &str, line: u32, col: u32) -> usize {
 fn source_text(src: &str, span: Span) -> Option<String> {
     let t = src.get(span.start as usize..span.end as usize)?;
     (!t.contains('\n')).then(|| t.to_string())
+}
+
+/// The first type argument of the arguments that follow `Option<` or `Result<` (`Vec<i32>` in
+/// `Vec<i32>, E>`).
+fn first_generic_arg(args: &str) -> &str {
+    let mut depth = 0;
+    for (i, c) in args.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' if depth > 0 => depth -= 1,
+            ',' | '>' if depth == 0 => return args[..i].trim(),
+            _ => {}
+        }
+    }
+    args.trim()
 }
 
 /// The text between the first `start` and the next `end` after it.
@@ -967,7 +1067,8 @@ fn rustc_fixes(d: &mut MappedDiag, lines: &[&str]) {
             _ => continue,
         };
         let e = Edit { file: None, line: s.line, col: s.col, end_line: s.end_line, end_col: s.end_col, text: r.to_string() };
-        if d.fixes.iter().any(|f| f.edits.iter().any(|x| x.line == e.line && x.col == e.col)) {
+        // an explanation's own fix of the same kind wins (`move` goes inside a call's parentheses)
+        if d.fixes.iter().any(|f| f.title == title || f.edits.iter().any(|x| x.line == e.line && x.col == e.col)) {
             continue;
         }
         d.fixes.push(Fix { title, edits: vec![e] });
@@ -1155,15 +1256,17 @@ fn call_around(line: &str, col: usize) -> Option<(String, usize)> {
     None
 }
 
-/// Calls of `name(` on a line: (column after the parenthesis, [(column offset, argument text)]).
-fn calls_of(line: &str, name: &str) -> Vec<(usize, Vec<(usize, String)>)> {
+/// Calls of `name(` on a line, method calls `x.name(` too when `methods`: (column after the
+/// parenthesis, [(column offset, argument text)]).
+fn calls_of(line: &str, name: &str, methods: bool) -> Vec<(usize, Vec<(usize, String)>)> {
     let mut out = Vec::new();
     let pat = format!("{}(", name);
     let mut from = 0;
     while let Some(i) = line[from..].find(&pat) {
         let i = from + i;
         from = i + pat.len();
-        if line[..i].chars().next_back().is_some_and(is_ident_char) || line[..i].trim_end().ends_with("fun") {
+        let before = line[..i].chars().next_back();
+        if before.is_some_and(is_ident_char) || (!methods && before == Some('.')) || line[..i].trim_end().ends_with("fun") {
             continue;
         }
         let open = line[..i + pat.len()].chars().count();
@@ -1421,7 +1524,51 @@ mod tests {
         assert_eq!(placeholder_len(r#"println("low: $low items")"#, 14), Some(4));
         assert_eq!(placeholder_len(r#"println("low: ${low.len()} items")"#, 14), Some(12));
         assert_eq!(placeholder_len(r#"println("low: ${low} items")"#, 15), None);
+        assert_eq!(first_generic_arg("Vec<String>>"), "Vec<String>");
+        assert_eq!(first_generic_arg("HashMap<K, V>, E>"), "HashMap<K, V>");
+        assert_eq!(matching_brace(&["spawn { println(\"}\")", "  x }"], 0, 6), Some((1, 4)));
+        assert_eq!(local_class(&["fun f(c: &mut Counter) {", "    val d = Counter()", "    val n: Vec<i32> = vec[]", "    val m = make()"], "d", 3), Some("Counter".into()));
+        assert_eq!(local_class(&["fun f(c: &mut Counter) {", "    c.hit()"], "c", 1), Some("Counter".into()));
+        assert_eq!(local_class(&["fun f() {", "    val m = make()"], "m", 1), None);
         assert!(declares_fun("fun keep(v: Vec<i32>) = v", "keep") && !declares_fun("// see fun keep(v)", "keep"));
+    }
+
+    /// A rustc error mapped to `file` (zero-based line and columns).
+    fn diag(file: &str, code: &str, message: &str, line: u32, col: u32, end_col: u32) -> MappedDiag {
+        MappedDiag {
+            level: "error".into(),
+            code: Some(code.into()),
+            message: message.into(),
+            file: PathBuf::from(file),
+            line,
+            col,
+            end_line: line,
+            end_col,
+            label: None,
+            notes: Vec::new(),
+            from_oxie: true,
+            secondary: Vec::new(),
+            suggestions: Vec::new(),
+            raw_suggestions: Vec::new(),
+            rust_message: None,
+            gen_text: None,
+            fixes: Vec::new(),
+            covers_position: false,
+        }
+    }
+
+    #[test]
+    fn callers_in_other_files_get_mut_but_not_methods_of_the_same_name() {
+        let s = Sources::from_texts(&[
+            ("/crate/text.oxi", "fun add_one(v: &Vec<i32>) {\n    v.push(1)\n}\n"),
+            ("/crate/main.oxi", "class Tally(var n: i32 = 0) {\n    fun add_one(x: &i32) { n += *x }\n}\n\nfun main() {\n    var nums = vec[1]\n    add_one(&nums)\n    var t = Tally()\n    t.add_one(&nums[0])\n}\n"),
+        ]);
+        let mut d = diag("/crate/text.oxi", "E0596", "cannot borrow `*v` as mutable, as it is behind a `&` reference", 1, 4, 5);
+        explain(&mut d, &s);
+        let fix = d.fixes.iter().find(|f| f.title == "let `add_one` change `v` (`&mut`)").unwrap_or_else(|| panic!("{:?}", d.fixes));
+        let at: Vec<(Option<&str>, u32, u32)> = fix.edits.iter().map(|e| (e.file.as_deref().and_then(|f| f.to_str()), e.line, e.col)).collect();
+        // the parameter, and the call `add_one(&nums)` in main.oxi; not `t.add_one(&nums[0])`
+        assert_eq!(at, vec![(None, 0, 15), (Some("/crate/main.oxi"), 6, 12)]);
     }
 
     #[test]

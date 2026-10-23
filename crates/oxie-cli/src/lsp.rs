@@ -350,8 +350,13 @@ impl Server {
                             .edits
                             .iter()
                             .map(|e| {
-                                let (uri, text) = in_file(&e.file);
-                                json!({"uri": uri, "range": char_range(&text, e.line, e.col, e.end_line, e.end_col), "newText": e.text})
+                                let (euri, text) = in_file(&e.file);
+                                let mut edit = json!({"range": char_range(&text, e.line, e.col, e.end_line, e.end_col), "newText": e.text});
+                                // one in the diagnostic's own file goes to the document the editor named
+                                if e.file.is_some() {
+                                    edit["uri"] = json!(euri);
+                                }
+                                edit
                             })
                             .collect();
                         json!({"title": f.title, "edits": edits})

@@ -466,10 +466,18 @@ fn check_fixes(p: &Path, cache: &Path) -> (usize, Vec<String>) {
     let _ = c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);
 
+    // how an error shows in the output: `error[E0382]`, or `error: <message>` without a code
+    let kind = |d: &Value| match d["code"].as_str() {
+        Some(c) if !c.is_empty() => format!("[{}]", c),
+        _ => format!(": {}", d["message"].as_str().unwrap_or("").lines().next().unwrap_or("")),
+    };
+    let rustc: Vec<&Value> = diags.as_array().into_iter().flatten().filter(|d| d["source"] == "rustc").collect();
     let (mut checked, mut failures) = (0, Vec::new());
-    for d in diags.as_array().into_iter().flatten().filter(|d| d["source"] == "rustc") {
-        let code = d["code"].as_str().unwrap_or("").to_string();
+    for d in &rustc {
+        let code = kind(d);
         let line = d["range"]["start"]["line"].as_i64().unwrap();
+        // the errors its line had before the fix
+        let before: Vec<String> = rustc.iter().filter(|o| o["range"]["start"]["line"].as_i64() == Some(line)).map(|o| kind(o)).collect();
         for (i, fix) in d["data"]["fixes"].as_array().into_iter().flatten().enumerate() {
             checked += 1;
             let fixed = copy_to(&fixes_dir.join(format!("{}-{}-{}", name, line + 1, i)));
@@ -489,21 +497,45 @@ fn check_fixes(p: &Path, cache: &Path) -> (usize, Vec<String>) {
                 text.replace_range(start..end, new);
                 std::fs::write(&target, text).unwrap();
             }
+            let title = format!("{}:{}: the fix `{}` for {}", p.display(), line + 1, fix["title"].as_str().unwrap_or(""), code);
+            // the fixed program is still valid Oxie (rustc never sees it otherwise)
+            if let Some(errors) = oxie_errors(&fixed, project) {
+                failures.push(format!("{} breaks the Oxie code: {}", title, errors));
+                continue;
+            }
             let out = if project {
                 oxie().arg("build").current_dir(&fixed).env("OXIE_CACHE", cache).env("CARGO_TARGET_DIR", cache.join("fixes-target").join(&name)).output().unwrap()
             } else {
-                oxie().arg("run").arg(fixed.join(&name)).current_dir(&fixed).env("OXIE_CACHE", cache).output().unwrap()
+                oxie().arg("run").arg(fixed.join(&name)).current_dir(&fixed).env("OXIE_CACHE", cache).stdin(Stdio::null()).output().unwrap()
             };
             let stderr = String::from_utf8_lossy(&out.stderr);
             let at = format!("{}:{}:", main_name, line + 1 + moved);
-            let head = format!("[{}]", code);
-            if stderr.split("\n\n").any(|b| b.lines().next().is_some_and(|h| h.contains(&head)) && b.contains(&at)) {
-                failures.push(format!("{}:{}: the fix `{}` for {} leaves the error\n{}", p.display(), line + 1, fix["title"].as_str().unwrap_or(""), code, stderr));
+            // the errors now on its line: not the one it was for, and none it didn't have
+            for head in stderr.split("\n\n").filter(|b| b.contains(&at)).filter_map(|b| b.lines().next()).filter(|h| h.starts_with("error")) {
+                if head.contains(&code) {
+                    failures.push(format!("{} leaves the error\n{}", title, stderr));
+                } else if !before.iter().any(|k| head.contains(k.as_str())) {
+                    failures.push(format!("{} adds an error on its line: {}\n{}", title, head, stderr));
+                }
             }
             let _ = std::fs::remove_dir_all(&fixed);
         }
     }
     (checked, failures)
+}
+
+/// The errors Oxie itself reports for the program in `dir` (a script, or a project), if any.
+fn oxie_errors(dir: &Path, project: bool) -> Option<String> {
+    let inputs = if project {
+        oxie_compiler::discover(&dir.join("src")).unwrap()
+    } else {
+        let file = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "oxi")).unwrap();
+        vec![oxie_compiler::Input { rel_path: PathBuf::from("main.oxi"), text: std::fs::read_to_string(&file).unwrap(), abs_path: file }]
+    };
+    let opts = oxie_compiler::Options { crate_name: "main".into(), extern_crates: Default::default(), out_dir: PathBuf::from("/oxie"), script: !project };
+    let out = oxie_compiler::compile(inputs, &opts);
+    let errors: Vec<String> = out.diags.iter().flat_map(|(_, _, ds)| ds).filter(|d| d.severity == oxie_compiler::Severity::Error).map(|d| d.message.clone()).collect();
+    (!errors.is_empty()).then(|| errors.join("; "))
 }
 
 fn oxie() -> Command {

@@ -151,7 +151,7 @@ pub fn compile(inputs: Vec<Input>, opts: &Options) -> Output {
 
     for (i, p) in parsed.iter().enumerate() {
         let mut l = Lowerer::new(&k, p.module.clone(), p.is_root);
-        l.param_notes = param_notes.iter().filter(|n| n.file == i).map(|n| ((n.fun.clone(), n.index), n.clone())).collect();
+        l.param_notes = param_notes.iter().filter(|n| n.file == i).map(|n| ((n.fun_span, n.index), n.clone())).collect();
         l.src_dir = p.input.abs_path.parent().map(|d| d.to_path_buf());
         l.crate_attrs_allowed = opts.script;
         l.lower_file(&p.file);
@@ -362,7 +362,7 @@ pub fn write_output(out: &Output, out_dir: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::without_verbatim_prefix;
+    use super::*;
 
     #[test]
     fn verbatim_prefix_is_removed() {
@@ -370,5 +370,31 @@ mod tests {
         assert_eq!(without_verbatim_prefix(r"\\?\UNC\server\share\x"), Some(r"\\server\share\x".to_string()));
         assert_eq!(without_verbatim_prefix(r"\\?\Volume{1234}\x"), None);
         assert_eq!(without_verbatim_prefix("/home/ada/x.oxi"), None);
+    }
+
+    /// The decisions of a one-file program: (the source they are about, what was chosen, why).
+    fn decisions(src: &str) -> Vec<(String, String, String)> {
+        let input = Input { rel_path: PathBuf::from("main.oxi"), abs_path: PathBuf::from("main.oxi"), text: src.to_string() };
+        let opts = Options { crate_name: "main".into(), extern_crates: HashSet::new(), out_dir: PathBuf::from("/oxie"), script: true };
+        let out = compile(vec![input], &opts);
+        assert!(!out.has_errors(), "{:?}", out.diags);
+        out.files[0].decisions.iter().map(|d| (src[d.span.start as usize..d.span.end as usize].to_string(), d.chosen.clone(), d.why.clone())).collect()
+    }
+
+    #[test]
+    fn decisions_are_about_the_right_function() {
+        // the method shares the name of the function whose parameter is lent, but keeps its own
+        let src = "fun describe(t: String): usize = t.len()\nclass Shelf(var items: Vec<String> = vec[]) {\n    fun describe(t: String) { items.push(t) }\n}\n";
+        let ds = decisions(src);
+        assert_eq!(ds.iter().filter(|(about, ..)| about.starts_with("t:")).count(), 1, "{ds:?}");
+        assert!(ds.contains(&("describe".into(), "&mut self".into(), "it calls `items.push()`".into())), "{ds:?}");
+    }
+
+    #[test]
+    fn lifetimes_say_which_parameters_they_tie() {
+        // `View` holds a reference, so it gets the lifetime too; `n` has none
+        let src = "class View(text: &str)\nfun pick(a: View, b: View, n: usize): &str = if (n > 0) a.text else b.text\n";
+        let ds = decisions(src);
+        assert!(ds.contains(&("pick".into(), "'a".into(), "the result borrows from `a` or `b`".into())), "{ds:?}");
     }
 }

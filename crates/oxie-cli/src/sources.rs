@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use oxie_compiler::ast::File;
+use oxie_compiler::ast::{File, Item, ItemKind};
 use oxie_compiler::compile::canonicalize;
 use oxie_compiler::diag::Span;
 use oxie_compiler::emit::Decision;
@@ -80,13 +80,14 @@ impl Sources {
         })
     }
 
-    /// Why the method `name` takes `&mut self` when Oxie inferred it: its file, the use that
-    /// decided it and the reason. None when no method of that name, or several, have one.
-    pub fn mut_self(&self, name: &str) -> Option<(&SourceFile, Option<Span>, String)> {
+    /// Why the method `name` of `class` takes `&mut self` when Oxie inferred it: its file, the use
+    /// that decided it and the reason.
+    pub fn mut_self(&self, name: &str, class: &str) -> Option<(&SourceFile, Option<Span>, String)> {
         let mut found: Vec<(&SourceFile, Span, Option<Span>, String)> = Vec::new();
         for (path, ds) in self.decisions() {
             let Some(file) = self.file(path) else { continue };
-            for d in ds.iter().filter(|d| d.chosen == "&mut self" && file.text.get(d.span.start as usize..d.span.end as usize) == Some(name)) {
+            let is_method = |s: Span| file.text.get(s.start as usize..s.end as usize) == Some(name) && owner_at(&file.ast().items, s.start).as_deref() == Some(class);
+            for d in ds.iter().filter(|d| d.chosen == "&mut self" && is_method(d.span)) {
                 if !found.iter().any(|(f, s, ..)| f.path == file.path && *s == d.span) {
                     found.push((file, d.span, d.cause, d.why.clone()));
                 }
@@ -115,14 +116,31 @@ impl Sources {
         found.next().is_none().then_some(first)
     }
 
-    /// How many files declare something.
-    pub fn count_declaring(&self, declares: impl Fn(&[&str]) -> bool) -> usize {
-        self.files.iter().filter(|f| declares(&f.lines())).count()
-    }
-
     /// `path` when it isn't the error's file `current` (where edits and labels go by default).
     pub fn elsewhere(&self, path: &Path, current: &Path) -> Option<PathBuf> {
         let here = self.file(current).map(|f| f.path.as_path()).unwrap_or(current);
         (path != here).then(|| path.to_path_buf())
     }
+}
+
+/// Does the file declare a function `name` outside classes and `impl` blocks?
+pub fn declares_top_level_fun(items: &[Item], name: &str) -> bool {
+    items.iter().any(|it| match &it.kind {
+        ItemKind::Fun(f) => f.name == name,
+        ItemKind::Mod { items, .. } => declares_top_level_fun(items, name),
+        _ => false,
+    })
+}
+
+/// The class, enum or `impl` block whose body holds `offset`.
+pub fn owner_at(items: &[Item], offset: u32) -> Option<String> {
+    for it in items.iter().filter(|it| it.span.start <= offset && offset <= it.span.end) {
+        match &it.kind {
+            ItemKind::Type(t) => return Some(t.name.clone()),
+            ItemKind::Impl(i) => return i.self_ty.last_name().map(str::to_string),
+            ItemKind::Mod { items, .. } | ItemKind::Object { items, .. } => return owner_at(items, offset),
+            _ => {}
+        }
+    }
+    None
 }

@@ -29,4 +29,18 @@ fun main() {
     val e = label ?: 0
     // error: 29: the default after `?:` doesn't have the type of the value in `label`
     println("$a $b $c $d $e")
+    more(name)
+}
+
+fun more(name: String) {
+    val label: String? = null
+    // `(label ?: name) ?: "z"`: both start at `label`, and which one is wrong isn't known
+    val f = label ?: name ?: "z"
+    // error: 38: a `?:` here has a left side that can't be null
+    // not: 38: needs an optional value
+    val g = name ?: run {
+        "x".to_string()
+    }
+    // error: 41: fix: remove the default (`?: ...`)
+    println("$f $g")
 }

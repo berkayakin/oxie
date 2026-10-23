@@ -148,7 +148,8 @@ pub fn walk_stmt(s: &Stmt, f: &mut dyn FnMut(&Expr) -> bool) {
 }
 
 /// Calls `f` on every expression of the items: function and method bodies, default values,
-/// `init` blocks, tests and constants (pre-order, like `walk_expr`).
+/// `init` blocks, enum discriminants and messages, tests and constants (pre-order, like
+/// `walk_expr`).
 pub fn walk_items(items: &[Item], f: &mut dyn FnMut(&Expr) -> bool) {
     for it in items {
         match &it.kind {
@@ -165,7 +166,8 @@ pub fn walk_items(items: &[Item], f: &mut dyn FnMut(&Expr) -> bool) {
                 }
             }
             ItemKind::Type(t) => {
-                for x in t.fields.iter().filter_map(|fd| fd.default.as_ref()).chain(t.message.as_ref()) {
+                let variants = t.variants.iter().flat_map(|v| v.discriminant.iter().chain(v.message.iter()));
+                for x in t.fields.iter().filter_map(|fd| fd.default.as_ref()).chain(t.message.as_ref()).chain(variants) {
                     walk_expr(x, f);
                 }
                 if let Some(b) = &t.init {

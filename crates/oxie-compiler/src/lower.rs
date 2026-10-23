@@ -258,8 +258,8 @@ pub struct Lowerer<'a> {
     /// Lowering a method that takes `self` by value, so its fields can be moved out.
     pub(crate) self_by_value: bool,
     /// What happened to the `String`/`Vec` parameters of this file's functions that could be
-    /// lent, by (function, parameter index).
-    pub param_notes: HashMap<(String, usize), crate::params::ParamNote>,
+    /// lent, by (the function's name span, parameter index).
+    pub param_notes: HashMap<(Span, usize), crate::params::ParamNote>,
 }
 
 pub fn esc(name: &str) -> String {
@@ -1254,7 +1254,7 @@ impl<'a> Lowerer<'a> {
                 continue;
             }
             let index = i - has_recv as usize;
-            if let Some(n) = self.param_notes.get(&(f.name.clone(), index)) {
+            if let Some(n) = self.param_notes.get(&(f.name_span, index)) {
                 let chosen = if n.borrowed { part.split_once(": ").map_or(part.as_str(), |(_, t)| t).to_string() } else { "owned".to_string() };
                 let (why, cause) = (n.why.clone(), n.cause);
                 self.e.decide(f.params[index].span, chosen, why, cause);
@@ -1270,8 +1270,13 @@ impl<'a> Lowerer<'a> {
         if lifetimes.len() <= orig_lifetimes {
             return;
         }
-        let refs: Vec<String> = f.params.iter().filter(|p| self.ty(&p.ty, TyPos::Param).contains('&')).filter_map(|p| p.name().map(|n| format!("`{}`", n))).collect();
-        self.e.decide(f.name_span, format!("'{}", lifetimes[0]), format!("the result borrows from {}", refs.join(" or ")), None);
+        // the parameters it was given to (not those with lifetimes of their own)
+        let lt = format!("'{}", lifetimes[0]);
+        let has_lt = |t: &str| t.match_indices(&lt).any(|(i, _)| !t[i + lt.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_'));
+        let tied: Vec<String> = f.params.iter().filter(|p| has_lt(&self.ty(&p.ty, TyPos::Param))).filter_map(|p| p.name().map(|n| format!("`{}`", n))).collect();
+        if !tied.is_empty() {
+            self.e.decide(f.name_span, lt, format!("the result borrows from {}", tied.join(" or ")), None);
+        }
     }
 
     fn params_parts_inner(&mut self, f: &FunDecl, recv: Option<String>) -> Vec<String> {

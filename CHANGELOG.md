@@ -53,6 +53,9 @@
   argument, a loop's borrow, a lifetime). Hovering a function or method in an editor lists the
   choices about its signature. Calling a method Oxie made `&mut self` on a `val`, or while the
   value is borrowed, points at the line in the method that changes its object.
+* The quick fix "make it a `move` lambda" for a trailing lambda (`thread::spawn { .. }`) writes
+  `thread::spawn(move { .. })`; it used to write `thread::spawn move { .. }`, which doesn't
+  parse. A test now applies every quick fix offered for `tests/diagnostics` and builds again.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

@@ -57,6 +57,11 @@ pub fn forward(mut from: impl Read, mut to: impl Write) {
         pending.extend_from_slice(&buf[..n]);
         let lines_end = pending.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
         let mut cut = if pending[lines_end..].iter().any(|&b| b == b'/' || b == b'\\') { lines_end } else { pending.len() };
+        // a backtrace frame's name is written in pieces (`app`, `::`, `__oxie_main`): a `::` at the
+        // end waits for the next piece, so that `::__oxie_main` is seen whole
+        if cut == pending.len() && pending[lines_end..].ends_with(b"::") {
+            cut -= 2;
+        }
         // keep a character split between two reads for the next one
         if let Err(e) = std::str::from_utf8(&pending[..cut]) {
             if e.error_len().is_none() {
@@ -104,5 +109,26 @@ mod tests {
         assert_eq!(out, b"name? ");
         assert_eq!(line_col("10:5: x"), Some((10, 5, 4)));
         assert_eq!(line_col("10 x"), None);
+    }
+
+    /// Output that arrives one piece per read.
+    struct Pieces(Vec<&'static [u8]>);
+
+    impl Read for Pieces {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Ok(0);
+            }
+            let p = self.0.remove(0);
+            buf[..p.len()].copy_from_slice(p);
+            Ok(p.len())
+        }
+    }
+
+    #[test]
+    fn frame_names_arriving_in_pieces_are_renamed() {
+        let mut out = Vec::new();
+        forward(Pieces(vec![b"   6: app", b"::", b"__oxie_main\n"]), &mut out);
+        assert_eq!(String::from_utf8(out).unwrap(), "   6: app::main\n");
     }
 }

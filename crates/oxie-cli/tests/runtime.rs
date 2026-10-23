@@ -33,6 +33,8 @@ fn panics_point_at_the_oxi_source() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// backtrace frames on Windows have no column (`at C:\..\main.rs:3`), so they aren't rewritten
+#[cfg(not(windows))]
 #[test]
 fn backtraces_name_main_and_point_at_the_oxi_source() {
     let dir = script("trace.oxi", "fun main() throws {\n    val v: Vec<i32> = vec[]\n    println(v[3])\n}\n");

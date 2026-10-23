@@ -448,7 +448,7 @@ pub fn render(d: &MappedDiag, root: &Path) -> String {
         // a fix in another file says where
         let other = f.edits.first().and_then(|e| e.file.as_deref()).filter(|o| f.edits.iter().all(|e| e.file.as_deref() == Some(*o)));
         if let Some(o) = other {
-            out += &format!(" (in {})", shown(o));
+            out += &format!(" (in {})", shown(o).replace('\\', "/"));
         }
         let other_text = other.map(|o| std::fs::read_to_string(o).unwrap_or_default());
         let preview_lines: Vec<&str> = other_text.as_deref().unwrap_or(&text).lines().collect();
@@ -525,7 +525,7 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
                 // one explained error per position: rustc reports some twice (`?:` on a value
                 // that isn't optional), with different Rust wording
                 let (rendered, key) = match mapped {
-                    Some(d) if d.from_oxie => (render(&d, root), format!("{}:{}:{}:{}", d.file.display(), d.line, d.col, d.message)),
+                    Some(d) if d.from_oxie => (render(&d, root), same_error(&d)),
                     Some(_) | None => {
                         let r = msg.get("rendered").and_then(|r| r.as_str()).unwrap_or("").to_string();
                         // summary lines like "aborting due to ..." have no spans
@@ -587,7 +587,7 @@ pub fn check_collect(root: &Path, target_dir: Option<&Path>) -> std::io::Result<
         }
         if let Some(msg) = v.get("message") {
             if let Some(d) = mapper.map_message(root, msg) {
-                let key = format!("{}:{}:{}:{}", d.file.display(), d.line, d.col, d.message);
+                let key = same_error(&d);
                 if covered.cover(&d) && seen.insert(key) {
                     diags.push(d);
                 }
@@ -595,6 +595,12 @@ pub fn check_collect(root: &Path, target_dir: Option<&Path>) -> std::io::Result<
         }
     }
     Ok(diags)
+}
+
+/// Diagnostics with the same key are one error to the user: the same kind and code, explained
+/// the same way at the same position.
+fn same_error(d: &MappedDiag) -> String {
+    format!("{}:{}:{}:{}:{}:{}", d.file.display(), d.line, d.col, d.level, d.code.as_deref().unwrap_or(""), d.message)
 }
 
 /// Positions whose mistake an earlier explanation already named (`covers_position`).

@@ -31,3 +31,15 @@ fun count() {
     // error: 30: calling `d.hit()` changes `d`: Oxie made `hit` take `&mut self`
     println(f)
 }
+
+class Stack(var items: Vec<i32> = vec[]) {
+    fun push(x: i32) { items.push(x) }
+}
+
+// a `Vec`'s `push` isn't the `push` of `Stack`
+fun other() {
+    val v: Vec<i32> = vec[]
+    v.push(1)
+    // error: 42: `v` is a `val`, so it can't be changed
+    // not: 42: Oxie made `push` take `&mut self`
+}

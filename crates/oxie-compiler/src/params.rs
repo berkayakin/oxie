@@ -359,6 +359,8 @@ pub struct ParamNote {
     /// The index of the file declaring the function.
     pub file: usize,
     pub fun: String,
+    /// The function's name in that file (methods and local functions may share the name).
+    pub fun_span: Span,
     pub index: usize,
     /// Lent as `&str` / `&[T]` (else kept owned).
     pub borrowed: bool,
@@ -430,7 +432,7 @@ pub fn borrow_params(files: &mut [&mut File]) -> Vec<ParamNote> {
                     Some((span, why)) => (Some(span), why),
                     None => (None, format!("it only reads `{}`", c.name)),
                 };
-                ParamNote { file: c.file, fun: c.fun.name.clone(), index: c.index, borrowed, why, cause }
+                ParamNote { file: c.file, fun: c.fun.name.clone(), fun_span: c.fun.name_span, index: c.index, borrowed, why, cause }
             })
             .collect()
     };
