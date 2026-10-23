@@ -11,6 +11,8 @@
 * A `{ ... }` statement, which is a lambda that never runs, is an error that suggests
   `run { ... }`; before, it compiled with only rustc's "unused closure" warning, and the
   statements in it were skipped.
+* `oxie emit --annotate` puts a `// file.oxi:line` comment above each statement of the
+  generated Rust. Golden tests in `tests/emit` keep the generated Rust from changing unnoticed.
 * A VS Code extension in `editors/vscode-oxie`: highlighting, the language server, ▶ run and
   test buttons, the generated Rust beside the source, tasks and snippets.
 * Language server: files opened through a symlinked directory (on macOS, anything under `/tmp`)

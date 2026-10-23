@@ -61,7 +61,7 @@ it to the checkout it runs in.
 | `oxie check` | Type-check without producing binaries (fast) |
 | `oxie test [name] [--release]` | Run `test` blocks; `name` may be the test's description (`oxie test "adds numbers"`) or part of it |
 | `oxie fmt [--check] [paths]` | Format `.oxi` files (the project's `src/` by default) |
-| `oxie emit file.oxi` | Print the Rust generated for a file |
+| `oxie emit file.oxi [--annotate]` | Print the Rust generated for a file; `--annotate` puts a `// file.oxi:line` comment above each statement |
 | `oxie from-rust file.rs [-o out.oxi]` | Translate Rust to Oxie (`-` reads stdin); see [Translating Rust](#translating-rust) |
 | `oxie lsp` | Start the language server on stdin/stdout |
 | `oxie clean` | `cargo clean` |

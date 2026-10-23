@@ -1,0 +1,13 @@
+// `shared class`: the data struct, the handle, forwarding methods, getters and setters.
+
+shared class Account(var balance: i64) {
+    fun deposit(n: i64) { balance += n }
+}
+
+fun main() {
+    val a = Account(10)
+    val b = a
+    b.deposit(5)
+    a.balance += 1
+    println(a.balance)
+}

@@ -166,6 +166,9 @@ scopes asserted in `editors/vscode-oxie/test/grammar/*.oxi`.
   * `tests/diagnostics/*.oxi` must fail with `// error: <line>: <text>` errors at the right lines;
   * every example in `examples/` runs (compared with `expected.txt`) and its tests pass;
   * every runnable code block in `README.md` and `docs/*.md` compiles and runs.
+* `crates/oxie-cli/tests/emit.rs`: the Rust generated for `tests/emit/*.oxi` must equal the
+  `.rs` (and `.annotated.rs`) files next to them; `OXIE_BLESS=1` rewrites them.
+* `crates/oxie-cli/tests/runtime.rs`: panics under `oxie run` and `oxie test` point at `.oxi` lines.
 * `crates/oxie-cli/tests/lsp.rs` drives the language server over stdio.
 * `editors/vscode-oxie`: `npm test` runs the grammar tests, then integration tests in VS Code
   (`test/suite`) with the language server on a copy of `test/fixtures`.

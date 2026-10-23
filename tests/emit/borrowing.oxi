@@ -1,0 +1,26 @@
+// Automatic `&`/`&mut`, borrowed parameters, inferred receivers, loop borrowing and lifetimes.
+
+fun total(v: &[i32]): i32 = v.iter().sum()
+fun shout(s: String): String = s.to_uppercase()
+fun keep(v: Vec<i32>): Vec<i32> = v
+fun add_one(v: &mut Vec<i32>) { v.push(1) }
+fun longest(a: &str, b: &str): &str = if (a.len() >= b.len()) a else b
+
+class Counter(var hits: Vec<i32> = vec[]) {
+    fun hit() { add_one(hits) }
+    fun count(): usize = hits.len()
+}
+
+fun main() {
+    var nums = vec[1, 2, 3]
+    val name = "ada".to_string()
+    add_one(nums)
+    println("${total(nums)} ${shout(name)} $name")
+    for (n in nums) println(n)
+    println(nums.len())
+    var c = Counter()
+    c.hit()
+    println("${c.count()} ${longest(name, "bob")}")
+    val kept = keep(nums)
+    println(kept.len())
+}

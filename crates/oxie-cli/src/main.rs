@@ -28,7 +28,9 @@ COMMANDS:
     check                  Type-check the project without producing binaries
     test [filter]          Run `test \"...\" { }` blocks
     fmt [--check] [paths]  Format .oxi files
-    emit <file.oxi>        Print the Rust code generated for a file
+    emit <file.oxi> [--annotate]
+                           Print the Rust code generated for a file; `--annotate` marks
+                           each statement with the .oxi line it came from
     from-rust <file.rs> [-o out.oxi]
                            Translate Rust to Oxie (`-` reads stdin)
     lsp                    Start the language server (stdio)
@@ -371,9 +373,35 @@ fn cmd_emit(args: &[String]) -> R {
     report(&out, &root);
     let idx = out.diags.iter().position(|(p, _, _)| *p == abs).unwrap_or(0);
     if let Some(f) = out.files.get(idx) {
-        print!("{}", f.text);
+        if args.iter().any(|a| a == "--annotate") {
+            print!("{}", annotated(f));
+        } else {
+            print!("{}", f.text);
+        }
     }
     Ok(if out.has_errors() { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+}
+
+/// The generated text with a `// file.oxi:line` comment above each line where code from
+/// another source line starts.
+fn annotated(f: &oxie_compiler::compile::GenFile) -> String {
+    let Some(map) = &f.map else { return f.text.clone() };
+    let name = map.source.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let mut out = String::with_capacity(f.text.len() * 2);
+    let mut last = None;
+    for (i, line) in f.text.lines().enumerate() {
+        let indent = line.len() - line.trim_start().len();
+        let at = map.entries.partition_point(|e| (e.0, e.1) < (i as u32, indent as u32));
+        if let Some(&(gl, gc, sl, _)) = map.entries.get(at) {
+            if (gl, gc) == (i as u32, indent as u32) && last != Some(sl) {
+                out += &format!("{}// {}:{}\n", &line[..indent], name, sl + 1);
+                last = Some(sl);
+            }
+        }
+        out += line;
+        out.push('\n');
+    }
+    out
 }
 
 fn cmd_clean() -> R {

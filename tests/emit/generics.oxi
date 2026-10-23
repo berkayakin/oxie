@@ -1,0 +1,25 @@
+// Inferred `where` bounds, interfaces, data class derives and collection operations.
+
+interface Shape {
+    fun area(): f64
+}
+
+data class Square(side: f64) : Shape {
+    override fun area(): f64 = side * side
+}
+
+fun largest<T>(xs: &[T]): &T {
+    var best = &xs[0]
+    for (x in xs) {
+        if (x > best) best = x
+    }
+    best
+}
+
+fun main() {
+    val shapes = vec[Square(1.0), Square(2.5)]
+    val areas = shapes.map { it.area() }
+    println("${largest(vec[3, 9, 4])} ${areas.iter().sum::<f64>()}")
+    val big = shapes.filter { it.side > 2.0 }
+    println(big.len())
+}

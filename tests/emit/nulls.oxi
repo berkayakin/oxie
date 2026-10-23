@@ -1,0 +1,17 @@
+// `T?`, `null`, `?.`, `?:` and `if (val x = opt)`.
+
+data class Address(city: String?)
+data class User(name: String, address: Address?)
+
+fun city_len(u: &User): usize = u.address?.city?.len() ?: 0
+
+fun first_long(words: &[String]): String? = words.iter().find { it.len() > 3 }.cloned()
+
+fun main() {
+    val u = User("Ada", Address("London"))
+    val v = User("Bob", null)
+    println("${city_len(u)} ${city_len(v)}")
+    val w = first_long(vec["a".to_string(), "longer".to_string()])
+    if (val s = w) println(s.len())
+    println(first_long(vec[]) ?: "none".to_string())
+}

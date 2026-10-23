@@ -1,0 +1,25 @@
+// `error enum`, `throws`, `throw`, `?:`, `?`, `try`/`catch` and `main() throws`.
+import std::num::ParseIntError
+
+data class Item(name: String, qty: u32)
+
+error enum StockError {
+    Format(line: String) = "missing ':' in '$line'"
+    Quantity(ParseIntError)
+}
+
+fun parse_item(line: &str): Item throws StockError {
+    val (name, qty) = line.split_once(':') ?: throw StockError.Format(line.to_string())
+    val n: u32 = qty.trim().parse()?
+    return Item(name.trim().to_string(), n)
+}
+
+fun main() throws {
+    val item = parse_item("apples: 3")?
+    println("${item.name} ${item.qty}")
+    try {
+        parse_item("plums 9")?
+    } catch (e: StockError) {
+        println("skipped: $e")
+    }
+}
