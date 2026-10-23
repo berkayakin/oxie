@@ -99,6 +99,7 @@ fixes:
 |---|---|
 | use of moved value (E0382) | where it moved, and where and why the function keeps it; pass a copy, or let the function borrow |
 | dropped while borrowed (E0597, E0716) | keep the value in a `val`; for a function whose result Oxie tied to all its references, the signature that leaves this argument out |
+| borrowed text where a `String` is expected, from `?.` ... `?:` through a reference (E0308) | copy the field: `u.address?.city.clone() ?: "unknown"` |
 | assign twice / borrow as mutable (E0384, E0596) | it's a `val`; declare it with `var` |
 | behind a `&` reference (E0596) | the parameter needs `&mut` (callers updated) |
 | borrow conflicts (E0499, E0502, E0505, E0506) | where it's borrowed and still used; copy instead of borrowing |
