@@ -194,3 +194,8 @@ scopes asserted in `editors/vscode-oxie/test/grammar/*.oxi`.
 * `editors/vscode-oxie`: `npm test` runs the grammar tests, then integration tests in VS Code
   (`test/suite`) with the language server on a copy of `test/fixtures`.
 * `tests/run_e2e.sh` runs the e2e programs from the shell.
+
+`e2e.rs` and `from_rust.rs` run their programs on as many threads as there are cores. Each
+thread builds in its own `OXIE_CACHE` under `target/tmp/oxie-cache/<n>`, because builds that
+share a target directory wait for each other; `cargo clean` removes these caches. Failures are
+reported in the order of the programs' paths, as they were when the programs ran one at a time.

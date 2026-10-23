@@ -2,6 +2,9 @@
 //! compared with the matching `.out` file. Programs in `tests/diagnostics` must fail to compile
 //! with the errors listed in their `// error: <line>: <text>` comments.
 
+mod common;
+
+use common::parallel;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -41,30 +44,30 @@ fn rust_feature_coverage() {
 
 fn run_programs(rel: &str) {
     let dir = repo().join(rel);
-    let mut failures = Vec::new();
-    for p in programs(&dir) {
-        let Ok(expected) = std::fs::read_to_string(p.with_extension("out")) else { continue };
-        let out = oxie().arg("run").arg(&p).current_dir(&dir).output().unwrap();
+    let results = parallel(&programs(&dir), |p, cache| {
+        let Ok(expected) = std::fs::read_to_string(p.with_extension("out")) else { return None };
+        let out = oxie().arg("run").arg(p).current_dir(&dir).env("OXIE_CACHE", cache).output().unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
-        if stdout != expected {
-            failures.push(format!(
+        (stdout != expected).then(|| {
+            format!(
                 "{}:\n--- expected\n{}\n--- actual\n{}\n--- stderr\n{}",
                 p.display(),
                 expected,
                 stdout,
                 String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-    }
+            )
+        })
+    });
+    let failures: Vec<String> = results.into_iter().flatten().collect();
     assert!(failures.is_empty(), "{} program(s) failed:\n{}", failures.len(), failures.join("\n\n"));
 }
 
 #[test]
 fn diagnostics_point_at_oxie_sources() {
     let dir = repo().join("tests/diagnostics");
-    let mut failures = Vec::new();
-    for p in programs(&dir) {
-        let src = std::fs::read_to_string(&p).unwrap();
+    let results = parallel(&programs(&dir), |p, cache| {
+        let mut failures = Vec::new();
+        let src = std::fs::read_to_string(p).unwrap();
         let expected: Vec<(String, String)> = src
             .lines()
             .filter_map(|l| l.trim().strip_prefix("// error:"))
@@ -73,11 +76,11 @@ fn diagnostics_point_at_oxie_sources() {
                 (line.trim().to_string(), text.trim().to_string())
             })
             .collect();
-        let out = oxie().arg("run").arg(&p).current_dir(&dir).output().unwrap();
+        let out = oxie().arg("run").arg(p).current_dir(&dir).env("OXIE_CACHE", cache).output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if out.status.success() {
             failures.push(format!("{}: expected compilation to fail", p.display()));
-            continue;
+            return failures;
         }
         // user errors must never be reported as Oxie generating invalid Rust
         if stderr.contains("a bug in Oxie") {
@@ -91,7 +94,9 @@ fn diagnostics_point_at_oxie_sources() {
                 failures.push(format!("{}: missing error at line {} containing `{}`\nstderr:\n{}", p.display(), line, text, stderr));
             }
         }
-    }
+        failures
+    });
+    let failures: Vec<String> = results.into_iter().flatten().collect();
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
@@ -100,22 +105,24 @@ fn diagnostics_point_at_oxie_sources() {
 #[test]
 fn examples_run_and_test() {
     let dir = repo().join("examples");
-    let mut failures = Vec::new();
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.join("Cargo.toml").exists()).collect();
     entries.sort();
-    for ex in entries {
+    let results = parallel(&entries, |ex, _| {
+        let mut failures = Vec::new();
         if let Ok(expected) = std::fs::read_to_string(ex.join("expected.txt")) {
-            let out = oxie().arg("run").current_dir(&ex).env("TODO_FILE", "/nonexistent/todo.txt").output().unwrap();
+            let out = oxie().arg("run").current_dir(ex).env("TODO_FILE", "/nonexistent/todo.txt").output().unwrap();
             let stdout = String::from_utf8_lossy(&out.stdout);
             if stdout != expected {
                 failures.push(format!("{}:\n--- expected\n{}\n--- actual\n{}\n--- stderr\n{}", ex.display(), expected, stdout, String::from_utf8_lossy(&out.stderr)));
             }
         }
-        let out = oxie().arg("test").current_dir(&ex).output().unwrap();
+        let out = oxie().arg("test").current_dir(ex).output().unwrap();
         if !out.status.success() {
             failures.push(format!("{}: `oxie test` failed\n{}{}", ex.display(), String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
         }
-    }
+        failures
+    });
+    let failures: Vec<String> = results.into_iter().flatten().collect();
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
@@ -130,11 +137,11 @@ fn documentation_examples_run() {
     let mut docs: Vec<PathBuf> = std::fs::read_dir(root.join("docs")).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map_or(false, |e| e == "md")).collect();
     docs.sort();
     files.extend(docs);
-    let tmp = std::env::temp_dir().join(format!("oxie-doc-examples-{}", std::process::id()));
+    // the same directory every time, so the next run reuses the builds of unchanged examples
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("doc-examples");
     std::fs::create_dir_all(&tmp).unwrap();
-    let mut failures = Vec::new();
-    let mut outputs = Vec::new();
-    let mut count = 0;
+    // (file, its path relative to the repository, first line, source)
+    let mut examples = Vec::new();
     for f in files {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         let text = std::fs::read_to_string(&f).unwrap();
@@ -151,25 +158,7 @@ fn documentation_examples_run() {
             if in_block && line.trim_start().starts_with("```") {
                 in_block = false;
                 if block.contains("fun main") && !block.contains("// not-runnable") {
-                    count += 1;
-                    let name = format!("{}_{}.oxi", f.file_stem().unwrap().to_string_lossy().replace('-', "_"), start_line);
-                    let path = tmp.join(&name);
-                    std::fs::write(&path, &block).unwrap();
-                    let out = oxie().arg("run").arg(&path).current_dir(&tmp).output().unwrap();
-                    let expect_failure = block.contains("throw") && block.contains("fun main() throws") && block.contains("// exits with an error");
-                    if out.status.success() == expect_failure {
-                        failures.push(format!("{}:{}\n{}", f.display(), start_line, String::from_utf8_lossy(&out.stderr)));
-                    }
-                    // a program that exits with an error shows the `Error: ...` line main prints
-                    let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
-                    for l in String::from_utf8_lossy(&out.stderr).lines().filter(|l| expect_failure && l.starts_with("Error: ")) {
-                        output.push_str(l);
-                        output.push('\n');
-                    }
-                    // no line numbers, so editing the text around an example doesn't make this stale
-                    if !block.contains("// output varies") {
-                        outputs.push((start_line, serde_json::json!({ "file": rel, "source": block, "output": output })));
-                    }
+                    examples.push((f.clone(), rel.clone(), start_line, block.clone()));
                 }
                 continue;
             }
@@ -179,7 +168,33 @@ fn documentation_examples_run() {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&tmp);
+    let count = examples.len();
+    let results = parallel(&examples, |(f, _, start_line, block), cache| {
+        let name = format!("{}_{}.oxi", f.file_stem().unwrap().to_string_lossy().replace('-', "_"), start_line);
+        let path = tmp.join(&name);
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(block.as_str()) {
+            std::fs::write(&path, block).unwrap();
+        }
+        let out = oxie().arg("run").arg(&path).current_dir(&tmp).env("OXIE_CACHE", cache).output().unwrap();
+        let expect_failure = block.contains("throw") && block.contains("fun main() throws") && block.contains("// exits with an error");
+        let failure = (out.status.success() == expect_failure).then(|| format!("{}:{}\n{}", f.display(), start_line, String::from_utf8_lossy(&out.stderr)));
+        // a program that exits with an error shows the `Error: ...` line main prints
+        let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
+        for l in String::from_utf8_lossy(&out.stderr).lines().filter(|l| expect_failure && l.starts_with("Error: ")) {
+            output.push_str(l);
+            output.push('\n');
+        }
+        (failure, output)
+    });
+    let mut failures = Vec::new();
+    let mut outputs = Vec::new();
+    for ((_, rel, start_line, block), (failure, output)) in examples.iter().zip(results) {
+        failures.extend(failure);
+        // no line numbers, so editing the text around an example doesn't make this stale
+        if !block.contains("// output varies") {
+            outputs.push((*start_line, serde_json::json!({ "file": rel, "source": block, "output": output })));
+        }
+    }
     assert!(count > 10, "found only {} runnable examples", count);
     assert!(failures.is_empty(), "{} documentation example(s) failed:\n{}", failures.len(), failures.join("\n\n"));
 

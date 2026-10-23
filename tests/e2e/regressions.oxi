@@ -74,7 +74,7 @@ fun main() throws {
     println(op_name(Op.Sub))
 
     // `self` in an import group imports the module
-    val path = std::env::temp_dir().join("oxie_regressions_fs_self.txt")
+    val path = std::env::temp_dir().join("oxie_regressions_fs_self_${std::process::id()}.txt")
     var file = File.create(&path)?
     file.write_all(b"written")?
     println(fs.read_to_string(&path)?)

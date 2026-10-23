@@ -6,6 +6,9 @@
 //! * The `oxie emit` output of every `tests/e2e` and `tests/coverage` program is translated back
 //!   to Oxie and must still print the program's `.out` file.
 
+mod common;
+
+use common::parallel;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -32,14 +35,15 @@ fn work_dir(name: &str) -> PathBuf {
     d
 }
 
-/// Translates `rs` to `<dir>/<stem>.oxi`, runs it and returns its stdout, or a failure report.
-fn translate_and_run(rs: &Path, dir: &Path, stem: &str, cwd: &Path) -> Result<String, String> {
+/// Translates `rs` to `<dir>/<stem>.oxi`, runs it (building in `cache`) and returns its stdout,
+/// or a failure report.
+fn translate_and_run(rs: &Path, dir: &Path, stem: &str, cwd: &Path, cache: &Path) -> Result<String, String> {
     let oxi = dir.join(format!("{}.oxi", stem));
     let out = oxie().arg("from-rust").arg(rs).arg("-o").arg(&oxi).output().unwrap();
     if !out.status.success() {
         return Err(format!("{}: `oxie from-rust` failed:\n{}", rs.display(), String::from_utf8_lossy(&out.stderr)));
     }
-    let run = oxie().arg("run").arg(&oxi).current_dir(cwd).output().unwrap();
+    let run = oxie().arg("run").arg(&oxi).current_dir(cwd).env("OXIE_CACHE", cache).output().unwrap();
     if !run.status.success() && run.stdout.is_empty() {
         return Err(format!(
             "{}: the translation failed to run:\n--- oxie\n{}\n--- stderr\n{}",
@@ -56,27 +60,27 @@ fn hand_written_rust_programs() {
     let src = repo().join("tests/from_rust");
     let dir = work_dir("from_rust");
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
-    let mut failures = Vec::new();
-    let mut count = 0;
-    for rs in files(&src, "rs") {
-        count += 1;
+    let programs = files(&src, "rs");
+    let count = programs.len();
+    let results = parallel(&programs, |rs, cache| {
         let stem = rs.file_stem().unwrap().to_string_lossy().to_string();
         let bin = dir.join(format!("{}-rust", stem));
-        let c = Command::new(&rustc).args(["--edition", "2021", "-A", "warnings", "-o"]).arg(&bin).arg(&rs).output().unwrap();
+        let c = Command::new(&rustc).args(["--edition", "2021", "-A", "warnings", "-o"]).arg(&bin).arg(rs).output().unwrap();
         assert!(c.status.success(), "{} does not compile with rustc:\n{}", rs.display(), String::from_utf8_lossy(&c.stderr));
         let expected = String::from_utf8_lossy(&Command::new(&bin).output().unwrap().stdout).to_string();
-        match translate_and_run(&rs, &dir, &stem, &dir) {
-            Ok(actual) if actual == expected => {}
-            Ok(actual) => failures.push(format!(
+        match translate_and_run(rs, &dir, &stem, &dir, cache) {
+            Ok(actual) if actual == expected => None,
+            Ok(actual) => Some(format!(
                 "{}:\n--- rust printed\n{}\n--- oxie printed\n{}\n--- oxie source\n{}",
                 rs.display(),
                 expected,
                 actual,
                 std::fs::read_to_string(dir.join(format!("{}.oxi", stem))).unwrap_or_default()
             )),
-            Err(e) => failures.push(e),
+            Err(e) => Some(e),
         }
-    }
+    });
+    let failures: Vec<String> = results.into_iter().flatten().collect();
     assert!(count >= 15, "expected at least 15 programs in tests/from_rust");
     assert!(failures.is_empty(), "{} of {} program(s) failed:\n{}", failures.len(), count, failures.join("\n\n"));
 }
@@ -84,12 +88,11 @@ fn hand_written_rust_programs() {
 #[test]
 fn emitted_rust_translates_back() {
     let dir = work_dir("from_emit");
-    let mut failures = Vec::new();
-    let mut count = 0;
+    // (program, expected output, Rust source, stem, working directory)
+    let mut jobs: Vec<(PathBuf, String, PathBuf, String, PathBuf)> = Vec::new();
     for sub in ["tests/e2e", "tests/coverage"] {
         for p in files(&repo().join(sub), "oxi") {
             let Ok(expected) = std::fs::read_to_string(p.with_extension("out")) else { continue };
-            count += 1;
             let src = std::fs::read_to_string(&p).unwrap();
             let emitted = oxie().arg("emit").arg(&p).output().unwrap();
             assert!(emitted.status.success(), "oxie emit {} failed", p.display());
@@ -99,11 +102,7 @@ fn emitted_rust_translates_back() {
             let stem = format!("{}_{}", sub.trim_start_matches("tests/"), p.file_stem().unwrap().to_string_lossy());
             let rs = dir.join(format!("{}.rs", stem));
             std::fs::write(&rs, rust).unwrap();
-            match translate_and_run(&rs, &dir, &stem, &dir) {
-                Ok(actual) if actual == expected => {}
-                Ok(actual) => failures.push(format!("{}:\n--- expected\n{}\n--- actual\n{}", p.display(), expected, actual)),
-                Err(e) => failures.push(e),
-            }
+            jobs.push((p, expected, rs, stem, dir.clone()));
         }
     }
     // single-file example projects
@@ -114,7 +113,6 @@ fn emitted_rust_translates_back() {
         if files(&ex.join("src"), "oxi").len() != 1 || !ex.join("src/main.oxi").exists() {
             continue;
         }
-        count += 1;
         let manifest = std::fs::read_to_string(ex.join("Cargo.toml")).unwrap();
         let mut rust: String = manifest
             .split("[dependencies]")
@@ -132,12 +130,15 @@ fn emitted_rust_translates_back() {
         let rs = dir.join(format!("{}.rs", stem));
         std::fs::write(&rs, rust).unwrap();
         // examples read their input files relative to the project
-        match translate_and_run(&rs, &dir, &stem, &ex) {
-            Ok(actual) if actual == expected => {}
-            Ok(actual) => failures.push(format!("{}:\n--- expected\n{}\n--- actual\n{}", ex.display(), expected, actual)),
-            Err(e) => failures.push(e),
-        }
+        jobs.push((ex.clone(), expected, rs, stem, ex));
     }
+    let count = jobs.len();
+    let results = parallel(&jobs, |(p, expected, rs, stem, cwd), cache| match translate_and_run(rs, &dir, stem, cwd, cache) {
+        Ok(actual) if actual == *expected => None,
+        Ok(actual) => Some(format!("{}:\n--- expected\n{}\n--- actual\n{}", p.display(), expected, actual)),
+        Err(e) => Some(e),
+    });
+    let failures: Vec<String> = results.into_iter().flatten().collect();
     assert!(failures.is_empty(), "{} of {} program(s) failed:\n{}", failures.len(), count, failures.join("\n\n"));
 }
 
