@@ -1,0 +1,9 @@
+Some('e') ello world
+true
+Token { text: "ello world", line: 1 } true
+1
+ello world fun
+[Word("hello"), Word("world")] number
+2 Some("main") x
+11 1
+true

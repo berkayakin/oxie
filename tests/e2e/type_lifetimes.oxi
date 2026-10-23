@@ -1,0 +1,68 @@
+// Classes and enums that hold references get a lifetime parameter automatically.
+
+import std::collections::HashSet
+
+class Parser(input: &str, var pos: usize = 0) {
+    fun peek(): char? = input[pos..].chars().next()
+    fun rest(): &str = &input[pos..]
+    fun advance() { pos += 1 }
+    fun starts_any(prefixes: &Vec<&str>): bool = prefixes.iter().any { rest().starts_with(*it) }
+}
+
+data class Token(text: &str, line: usize)
+
+enum Piece {
+    Word(&str)
+    Num(i64)
+}
+
+// a field naming a type with a lifetime needs one too
+class Lexer(tokens: Vec<Token>, label: &str?) {
+    fun count(): usize = tokens.len()
+}
+
+struct Name(&str)
+
+shared class View(text: &str, var hits: i32 = 0) {
+    fun hit() { hits += 1 }
+}
+
+// a function-typed field borrows only during the call: no lifetime
+class Rule(check: (&str) -> bool)
+
+fun first(p: &Parser): Token = Token(p.rest(), 1)
+fun pick(a: &Token, b: &Token): Token = if (a.text.len() >= b.text.len()) *a else *b
+fun keyword(): Token = Token("fun", 0)
+fun word_of(p: Piece): &str = when (p) { Word(w) -> w; Num(_) -> "number" }
+fun text_of(t: Token<'_>): &str = t.text
+
+fun main() {
+    val src = "hello world".to_string()
+    var p = Parser(&src)
+    p.advance()
+    println("${p.peek():?} ${p.rest()}")
+    val prefixes = vec["he", "el"]
+    println(p.starts_any(prefixes))
+
+    val t = first(p)
+    val copy = t
+    println("${t:?} ${t == copy}")
+    var seen = HashSet()
+    seen.insert(t)
+    seen.insert(copy)
+    println(seen.len())
+
+    println("${pick(t, keyword()).text} ${text_of(keyword())}")
+    val words = src.split(" ").map { Piece.Word(it) }.collect::<Vec<_>>()
+    println("${words:?} ${word_of(Piece.Num(1))}")
+
+    val lexer = Lexer(vec[t, keyword()], "main")
+    println("${lexer.count()} ${lexer.label:?} ${Name("x").0}")
+
+    val v = View(&src)
+    v.hit()
+    println("${v.text.len()} ${v.hits}")
+
+    val r = Rule({ it.starts_with("h") })
+    println((r.check)(&src))
+}

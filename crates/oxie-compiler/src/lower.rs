@@ -725,14 +725,11 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 // `Token` for `data class Token<'a>`: spell the elided lifetime in signatures
-                if self.in_signature.get() {
-                    if let Some(c) = self.k.class(&seg.name) {
-                        if c.lifetimes > 0 && c.lifetimes == c_generic_count(c) {
-                            s.push_str(&esc(&seg.name));
-                            s.push_str(&format!("<{}>", vec!["'_"; c.lifetimes].join(", ")));
-                            continue;
-                        }
-                    }
+                let n = self.k.type_lifetimes(&seg.name);
+                if self.in_signature.get() && n > 0 {
+                    s.push_str(&esc(&seg.name));
+                    s.push_str(&format!("<{}>", vec!["'_"; n].join(", ")));
+                    continue;
                 }
             }
             let _ = pos;
@@ -1273,7 +1270,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn free_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
-        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), false);
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), false, &|n| self.k.type_lifetimes(n));
         let f = &crate::bounds::with_inferred_bounds(f, &[], &[]);
         let is_main = f.name == "main" && ctx == ItemCtx::Top && self.is_root && self.module.is_empty();
         let wrap_main = is_main && !matches!(f.throws, Throws::No);
@@ -1360,7 +1357,7 @@ impl<'a> Lowerer<'a> {
 
     fn ext_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
         let by_ref = !matches!(f.self_param, Some(SelfParam::Value { .. }) | Some(SelfParam::Typed(_)));
-        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), by_ref);
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), by_ref, &|n| self.k.type_lifetimes(n));
         let f = &crate::bounds::with_inferred_bounds(f, &[], &[]);
         let recv_ty = f.receiver.as_ref().unwrap();
         let tname = sema::ext_trait_name(&self.module, &f.name);
@@ -1427,7 +1424,7 @@ impl<'a> Lowerer<'a> {
             Some(_) => false,
             None => matches!(recv, Recv::Ref | Recv::RefMut),
         };
-        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), by_ref);
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), by_ref, &|n| self.k.type_lifetimes(n));
         let f = &match self.class.as_ref() {
             Some(c) if !f.mods.is_override && c.trait_methods.as_ref().is_some_and(|t| !t.contains(&f.name)) => {
                 let fields: Vec<(String, Type)> = c.fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
@@ -2455,29 +2452,33 @@ pub(crate) fn ends_diverging(stmts: &[Stmt]) -> bool {
 
 /// Rust can't elide the lifetime of a returned reference when there are several reference
 /// parameters (or none). Oxie ties the result to all of them (or `'static` when there are none).
-fn c_generic_count(c: &crate::sema::ClassInfo) -> usize {
-    if c.has_generics {
-        c.lifetimes
-    } else {
-        0
-    }
-}
-
-pub(crate) fn auto_lifetimes(f: &FunDecl, self_ref: bool) -> FunDecl {
-    fn count(t: &Type, n: &mut usize) {
+/// `lt` gives the lifetime parameters of a type written without them (`Token` for `Token<'a>`).
+pub(crate) fn auto_lifetimes(f: &FunDecl, self_ref: bool, lt: &dyn Fn(&str) -> usize) -> FunDecl {
+    fn count(t: &Type, n: &mut usize, lt: &dyn Fn(&str) -> usize) {
         match t {
             Type::Ref { lifetime: None, inner, .. } => {
                 *n += 1;
-                count(inner, n);
+                count(inner, n, lt);
             }
-            Type::Ref { inner, .. } | Type::Ptr { inner, .. } | Type::Slice(inner) | Type::Array(inner, _) | Type::Option(inner) => count(inner, n),
-            Type::Tuple(v) => v.iter().for_each(|t| count(t, n)),
+            Type::Ref { lifetime: Some(l), inner, .. } if l == "_" => {
+                *n += 1;
+                count(inner, n, lt);
+            }
+            Type::Ref { inner, .. } | Type::Ptr { inner, .. } | Type::Slice(inner) | Type::Array(inner, _) | Type::Option(inner) => count(inner, n, lt),
+            Type::Tuple(v) => v.iter().for_each(|t| count(t, n, lt)),
             Type::Path { segs, .. } => {
+                if let [s] = segs.as_slice() {
+                    if s.generics.is_none() {
+                        *n += lt(&s.name);
+                    }
+                }
                 for s in segs {
                     if let Some(g) = &s.generics {
                         for a in g {
-                            if let GenericArg::Type(t) = a {
-                                count(t, n);
+                            match a {
+                                GenericArg::Type(t) => count(t, n, lt),
+                                GenericArg::Lifetime(l) if l == "_" => *n += 1,
+                                _ => {}
                             }
                         }
                     }
@@ -2486,22 +2487,30 @@ pub(crate) fn auto_lifetimes(f: &FunDecl, self_ref: bool) -> FunDecl {
             _ => {}
         }
     }
-    fn set(t: &mut Type, l: &str) {
+    fn set(t: &mut Type, l: &str, lt: &dyn Fn(&str) -> usize) {
         match t {
             Type::Ref { lifetime, inner, .. } => {
-                if lifetime.is_none() {
+                if lifetime.as_deref().is_none_or(|x| x == "_") {
                     *lifetime = Some(l.to_string());
                 }
-                set(inner, l);
+                set(inner, l, lt);
             }
-            Type::Ptr { inner, .. } | Type::Slice(inner) | Type::Array(inner, _) | Type::Option(inner) => set(inner, l),
-            Type::Tuple(v) => v.iter_mut().for_each(|t| set(t, l)),
+            Type::Ptr { inner, .. } | Type::Slice(inner) | Type::Array(inner, _) | Type::Option(inner) => set(inner, l, lt),
+            Type::Tuple(v) => v.iter_mut().for_each(|t| set(t, l, lt)),
             Type::Path { segs, .. } => {
+                if let [s] = segs.as_mut_slice() {
+                    let n = lt(&s.name);
+                    if s.generics.is_none() && n > 0 {
+                        s.generics = Some(vec![GenericArg::Lifetime(l.to_string()); n]);
+                    }
+                }
                 for s in segs {
                     if let Some(g) = &mut s.generics {
                         for a in g {
-                            if let GenericArg::Type(t) = a {
-                                set(t, l);
+                            match a {
+                                GenericArg::Type(t) => set(t, l, lt),
+                                GenericArg::Lifetime(x) if x == "_" => *x = l.to_string(),
+                                _ => {}
                             }
                         }
                     }
@@ -2512,29 +2521,29 @@ pub(crate) fn auto_lifetimes(f: &FunDecl, self_ref: bool) -> FunDecl {
     }
     let Some(ret) = &f.ret else { return f.clone() };
     let mut in_ret = 0;
-    count(ret, &mut in_ret);
+    count(ret, &mut in_ret, lt);
     if in_ret == 0 || self_ref {
         return f.clone();
     }
     let mut in_params = 0;
     for p in &f.params {
-        count(&p.ty, &mut in_params);
+        count(&p.ty, &mut in_params, lt);
     }
     if in_params == 1 {
         return f.clone();
     }
     let mut f2 = f.clone();
     if in_params == 0 {
-        set(f2.ret.as_mut().unwrap(), "static");
+        set(f2.ret.as_mut().unwrap(), "static", lt);
         return f2;
     }
     let used: Vec<String> = f.generics.params.iter().filter_map(|g| if let GenericParam::Lifetime { name, .. } = g { Some(name.clone()) } else { None }).collect();
     let l = if used.iter().any(|u| u == "a") { "oxie".to_string() } else { "a".to_string() };
     f2.generics.params.insert(0, GenericParam::Lifetime { name: l.clone(), bounds: Vec::new() });
     for p in &mut f2.params {
-        set(&mut p.ty, &l);
+        set(&mut p.ty, &l, lt);
     }
-    set(f2.ret.as_mut().unwrap(), &l);
+    set(f2.ret.as_mut().unwrap(), &l, lt);
     f2
 }
 

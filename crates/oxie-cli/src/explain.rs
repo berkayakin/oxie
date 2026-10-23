@@ -33,7 +33,7 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
             d.notes.push(help("store the value in a `val` first, then borrow from that variable."));
         }
         "E0106" => {
-            d.notes.push(help("a class or enum that holds references needs a lifetime parameter: `class Parser<'a>(text: &'a str)`. Functions get their lifetimes filled in automatically; holding owned values (`String` instead of `&str`) avoids lifetimes altogether."));
+            d.notes.push(help("Oxie fills in lifetimes for functions and for classes that hold references, but not here; write them yourself (`fun f<'a>(x: &'a str): &'a str`), or hold owned values (`String` instead of `&str`) to avoid lifetimes altogether."));
         }
         "E0599" => no_method(d, &lines, &first),
         "E0433" | "E0412" | "E0425" | "E0422" | "E0423" | "E0531" | "E0532" => {

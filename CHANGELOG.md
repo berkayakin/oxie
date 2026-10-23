@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* Classes, structs and enums whose fields hold references get their lifetime parameter
+  automatically: `class Parser(input: &str)` used to produce Rust that didn't compile and now
+  becomes `struct Parser<'a> { input: &'a str }`. Functions taking or returning such types get
+  their lifetimes filled in as for references, and `data class`es holding `&str` derive `Copy`,
+  `Eq` and `Hash` when their other fields allow.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix
   written into `Cargo.toml` and build scripts, which Cargo rejected ("invalid path url").
 * `oxie init` in a crate that already has `[build-dependencies]` adds `oxie-build` to that

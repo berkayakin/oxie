@@ -457,7 +457,8 @@ What Oxie removes is the bookkeeping around it:
 * arguments for `&T` and `&mut T` parameters of Oxie functions are borrowed for you (writing
   `&v` yourself works too);
 * lifetimes are filled in when Rust can't infer them (a function returning a reference gets one
-  lifetime tied to its reference parameters);
+  lifetime tied to its reference parameters, and a class holding a `&str` gets a lifetime
+  parameter);
 * `&self`/`&mut self` are inferred, and closures that modify captured variables are declared
   `mut` for you;
 * trait bounds on type parameters are inferred from the body: `fun show<T>(x: T) = "<$x>"`

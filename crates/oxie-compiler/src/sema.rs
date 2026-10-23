@@ -53,6 +53,7 @@ pub struct ClassInfo {
     pub is_union: bool,
     /// No fields at all: the type name is also its only value (`struct Marker`, `class Dog : Animal`)
     pub is_unit: bool,
+    /// Type or const parameters (a class with only lifetimes is used without arguments).
     pub has_generics: bool,
     /// Number of type parameters (lifetimes and consts excluded).
     pub type_params: usize,
@@ -92,6 +93,9 @@ pub struct EnumInfo {
     pub module: Vec<String>,
     pub variants: Vec<(String, VariantShape)>,
     pub methods: HashMap<String, MethodInfo>,
+    /// Number of lifetime parameters (`enum Tok<'a>`).
+    pub lifetimes: usize,
+    pub has_type_params: bool,
 }
 
 impl EnumInfo {
@@ -166,6 +170,17 @@ impl Crate {
         }
         self.enums.get(name)
     }
+    /// Lifetime parameters of an Oxie class or enum whose only generics are lifetimes (`Token<'a>`),
+    /// so that a bare `Token` in a signature can be completed.
+    pub fn type_lifetimes(&self, name: &str) -> usize {
+        if let Some(c) = self.class(name) {
+            return if c.type_params == 0 { c.lifetimes } else { 0 };
+        }
+        match self.enum_(name) {
+            Some(e) if !e.has_type_params => e.lifetimes,
+            _ => 0,
+        }
+    }
     /// The enum owning a variant, if the variant name is unique among Oxie enums.
     pub fn variant_enum(&self, variant: &str) -> Option<&EnumInfo> {
         self.variant_enum_in(variant, None)
@@ -231,6 +246,150 @@ pub fn collect(units: &[SourceUnit], crate_name: &str, extern_crates: HashSet<St
     k
 }
 
+/// Generics made only of lifetimes (or none), which don't stand in the way of derives.
+fn only_lifetimes(g: &Generics) -> bool {
+    g.params.iter().all(|p| matches!(p, GenericParam::Lifetime { .. }))
+}
+
+/// A path segment without type arguments (`Token` or `Token<'a>`).
+fn no_type_args(seg: &PathSeg) -> bool {
+    seg.generics.as_ref().is_none_or(|g| g.iter().all(|a| matches!(a, GenericArg::Lifetime(_))))
+}
+
+/// Classes and enums whose fields hold references get a lifetime parameter: `class Parser(input: &str)`
+/// becomes `struct Parser<'a> { input: &'a str }`. A field naming such a type (`Vec<Token>`) needs
+/// one too, so this runs over the whole crate before symbols are collected.
+pub fn auto_type_lifetimes(files: &mut [&mut File]) {
+    fn gather<'a>(items: &'a [Item], out: &mut Vec<&'a TypeDecl>) {
+        for it in items {
+            match &it.kind {
+                ItemKind::Type(t) => {
+                    out.push(t);
+                    gather(&t.members, out);
+                }
+                ItemKind::Mod { items, .. } => gather(items, out),
+                _ => {}
+            }
+        }
+    }
+    fn needs(t: &Type, lt: &HashMap<String, usize>) -> bool {
+        match t {
+            Type::Ref { lifetime: None, .. } => true,
+            Type::Ref { inner, .. } | Type::Slice(inner) | Type::Array(inner, _) | Type::Option(inner) => needs(inner, lt),
+            Type::Tuple(v) => v.iter().any(|t| needs(t, lt)),
+            Type::Path { segs, .. } => segs.iter().any(|s| match &s.generics {
+                None => segs.len() == 1 && lt.contains_key(&s.name),
+                Some(g) => g.iter().any(|a| matches!(a, GenericArg::Type(t) if needs(t, lt))),
+            }),
+            _ => false,
+        }
+    }
+    fn fill(t: &mut Type, lt: &HashMap<String, usize>) {
+        match t {
+            Type::Ref { lifetime, inner, .. } => {
+                if lifetime.is_none() {
+                    *lifetime = Some("a".into());
+                }
+                fill(inner, lt);
+            }
+            Type::Slice(inner) | Type::Array(inner, _) | Type::Option(inner) => fill(inner, lt),
+            Type::Tuple(v) => v.iter_mut().for_each(|t| fill(t, lt)),
+            Type::Path { segs, .. } => {
+                let single = segs.len() == 1;
+                for s in segs {
+                    match &mut s.generics {
+                        None if single => {
+                            if let Some(&n) = lt.get(&s.name) {
+                                s.generics = Some(vec![GenericArg::Lifetime("a".into()); n]);
+                            }
+                        }
+                        Some(g) => {
+                            for a in g {
+                                if let GenericArg::Type(t) = a {
+                                    fill(t, lt);
+                                }
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn field_types(t: &mut TypeDecl) -> Vec<&mut Type> {
+        let mut v: Vec<&mut Type> = t.fields.iter_mut().map(|f| &mut f.ty).collect();
+        v.extend(t.tuple_fields.iter_mut().map(|(_, ty)| ty));
+        for var in &mut t.variants {
+            match &mut var.fields {
+                VariantFields::Unit => {}
+                VariantFields::Tuple(ts) => v.extend(ts.iter_mut()),
+                VariantFields::Named(fs) => v.extend(fs.iter_mut().map(|f| &mut f.ty)),
+            }
+        }
+        v
+    }
+    fn apply(items: &mut [Item], auto: &HashSet<String>, lt: &HashMap<String, usize>) {
+        for it in items {
+            match &mut it.kind {
+                ItemKind::Type(t) => {
+                    if t.generics.is_empty() && auto.contains(&t.name) {
+                        t.generics.params.push(GenericParam::Lifetime { name: "a".into(), bounds: Vec::new() });
+                        for ty in field_types(t) {
+                            fill(ty, lt);
+                        }
+                    }
+                    apply(&mut t.members, auto, lt);
+                }
+                ItemKind::Mod { items, .. } => apply(items, auto, lt),
+                _ => {}
+            }
+        }
+    }
+
+    let mut lt: HashMap<String, usize> = HashMap::new();
+    let mut auto: HashSet<String> = HashSet::new();
+    {
+        let mut decls = Vec::new();
+        for f in files.iter() {
+            gather(&f.items, &mut decls);
+        }
+        for t in &decls {
+            let n = t.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count();
+            if n > 0 && only_lifetimes(&t.generics) {
+                lt.insert(t.name.clone(), n);
+            }
+        }
+        let has_ref = |t: &TypeDecl, lt: &HashMap<String, usize>| {
+            t.fields.iter().map(|f| &f.ty).chain(t.tuple_fields.iter().map(|(_, ty)| ty)).any(|ty| needs(ty, lt))
+                || t.variants.iter().any(|v| match &v.fields {
+                    VariantFields::Unit => false,
+                    VariantFields::Tuple(ts) => ts.iter().any(|ty| needs(ty, lt)),
+                    VariantFields::Named(fs) => fs.iter().any(|f| needs(&f.ty, lt)),
+                })
+        };
+        loop {
+            let mut changed = false;
+            for t in &decls {
+                if t.generics.is_empty() && !auto.contains(&t.name) && has_ref(t, &lt) {
+                    auto.insert(t.name.clone());
+                    lt.insert(t.name.clone(), 1);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+    if auto.is_empty() {
+        return;
+    }
+    for f in files.iter_mut() {
+        apply(&mut f.items, &auto, &lt);
+    }
+}
+
 fn has_attr(attrs: &[Attr], name: &str) -> bool {
     attrs.iter().any(|a| a.name() == name)
 }
@@ -268,7 +427,7 @@ fn compute_derives(k: &mut Crate, units: &[SourceUnit]) {
         v
     };
     let eligible = |t: &TypeDecl, attrs: &[Attr]| {
-        !t.is_error && !has_attr(attrs, "no_auto_derive") && matches!(t.kind, TypeKind::Data | TypeKind::Enum) && t.generics.is_empty()
+        !t.is_error && !has_attr(attrs, "no_auto_derive") && matches!(t.kind, TypeKind::Data | TypeKind::Enum) && only_lifetimes(&t.generics)
     };
     for _ in 0..6 {
         let mut changed = false;
@@ -297,11 +456,11 @@ fn compute_derives(k: &mut Crate, units: &[SourceUnit]) {
         } else if has_attr(attrs, "no_auto_derive") {
         } else if matches!(t.kind, TypeKind::Data | TypeKind::Enum) {
             d.extend(["Debug", "Clone"].iter().map(|s| s.to_string()));
-            if t.generics.is_empty() && copy.contains(&t.name) {
+            if only_lifetimes(&t.generics) && copy.contains(&t.name) {
                 d.push("Copy".into());
             }
             d.push("PartialEq".into());
-            if t.generics.is_empty() && hash.contains(&t.name) {
+            if only_lifetimes(&t.generics) && hash.contains(&t.name) {
                 d.push("Eq".into());
                 d.push("Hash".into());
             }
@@ -444,7 +603,7 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                         is_unit: t.kind != TypeKind::Union && !t.shared && t.fields.is_empty() && t.tuple_fields.is_empty(),
                         is_shared: t.shared,
                         is_sync: t.shared && it.attrs.iter().any(|a| a.name() == "sync"),
-                        has_generics: !t.generics.is_empty(),
+                        has_generics: !only_lifetimes(&t.generics),
                         type_params: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Type { .. })).count(),
                         lifetimes: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count(),
                     };
@@ -473,7 +632,15 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                             methods.insert(f.name.clone(), mi);
                         }
                     }
-                    insert_unique(&mut k.enums, &mut k.ambiguous, t.name.clone(), EnumInfo { name: t.name.clone(), module: module.to_vec(), variants, methods });
+                    let info = EnumInfo {
+                        name: t.name.clone(),
+                        module: module.to_vec(),
+                        variants,
+                        methods,
+                        lifetimes: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count(),
+                        has_type_params: !only_lifetimes(&t.generics),
+                    };
+                    insert_unique(&mut k.enums, &mut k.ambiguous, t.name.clone(), info);
                 }
             },
             ItemKind::Mod { name, items } => {
@@ -1027,12 +1194,12 @@ pub fn is_copy_simple(t: &Type, copy_types: &HashSet<String>) -> bool {
                     return g.iter().all(|a| matches!(a, GenericArg::Type(t) if is_copy_simple(t, copy_types)));
                 }
             }
-            segs[0].generics.is_none() && copy_types.contains(n)
+            no_type_args(&segs[0]) && copy_types.contains(n)
         }
         Type::Option(inner) => is_copy_simple(inner, copy_types),
         Type::Tuple(v) => v.iter().all(|t| is_copy_simple(t, copy_types)),
         Type::Array(inner, _) => is_copy_simple(inner, copy_types),
-        Type::Ref { mutable: false, lifetime: Some(l), .. } if l == "static" => true,
+        Type::Ref { mutable: false, .. } => true,
         _ => false,
     }
 }
@@ -1049,7 +1216,7 @@ pub fn is_hash_simple(t: &Type, hash_types: &HashSet<String>) -> bool {
             if matches!(n, "Vec" | "Option" | "Box" | "BTreeMap" | "BTreeSet" | "Rc" | "Arc") {
                 return args_ok(&segs[0]);
             }
-            segs[0].generics.is_none() && hash_types.contains(n)
+            no_type_args(&segs[0]) && hash_types.contains(n)
         }
         Type::Option(inner) => is_hash_simple(inner, hash_types),
         Type::Tuple(v) => v.iter().all(|t| is_hash_simple(t, hash_types)),

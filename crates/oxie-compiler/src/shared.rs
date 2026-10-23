@@ -175,7 +175,7 @@ impl<'a> Lowerer<'a> {
     /// `fn name(&self, a: A) -> R { self.0.borrow_mut().name(a) }`
     fn forwarder(&mut self, it: &Item, f: &FunDecl, recv: Recv, vis: &str, read: &str, write: &str) {
         let trait_ret = self.pending_trait_ret.take();
-        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), true);
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), true, &|n| self.k.type_lifetimes(n));
         let f = &match self.class.as_ref() {
             Some(c) if !f.mods.is_override => {
                 let fields: Vec<(String, Type)> = c.fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect();

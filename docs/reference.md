@@ -97,7 +97,8 @@ fun short(x: i32) = x * 2
   parameter it borrows from, Oxie ties the result to all reference parameters
   (`fun longest(a: &str, b: &str): &str` → `fn longest<'a>(a: &'a str, b: &'a str) -> &'a str`).
   With no reference parameters the result is `'static`. Types with lifetime parameters get
-  `<'_>` in signatures.
+  `<'_>` in signatures, and count as references here (`fun first(p: &Parser): Token` →
+  `fn first<'a>(p: &'a Parser<'a>) -> Token<'a>`).
 * **Function-typed parameters**: `f: (i32) -> i32` becomes `impl FnMut(i32) -> i32` (or
   `impl Fn` when the function is called from inside a closure); as a field, a return value
   stored in a variable, or a generic argument it becomes `Box<dyn Fn(i32) -> i32>`, and
@@ -157,6 +158,10 @@ class Name<T>(val a: A, var b: B = default, private c: C) : Interface, Hash {
   `Copy`, `PartialEq`, `Eq`, `Hash`, `Default`, `PartialOrd`, `Ord`) without methods in the
   body become derives. `override fun toString() = "..."` implements `Display`.
 * `@derive(...)` adds derives; `@no_auto_derive` turns the automatic ones off.
+* **Reference fields**: a class, struct or enum whose fields hold references without a lifetime
+  (`&str`, `Vec<&T>`, `&str?`, or another such type) gets one: `class Parser(input: &str)` →
+  `struct Parser<'a> { input: &'a str }`. Write the type as `Parser`; signatures spell it
+  `Parser<'_>`. Declaring lifetimes yourself (`class Pair<'a, 'b>`) turns this off.
 * Rust-style `struct Point { x: f64, y: f64 }`, tuple structs `struct Meters(f64)` and unit
   structs `struct Marker` are supported. A type without fields is also its own value, so
   `Marker.describe()` calls a method on it (static functions are still `Marker.create()`).
