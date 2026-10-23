@@ -80,11 +80,14 @@ fun main() {
         Ok(text) -> println(text)
         Err(e) -> {
             println("error: $e")
+            // count the causes: their messages come from the OS and differ between systems
+            var causes = 0
             var source = e.source()
             while (val s = source) {
-                println("  caused by: $s")
+                causes += 1
                 source = s.source()
             }
+            println("  causes: $causes")
         }
     }
     val port = parse_port("0") ?: 80

@@ -9,6 +9,6 @@ caught: invalid digit found in string
 result: -1
 ok: 9
 error: could not read config file '/definitely/not/here.toml'
-  caused by: No such file or directory (os error 2)
+  causes: 1
 fallback port: 80
 parsed: 42
