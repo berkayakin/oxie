@@ -136,6 +136,16 @@ Notable translations:
   Oxie can't see into, type parameters and `Rc`/`Arc` (whose counts can be observed) keep it
   owned, and the note names the element type as the cause. `kept_reason` reports the
   first use that keeps a parameter owned ("it returns `v`"), for the explanation of E0382.
+* **Arguments that change `this`** (`move_args_changing_this` in `lower_expr.rs`): for a
+  statement, block tail, `when` arm or lambda body that calls a method on a field of `this`,
+  `calls_changing_this` walks the arguments in Rust's evaluation order and collects the calls
+  of `&mut self` methods of `this`. It gives up when one may not run (in a lambda, an `if`,
+  after `&&` or `?.`) or when something that could notice the new order (a call, a field read,
+  an operator) runs before one. Each call becomes a `let` named after its method (`next_id`,
+  then `next_id_2`, avoiding locals, functions and imports of that name), and the statement
+  reads the locals. Only for receivers the call borrows (`borrowed_by`), so every statement
+  this changes is one rustc rejects. A statement with attributes stays as written
+  (`keep_args`): `#[cfg(test)]` on the first `let` alone would leave the call without it.
 * **Inferred bounds** (`bounds.rs`): before a function or method signature is emitted, its
   body is scanned for uses of values of a type parameter (parameters typed `T`/`&T`, elements of
   `&[T]`/`Vec<T>` in `for` loops, lambdas over such collections, `val y = x` aliases) and the

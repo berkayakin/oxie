@@ -167,8 +167,10 @@ terminal and reports the generated file.
 
 Some of the generated Rust isn't spelled out in the source: `&mut self` for a method that
 changes its object, `&str` or `&[T]` for a `String` or `Vec` parameter that a function only
-reads, a lifetime for a function that returns a reference, and the `&` or `&mut` of an
-argument or a loop. `oxie emit --annotate` shows each of these choices where it lands, with
+reads, a lifetime for a function that returns a reference, the `&` or `&mut` of an argument
+or a loop, and an argument computed before its call because it changes `this`
+(`let next_id = self.next_id(); /* oxie: computed first because ... */`). `oxie emit --annotate`
+shows each of these choices where it lands, with
 the reason:
 
 ```rust

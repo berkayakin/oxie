@@ -1,0 +1,7 @@
+None None
+None None
+[1, 20, 3, 10, 11, 0, 13, 14] [Task { id: 4, name: "write" }, Task { id: 15, name: "x" }, Task { id: 16, name: "y" }] [(5, 6)] [7]
+[(8, "a"), (9, "b"), (12, "picked")]
+16 16 17
+[1]
+[1, 2]

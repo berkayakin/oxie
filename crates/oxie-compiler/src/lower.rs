@@ -257,6 +257,9 @@ pub struct Lowerer<'a> {
     pub(crate) reused_iters: HashMap<u32, Option<u32>>,
     /// Lowering a method that takes `self` by value, so its fields can be moved out.
     pub(crate) self_by_value: bool,
+    /// The next statement has attributes (`@cfg(test)`), which must cover all of it, so its
+    /// arguments stay in place (see `move_args_changing_this`).
+    pub(crate) keep_args: bool,
     /// What happened to the `String`/`Vec` parameters of this file's functions that could be
     /// lent, by (the function's name span, parameter index).
     pub param_notes: HashMap<(Span, usize), crate::params::ParamNote>,
@@ -328,6 +331,7 @@ impl<'a> Lowerer<'a> {
             next_lambda_refs: false,
             reused_iters: HashMap::new(),
             self_by_value: false,
+            keep_args: false,
             param_notes: HashMap::new(),
         }
     }
@@ -2528,7 +2532,7 @@ pub(crate) fn int_suffix(s: &str) -> Option<&'static str> {
     ["i128", "u128", "isize", "usize", "i64", "u64", "i32", "u32", "i16", "u16", "i8", "u8", "f32", "f64"].into_iter().find(|&suf| s.ends_with(suf) && !s.starts_with("0x")).map(|v| v as _)
 }
 
-fn infer_field_type(e: &Expr) -> Option<Type> {
+pub(crate) fn infer_field_type(e: &Expr) -> Option<Type> {
     match &e.kind {
         ExprKind::Str(_) | ExprKind::Template(_) => Some(Type::simple("String")),
         ExprKind::Call { callee, args } => {

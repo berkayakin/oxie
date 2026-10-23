@@ -482,8 +482,37 @@ What Oxie removes is the bookkeeping around it:
   `mut` for you;
 * `for (x in xs)` borrows `xs` when it is used after the loop, so iterating doesn't use up the
   list;
+* a call on a field whose argument changes the same object runs that argument first (below);
 * trait bounds on type parameters are inferred from the body: `fun show<T>(x: T) = "<$x>"`
   becomes `fn show<T>(x: T) -> String where T: Display`.
+
+Rust rejects `self.items.push(self.next_id())` when `next_id` changes `self`: it borrows
+`items` for the call before it runs the argument. Oxie computes such an argument first, as you
+would by hand in Rust:
+
+```oxie
+class Ids {
+    var items: Vec<usize> = vec[]
+    var next: usize = 0
+
+    fun next_id(): usize {
+        next += 1
+        return next
+    }
+
+    // let next_id = self.next_id(); self.items.push(next_id);
+    fun add() = items.push(next_id())
+}
+
+fun main() {
+    var ids = Ids()
+    ids.add()
+    ids.add()
+    println("${ids.items:?}")
+}
+```
+
+It does this only where the new order can't be noticed, so a statement keeps doing what it says.
 
 When the borrow checker still says no, the error is explained in Oxie terms, with fixes. Here
 `register` stores the name in a list, so it has to own it:

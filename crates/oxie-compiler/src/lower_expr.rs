@@ -85,6 +85,59 @@ fn has_safe_link(e: &Expr) -> bool {
     links.iter().any(|l| link_is_safe(l))
 }
 
+/// Std types that are never `Copy`: a method call on a field of one borrows the field (or moves
+/// it out of `this`, which rustc rejects too).
+const NEVER_COPY: &[&str] = &[
+    "String", "Vec", "VecDeque", "LinkedList", "HashMap", "HashSet", "BTreeMap", "BTreeSet", "BinaryHeap", "Box", "Rc", "Arc",
+    "Cell", "RefCell", "Mutex", "RwLock",
+];
+
+/// The method or function a call like `next_id()`, `this.next_id()` or `next_id()?` calls.
+fn called_name(e: &Expr) -> Option<&str> {
+    match &e.kind {
+        ExprKind::Try(x) | ExprKind::Unwrap(x) | ExprKind::Await(x) => called_name(x),
+        ExprKind::Call { callee, .. } => callee.ident(),
+        ExprKind::MethodCall { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+/// Replaces the calls at the `moved` spans with the locals they were moved into, in the parts
+/// of an expression that `calls_changing_this` looks at.
+fn replace_moved(e: &mut Expr, moved: &[(Span, String)]) {
+    if let Some((_, name)) = moved.iter().find(|(s, _)| *s == e.span).filter(|_| called_name(e).is_some()) {
+        *e = Expr::new(ExprKind::Path { segs: vec![name.clone()], generics: None, global: false }, e.span);
+        return;
+    }
+    match &mut e.kind {
+        ExprKind::Call { args, .. } => args.iter_mut().for_each(|a| replace_moved(&mut a.value, moved)),
+        ExprKind::MethodCall { recv, args, .. } => {
+            replace_moved(recv, moved);
+            args.iter_mut().for_each(|a| replace_moved(&mut a.value, moved));
+        }
+        ExprKind::Paren(x) | ExprKind::Cast(x, _) | ExprKind::Unary(_, x) | ExprKind::Field { recv: x, .. } | ExprKind::Try(x) | ExprKind::Unwrap(x) | ExprKind::Await(x) => replace_moved(x, moved),
+        ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) | ExprKind::Pair(a, b) => {
+            replace_moved(a, moved);
+            replace_moved(b, moved);
+        }
+        ExprKind::Template(parts) => {
+            for p in parts {
+                if let TemplatePart::Expr(x, _) = p {
+                    replace_moved(x, moved);
+                }
+            }
+        }
+        ExprKind::Tuple(v) | ExprKind::Array(v) | ExprKind::VecLit(v) | ExprKind::SetLit(v) | ExprKind::MapLit(v) => v.iter_mut().for_each(|x| replace_moved(x, moved)),
+        ExprKind::StructLit { fields, base, .. } => {
+            fields.iter_mut().filter_map(|(_, v)| v.as_mut()).for_each(|v| replace_moved(v, moved));
+            if let Some(b) = base {
+                replace_moved(b, moved);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl<'a> Lowerer<'a> {
     // ------------------------------------------------------------------ statements
 
@@ -102,7 +155,7 @@ impl<'a> Lowerer<'a> {
             if Some(i) == tail_idx {
                 if let Stmt::Expr { expr, .. } = s {
                     self.e.mark(expr.span);
-                    self.tail(expr, tail.unwrap());
+                    self.tail_moving_args(expr, tail.unwrap());
                 }
             } else {
                 self.stmt(s);
@@ -113,17 +166,33 @@ impl<'a> Lowerer<'a> {
     fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Let { pat, mutable: _, ty, init, else_, span } => {
+                if let Some(init) = init.as_ref().filter(|_| else_.is_none()) {
+                    let mut taken = Vec::new();
+                    pat.bindings(&mut taken);
+                    if let Some((init, bound)) = self.move_args_changing_this(init, &taken) {
+                        self.e.mark(*span);
+                        self.let_stmt(pat, ty.as_ref(), Some(&init), None);
+                        self.unbind_moved(bound);
+                        return;
+                    }
+                }
                 self.e.mark(*span);
                 self.let_stmt(pat, ty.as_ref(), init.as_ref(), else_.as_ref());
             }
             Stmt::Expr { expr, semi } => {
+                if let Some((e, bound)) = self.move_args_changing_this(expr, &[]) {
+                    self.stmt(&Stmt::Expr { expr: e, semi: *semi });
+                    self.unbind_moved(bound);
+                    return;
+                }
                 self.e.mark(expr.span);
                 if self.in_throwing_fn() && self.is_throwing_call(expr) {
                     self.expr(expr, P_POSTFIX);
                     self.e.w("?;");
                     return;
                 }
-                let block_like = self.stmt_expr(expr);
+                // the arguments were moved out above, or stay (`keep_args`)
+                let block_like = self.stmt_expr_here(expr);
                 if !block_like || *semi {
                     self.e.w(";");
                 }
@@ -136,7 +205,9 @@ impl<'a> Lowerer<'a> {
                     self.e.w(&format!("#[{}]", a));
                     self.e.nl();
                 }
+                self.keep_args = matches!(**stmt, Stmt::Expr { .. } | Stmt::Let { init: Some(_), else_: None, .. });
                 self.stmt(stmt);
+                self.keep_args = false;
             }
         }
     }
@@ -179,6 +250,241 @@ impl<'a> Lowerer<'a> {
         self.e.w(";");
         let known = ty.cloned().or_else(|| init.and_then(|e| self.infer_type(e))).or_else(|| init.and_then(|e| self.generic_ctor_type(e)));
         self.bind_pat(pat, known);
+    }
+
+    /// The calls to move into locals before a statement `e` that calls a method on a field of
+    /// `this` (`items.push(next_id())`) whose arguments call methods of `this` taking `&mut self`.
+    /// Rust borrows the field for the call before it runs the arguments, so rustc rejects the
+    /// statement as written. Only when the call borrows the field (`borrowed_by`): a `Copy`
+    /// field would be copied first and the statement compile. Also returns the field's name.
+    fn args_changing_this<'e>(&self, e: &'e Expr) -> Option<(Vec<&'e Expr>, &'e str)> {
+        let ExprKind::MethodCall { recv, name, args, safe: false, .. } = &e.kind else { return None };
+        let c = self.class.as_ref()?;
+        if c.is_static || self.self_by_value || args.iter().any(|a| a.name.is_some()) {
+            return None;
+        }
+        let field = match &recv.kind {
+            ExprKind::Field { recv: r, name: f, safe: false } if matches!(r.kind, ExprKind::SelfValue) => f.as_str(),
+            _ => recv.ident().filter(|n| self.implicit_field(n).is_some())?,
+        };
+        let ty = match c.fields.get(field)? {
+            // a property without a type has the type of its default (`var cart = Cart()`)
+            Type::Infer => self.class_info(&c.name)?.fields.iter().find(|f| f.name == field)?.default.as_ref().and_then(infer_field_type)?,
+            t => t.clone(),
+        };
+        if !self.borrowed_by(&ty, name) {
+            return None;
+        }
+        let mut calls = Vec::new();
+        let mut ran = false;
+        for a in args {
+            self.calls_changing_this(&a.value, &mut calls, &mut ran)?;
+        }
+        (!calls.is_empty()).then_some((calls, field))
+    }
+
+    /// Does calling `method` on a field of type `ty` borrow the field? Yes when the type is never
+    /// `Copy` (`never_copy`), and for an Oxie type whose `method` takes `&self` or `&mut self`.
+    fn borrowed_by(&self, ty: &Type, method: &str) -> bool {
+        if self.never_copy(ty) {
+            return true;
+        }
+        let Some(n) = ty.single_name() else { return false };
+        let m = self.class_info(n).and_then(|c| c.methods.get(method)).or_else(|| self.enum_info(n).and_then(|e| e.methods.get(method)));
+        m.is_some_and(|m| matches!(m.recv, Recv::Ref | Recv::RefMut))
+    }
+
+    /// Is `ty` never `Copy`: a std collection, `String`, `Box`, `&mut T`, a `shared class`
+    /// handle, or an `Option` of one?
+    fn never_copy(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Ref { mutable, .. } => *mutable,
+            Type::Option(inner) => self.never_copy(inner),
+            Type::Path { segs, .. } if segs.len() == 1 => {
+                let s = &segs[0];
+                match s.name.as_str() {
+                    "Option" => matches!(s.generics.as_deref(), Some([GenericArg::Type(t)]) if self.never_copy(t)),
+                    n if self.k.is_user_type(n) => self.class_info(n).is_some_and(|c| c.is_shared),
+                    n => NEVER_COPY.contains(&n),
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Is `e` a call of a method of `this` that takes `&mut self` (`next_id()`, `this.next_id()`,
+    /// with the `?`, `!!` or `.await` after it)?
+    fn changes_this(&self, e: &Expr) -> bool {
+        let name = match &e.kind {
+            ExprKind::Try(x) | ExprKind::Unwrap(x) | ExprKind::Await(x) => return self.changes_this(x),
+            ExprKind::Call { callee, .. } => match callee.ident() {
+                Some(n) if !self.is_local(n) && self.implicit_field(n).is_none() => n,
+                _ => return false,
+            },
+            ExprKind::MethodCall { recv, name, safe: false, .. } if matches!(recv.kind, ExprKind::SelfValue) => name.as_str(),
+            _ => return false,
+        };
+        self.class.as_ref().and_then(|c| c.methods.get(name)).is_some_and(|m| m.recv == Recv::RefMut)
+    }
+
+    /// Walks an argument in the order Rust runs it and collects the calls that change `this`
+    /// (`changes_this`), to move into locals. `ran` says that something already ran that could
+    /// tell those calls ran earlier: a call, a read of a field, an operator. None leaves the
+    /// statement as it is: such a call after something like that, or one that may not run at
+    /// all (in a lambda, an `if`, after `&&` or `?.`).
+    fn calls_changing_this<'e>(&self, e: &'e Expr, calls: &mut Vec<&'e Expr>, ran: &mut bool) -> Option<()> {
+        if self.changes_this(e) {
+            if *ran {
+                return None;
+            }
+            calls.push(e);
+            return Some(());
+        }
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Str(_) | ExprKind::RawStr(_) | ExprKind::Null => {}
+            // a local or a constant can't change, a field of `this` can
+            ExprKind::Path { .. } => *ran |= e.ident().is_some_and(|n| self.implicit_field(n).is_some()),
+            ExprKind::Paren(x) | ExprKind::Cast(x, _) | ExprKind::Unary(UnOp::Ref | UnOp::RefMut, x) => self.calls_changing_this(x, calls, ran)?,
+            ExprKind::Pair(a, b) => {
+                self.calls_changing_this(a, calls, ran)?;
+                self.calls_changing_this(b, calls, ran)?;
+            }
+            ExprKind::Tuple(v) | ExprKind::Array(v) | ExprKind::VecLit(v) | ExprKind::SetLit(v) | ExprKind::MapLit(v) => {
+                for x in v {
+                    self.calls_changing_this(x, calls, ran)?;
+                }
+            }
+            ExprKind::StructLit { fields, base, .. } => {
+                for (n, v) in fields {
+                    match v {
+                        Some(v) => self.calls_changing_this(v, calls, ran)?,
+                        None => *ran |= self.implicit_field(n).is_some(),
+                    }
+                }
+                if let Some(b) = base {
+                    self.calls_changing_this(b, calls, ran)?;
+                }
+            }
+            // the operands, then the operation itself (which may be a user's `Add::add`)
+            ExprKind::Binary(op, a, b) if !matches!(op, BinOp::And | BinOp::Or) => {
+                self.calls_changing_this(a, calls, ran)?;
+                self.calls_changing_this(b, calls, ran)?;
+                *ran = true;
+            }
+            ExprKind::Index(a, b) => {
+                self.calls_changing_this(a, calls, ran)?;
+                self.calls_changing_this(b, calls, ran)?;
+                *ran = true;
+            }
+            ExprKind::Unary(_, x) | ExprKind::Try(x) | ExprKind::Unwrap(x) | ExprKind::Await(x) | ExprKind::Field { recv: x, safe: false, .. } => {
+                self.calls_changing_this(x, calls, ran)?;
+                *ran = true;
+            }
+            ExprKind::Template(parts) => {
+                for p in parts {
+                    if let TemplatePart::Expr(x, _) = p {
+                        self.calls_changing_this(x, calls, ran)?;
+                    }
+                }
+                *ran = true;
+            }
+            ExprKind::Call { callee, args } if matches!(callee.kind, ExprKind::Path { .. }) && args.iter().all(|a| a.name.is_none()) => {
+                for a in args {
+                    self.calls_changing_this(&a.value, calls, ran)?;
+                }
+                *ran = true;
+            }
+            ExprKind::MethodCall { recv, args, safe: false, .. } if args.iter().all(|a| a.name.is_none()) => {
+                self.calls_changing_this(recv, calls, ran)?;
+                for a in args {
+                    self.calls_changing_this(&a.value, calls, ran)?;
+                }
+                *ran = true;
+            }
+            _ => {
+                let mut inside = false;
+                visit::walk_expr(e, &mut |x| {
+                    inside |= self.changes_this(x);
+                    !inside
+                });
+                if inside {
+                    return None;
+                }
+                *ran = true;
+            }
+        }
+        Some(())
+    }
+
+    /// Moves the calls that change `this` out of the statement `e` (`args_changing_this`): emits
+    /// a `let` for each, named after its method (`let next_id = self.next_id();`), and returns
+    /// `e` reading the locals, which stay bound until `unbind_moved`. `taken`: names the
+    /// statement itself binds.
+    fn move_args_changing_this(&mut self, e: &Expr, taken: &[String]) -> Option<(Expr, Vec<(String, Option<Option<Type>>)>)> {
+        if std::mem::take(&mut self.keep_args) {
+            return None;
+        }
+        let (calls, field) = self.args_changing_this(e)?;
+        let (calls, field): (Vec<Expr>, String) = (calls.into_iter().cloned().collect(), field.to_string());
+        let method = called_name(e).unwrap_or_default().to_string();
+        let mut moved: Vec<(Span, String)> = Vec::new();
+        for c in &calls {
+            let base = called_name(c).unwrap_or("value").to_string();
+            // a later use of a variable or function of that name would get the local instead
+            let taken_here = |n: &str| {
+                self.is_local(n) || self.fun_info(n).is_some() || self.k.imports.contains_key(&(self.module.clone(), n.to_string())) || n == "drop" || taken.iter().any(|t| t == n) || moved.iter().any(|(_, m)| m == n)
+            };
+            let mut name = base.clone();
+            let mut i = 2;
+            while taken_here(&name) {
+                name = format!("{}_{}", base, i);
+                i += 1;
+            }
+            self.e.mark(c.span);
+            self.e.w(&format!("let {} = ", esc(&name)));
+            self.expr(c, P_LOWEST);
+            self.e.w(";");
+            let cause = self.class.as_ref().and_then(|cl| cl.methods.get(&base)).and_then(|m| m.recv_why.as_ref()).and_then(|(_, at)| *at);
+            self.e.decide(c.span, "computed first", format!("`{}()` changes `this` while `{}` is borrowed for `.{}()`", base, field, method), cause);
+            self.e.nl();
+            moved.push((c.span, name));
+        }
+        self.e.mark(e.span);
+        let mut out = e.clone();
+        replace_moved(&mut out, &moved);
+        let mut bound = Vec::new();
+        for (c, (_, name)) in calls.iter().zip(&moved) {
+            let ty = self.moved_type(c);
+            let prev = self.scopes.last_mut().unwrap().insert(name.clone(), ty);
+            bound.push((name.clone(), prev));
+        }
+        Some((out, bound))
+    }
+
+    /// The type of a call moved into a local, when it is clear: the method's result, also after
+    /// `?` on a throwing method and `!!` on an optional result.
+    fn moved_type(&self, c: &Expr) -> Option<Type> {
+        let m = self.class.as_ref()?.methods.get(called_name(c)?)?;
+        match &c.kind {
+            ExprKind::Try(_) if m.throws => m.ret.clone(),
+            ExprKind::Unwrap(_) => match m.ret.clone()? {
+                Type::Option(t) => Some(*t),
+                _ => None,
+            },
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. } if !m.throws => m.ret.clone(),
+            _ => None,
+        }
+    }
+
+    /// Ends the bindings that `move_args_changing_this` made for its statement.
+    fn unbind_moved(&mut self, bound: Vec<(String, Option<Option<Type>>)>) {
+        let scope = self.scopes.last_mut().unwrap();
+        for (name, prev) in bound.into_iter().rev() {
+            match prev {
+                Some(t) => scope.insert(name, t),
+                None => scope.remove(&name),
+            };
+        }
     }
 
     /// Should `for (x in iter)` borrow `iter`? Yes for an owned collection in a local variable that
@@ -251,8 +557,30 @@ impl<'a> Lowerer<'a> {
         Some(Type::Path { global: false, segs: vec![seg], span: Span::default() })
     }
 
-    /// Emits an expression in statement position. Returns true if it is block-like (no `;` needed).
+    /// Emits an expression in statement position: at the start of a statement in braces (a
+    /// statement, a `when` arm, the body of `repeat { }`), so the calls that change `this` can be
+    /// moved out first (`move_args_changing_this`). Returns true if it is block-like (no `;`
+    /// needed).
     fn stmt_expr(&mut self, e: &Expr) -> bool {
+        let moved = self.move_args_changing_this(e, &[]);
+        let block_like = self.stmt_expr_here(moved.as_ref().map_or(e, |(m, _)| m));
+        if let Some((_, bound)) = moved {
+            self.unbind_moved(bound);
+        }
+        block_like
+    }
+
+    /// `tail` at the start of a statement in braces, with the calls that change `this` moved out
+    /// first (`move_args_changing_this`).
+    fn tail_moving_args(&mut self, e: &Expr, t: &Target) {
+        let moved = self.move_args_changing_this(e, &[]);
+        self.tail(moved.as_ref().map_or(e, |(m, _)| m), t);
+        if let Some((_, bound)) = moved {
+            self.unbind_moved(bound);
+        }
+    }
+
+    fn stmt_expr_here(&mut self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::If { cond, then, else_ } => {
                 self.if_expr(cond, then, else_.as_deref(), None);
@@ -297,7 +625,7 @@ impl<'a> Lowerer<'a> {
                 self.expr(&r, P_LOWEST);
                 false
             }
-            ExprKind::Paren(x) => self.stmt_expr(x),
+            ExprKind::Paren(x) => self.stmt_expr_here(x),
             ExprKind::Call { callee, args } if callee.ident() == Some("run") && self.is_builtin_call("run") && args.len() == 1 => {
                 if let ExprKind::Lambda { body, .. } = &args[0].value.kind {
                     match &body.kind {
@@ -2667,7 +2995,7 @@ impl<'a> Lowerer<'a> {
                     self.e.nl();
                     self.e.mark(el.span);
                     match mode {
-                        Some(t) => self.tail(el, t),
+                        Some(t) => self.tail_moving_args(el, t),
                         None => {
                             let bl = self.stmt_expr(el);
                             if !bl {
@@ -2881,7 +3209,7 @@ impl<'a> Lowerer<'a> {
                             self.e.nl();
                             self.e.mark(arm.body.span);
                             match mode {
-                                Some(t) => self.tail(&arm.body, t),
+                                Some(t) => self.tail_moving_args(&arm.body, t),
                                 None => {
                                     let bl = self.stmt_expr(&arm.body);
                                     if !bl {
@@ -2911,6 +3239,11 @@ impl<'a> Lowerer<'a> {
         match (&body.kind, mode) {
             (ExprKind::Block(b), Some(t)) => self.block_value(b, t),
             (ExprKind::Block(b), None) => self.block_stmt(b),
+            // in a block, so the calls that change `this` can go first (`move_args_changing_this`)
+            (_, Some(t)) if self.args_changing_this(body).is_some() => {
+                self.block_value(&Block { stmts: vec![Stmt::Expr { expr: body.clone(), semi: false }], span: body.span }, t);
+                self.e.w(",");
+            }
             (_, Some(t)) => {
                 self.tail(body, t);
                 self.e.w(",");
@@ -3072,11 +3405,15 @@ impl<'a> Lowerer<'a> {
         self.fns.push(FnCtx { throws: false, ret: ret.clone(), is_lambda: true, tries: Vec::new() });
         let saved_loops = std::mem::take(&mut self.loops);
         let target = Target { ty: ret.clone(), wrap: None, fn_result: false };
+        // `{ items.push(next_id()) }`: in a block, so the calls that change `this` can go first
+        let moving = !matches!(body.kind, ExprKind::Block(_)) && self.args_changing_this(body).is_some();
+        let as_block = Block { stmts: vec![Stmt::Expr { expr: (**body).clone(), semi: false }], span: body.span };
         if explicit_ret {
             let rt = self.ty(ret.as_ref().unwrap(), TyPos::Ret);
             self.e.w(&format!(" -> {} ", rt));
             match &body.kind {
                 ExprKind::Block(b) => self.block_value(b, &target),
+                _ if moving => self.block_value(&as_block, &target),
                 _ => {
                     self.e.w("{ ");
                     self.tail(body, &target);
@@ -3087,6 +3424,7 @@ impl<'a> Lowerer<'a> {
             self.e.w(" ");
             match &body.kind {
                 ExprKind::Block(b) => self.block_value(b, &target),
+                _ if moving => self.block_value(&as_block, &target),
                 _ => {
                     if ret.is_some() {
                         self.tail(body, &target);

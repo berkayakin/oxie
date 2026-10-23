@@ -1,0 +1,122 @@
+// A method call on a field whose arguments call a method of `this` that takes `&mut self`
+// (`items.push(next_id())`) computes those calls first, into locals: Rust borrows `items` for
+// the call before it runs the arguments, and would reject the second borrow of `this`.
+import std::collections::HashMap
+
+data class Task(val id: usize, val name: String)
+
+class Cart(var ids: Vec<usize> = vec[]) {
+    fun add(id: usize) { ids.push(id) }
+}
+
+class Board(var next: usize = 0) {
+    var items: Vec<usize> = vec[]
+    var tasks: Vec<Task> = vec[]
+    var pairs: Vec<(usize, usize)> = vec[]
+    var slots: HashMap<usize, String> = HashMap::new()
+    var cart = Cart()
+
+    fun next_id(): usize {
+        next += 1
+        return next
+    }
+
+    fun checked_id(): usize throws String {
+        if (next >= 10) throw "out of ids"
+        return next_id()
+    }
+
+    fun add() = items.push(next_id())
+    fun add_scaled() = items.push(next_id() * 10)
+    fun add_explicit() = this.items.push(this.next_id())
+    fun add_task(name: String) = tasks.push(Task(next_id(), name))
+    // two calls: computed in the order they are written
+    fun add_pair() = pairs.push((next_id(), next_id()))
+    // a field of an Oxie class whose method takes `&mut self`
+    fun buy() = cart.add(next_id())
+
+    fun fill(name: String): String? {
+        val old = slots.insert(next_id(), name)
+        return old
+    }
+
+    fun take_slot(name: String): String? = slots.insert(next_id(), name)
+
+    fun add_checked() throws String {
+        items.push(checked_id()?)
+    }
+
+    // in a `when` arm, the body of `repeat { }` and a lambda
+    fun add_if(flag: Boolean) {
+        when {
+            flag -> items.push(next_id())
+            else -> items.push(0)
+        }
+    }
+
+    fun pick(flag: Boolean): String? = when {
+        flag -> slots.insert(next_id(), "picked".to_string())
+        else -> null
+    }
+
+    fun add_twice() = repeat(2) { items.push(next_id()) }
+    fun add_each(names: Vec<String>) = names.iter().for_each { tasks.push(Task(next_id(), it.clone())) }
+
+    // a `Copy` field is copied before the argument runs, so this reads `next` first, as in Rust
+    fun min_with_next(): usize = next.min(next_id())
+}
+
+// in an `init` block, and in a `shared class`
+class Seeded(var next: usize = 0) {
+    var items: Vec<usize> = vec[]
+
+    init {
+        items.push(next_id())
+    }
+
+    fun next_id(): usize {
+        next += 1
+        return next
+    }
+}
+
+shared class Tickets(var next: usize = 0) {
+    var sold: Vec<usize> = vec[]
+
+    fun next_id(): usize {
+        next += 1
+        return next
+    }
+
+    fun sell() = sold.push(next_id())
+}
+
+fun main() throws String {
+    var b = Board()
+    b.add()
+    b.add_scaled()
+    b.add_explicit()
+    b.add_task("write")
+    b.add_pair()
+    b.buy()
+    println("${b.fill("a"):?} ${b.take_slot("b"):?}")
+    b.add_checked()
+    b.add_if(true)
+    b.add_if(false)
+    println("${b.pick(true):?} ${b.pick(false):?}")
+    b.add_twice()
+    b.add_each(vec["x".to_string(), "y".to_string()])
+    println("${b.items:?} ${b.tasks:?} ${b.pairs:?} ${b.cart.ids:?}")
+    var slots: Vec<(usize, String)> = b.slots.iter().map { (*it.0, it.1.clone()) }.collect()
+    slots.sort()
+    println("${slots:?}")
+    val before = b.next
+    val least = b.min_with_next()
+    println("$before $least ${b.next}")
+
+    println("${Seeded().items:?}")
+    val t = Tickets()
+    t.sell()
+    t.sell()
+    println("${t.sold:?}")
+}

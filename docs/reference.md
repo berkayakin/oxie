@@ -105,6 +105,18 @@ fun short(x: i32) = x * 2
   Arguments that already are references (`&v`, reference-typed variables, `self`, string
   literals) are passed as they are. Passing a field to a `&mut` parameter makes the method
   `&mut self`.
+* **Arguments that change `this`**: in a method, a call on a field whose arguments call a
+  method of `this` that takes `&mut self` (`items.push(next_id())`) computes those calls first,
+  into locals named after the method, in the order they are written:
+  `let next_id = self.next_id(); self.items.push(next_id);`. Rust borrows the field for the call
+  before it runs the arguments, so it rejects the statement as written. This applies to any
+  statement (also a `val`'s initializer, a `when` arm or a lambda's body) when the call borrows
+  the field (a std collection, `String`, `Box`, a `shared class`, or an Oxie class whose method
+  takes `&self` or `&mut self`) and the calls always run (not in a lambda, an `if`, after `&&`
+  or `?.`). Nothing that could notice them running earlier may run before them, like another
+  call or a read of a field, so `items.insert(count(), next_id())` stays as written. A `Copy`
+  field is copied before the arguments run, so `next.min(next_id())`, which Rust accepts, is
+  left as written too.
 * **Modifiers**: `async fun`, `unsafe fun`, `const fun`, `extern "C" fun`.
 * **Automatic lifetimes**: when a function returns a reference and Rust cannot infer which
   parameter it borrows from, Oxie ties the result to all reference parameters

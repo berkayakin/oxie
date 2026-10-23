@@ -83,6 +83,11 @@
   Arguments for `&str` and `&[T]` parameters are lent whatever they are
   (`greet(name.to_uppercase())` used to be a type error). When a function keeps the value, the
   move error no longer suggests borrowing it.
+* A call on a field whose argument calls a method of `this` that takes `&mut self`
+  (`items.push(next_id())`) compiles: Oxie computes the argument first, into a local named
+  after the method (`let next_id = self.next_id(); self.items.push(next_id);`). Rust borrows
+  the field for the call before it runs the arguments, so it rejected the statement. Only
+  statements that rustc rejects change, and `oxie emit --annotate` says why for each local.
 * Capture lists: `{ [counter, tx] -> ... }` gives a lambda its own clones of `counter` and `tx`
   (and `[n = expr]` a computed value) and makes it `move`, replacing Rust's
   `let tx = tx.clone(); move || ...` before every thread or callback.

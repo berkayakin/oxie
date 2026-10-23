@@ -1,0 +1,50 @@
+// A method call on a field whose arguments change `this` computes those arguments first.
+import std::collections::HashMap
+
+class Ids(var next: usize = 0) {
+    var items: Vec<usize> = vec[]
+    var pairs: Vec<(usize, usize)> = vec[]
+    var names: HashMap<usize, String> = HashMap::new()
+
+    fun next_id(): usize {
+        next += 1
+        return next
+    }
+
+    fun checked_id(): usize throws String {
+        if (next >= 10) throw "out of ids"
+        return next_id()
+    }
+
+    fun add() = items.push(next_id())
+    fun add_scaled() = items.push(next_id() * 10)
+    fun add_pair() = pairs.push((next_id(), next_id()))
+
+    fun name(n: String): String? {
+        val old = names.insert(next_id(), n)
+        return old
+    }
+
+    fun add_checked() throws String {
+        items.push(checked_id()?)
+    }
+
+    // `next` is `Copy`, so it is copied before `next_id()` runs: left as written
+    fun min_with_next(): usize = next.min(next_id())
+
+    // attributes must cover the whole statement: left as written
+    fun add_in_tests() {
+        @cfg(test) items.push(next_id())
+    }
+}
+
+fun main() throws String {
+    var ids = Ids()
+    ids.add()
+    ids.add_scaled()
+    ids.add_pair()
+    ids.name("a")
+    ids.add_checked()
+    val least = ids.min_with_next()
+    println("${ids.items:?} ${ids.pairs:?} $least")
+}
