@@ -92,6 +92,32 @@ oxie-build = {}
     )
 }
 
+/// Adds `oxie-build = <dep>` to a manifest's `[build-dependencies]`, creating the table when
+/// the manifest has none (a second `[build-dependencies]` would be a duplicate key).
+pub fn add_build_dependency(manifest: &str, dep: &str) -> String {
+    let line = format!("oxie-build = {dep}\n");
+    let mut out = String::with_capacity(manifest.len() + line.len() + 24);
+    let mut added = false;
+    for l in manifest.split_inclusive('\n') {
+        out.push_str(l);
+        if !added && l.split('#').next().unwrap_or("").trim() == "[build-dependencies]" {
+            if !l.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&line);
+            added = true;
+        }
+    }
+    if !added {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("\n[build-dependencies]\n");
+        out.push_str(&line);
+    }
+    out
+}
+
 pub const BUILD_RS: &str = "// Compiles the .oxi files in src/ to Rust (see the Oxie documentation).\nfn main() {\n    oxie_build::compile();\n}\n";
 
 pub fn root_stub(kind: &str) -> String {
@@ -214,4 +240,25 @@ pub fn script_options(name: &str, deps: &[String]) -> Options {
     let mut ex: HashSet<String> = extern_crates_from_manifest(&manifest);
     ex.remove("");
     Options { crate_name: name.to_string(), extern_crates: ex, out_dir: PathBuf::from("/tmp/oxie-check"), script: true }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::add_build_dependency;
+
+    #[test]
+    fn build_dependency_joins_an_existing_table() {
+        let manifest = "[package]\nname = \"app\"\n\n[build-dependencies] # tools\ncc = \"1\"\n\n[features]\n";
+        let out = add_build_dependency(manifest, "\"0.1.0\"");
+        assert_eq!(out, "[package]\nname = \"app\"\n\n[build-dependencies] # tools\noxie-build = \"0.1.0\"\ncc = \"1\"\n\n[features]\n");
+    }
+
+    #[test]
+    fn build_dependency_table_is_created_when_missing() {
+        let out = add_build_dependency("[package]\nname = \"app\"", "\"0.1.0\"");
+        assert_eq!(out, "[package]\nname = \"app\"\n\n[build-dependencies]\noxie-build = \"0.1.0\"\n");
+        // a dotted table like [build-dependencies.cc] isn't the table itself
+        let out = add_build_dependency("[build-dependencies.cc]\nversion = \"1\"\n", "\"0.1.0\"");
+        assert!(out.ends_with("version = \"1\"\n\n[build-dependencies]\noxie-build = \"0.1.0\"\n"), "{out}");
+    }
 }

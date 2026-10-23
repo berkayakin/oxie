@@ -189,5 +189,17 @@ fn new_projects_depend_on_oxie_build() {
     assert_eq!(build_dep(&rust), format!(r#"oxie-build = "{}""#, env!("CARGO_PKG_VERSION")));
     assert!(rust.join("build.rs").exists());
 
+    // a crate that already has build-dependencies gets oxie-build in the same table
+    let with_deps = tmp.join("with_build_deps");
+    std::fs::create_dir_all(with_deps.join("src")).unwrap();
+    std::fs::write(with_deps.join("Cargo.toml"), "[package]\nname = \"with_build_deps\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[build-dependencies]\ncc = \"1\"\n").unwrap();
+    std::fs::write(with_deps.join("src/main.rs"), "fn main() {}\n").unwrap();
+    assert!(oxie().arg("init").current_dir(&with_deps).status().unwrap().success());
+    let manifest = std::fs::read_to_string(with_deps.join("Cargo.toml")).unwrap();
+    assert_eq!(manifest.matches("[build-dependencies]").count(), 1, "{manifest}");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let read = Command::new(cargo).args(["metadata", "--no-deps", "--format-version", "1"]).current_dir(&with_deps).output().unwrap();
+    assert!(read.status.success(), "{}", String::from_utf8_lossy(&read.stderr));
+
     let _ = std::fs::remove_dir_all(&tmp);
 }

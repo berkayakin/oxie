@@ -116,8 +116,7 @@ fn cmd_init(args: &[String]) -> R {
         // existing Rust project: add build script support
         let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).map_err(|e| e.to_string())?;
         if !manifest.contains("oxie-build") {
-            let mut m = manifest.clone();
-            m.push_str(&format!("\n[build-dependencies]\noxie-build = {}\n", project::oxie_build_dep()));
+            let m = project::add_build_dependency(&manifest, &project::oxie_build_dep());
             std::fs::write(dir.join("Cargo.toml"), m).map_err(|e| e.to_string())?;
         }
         if !dir.join("build.rs").exists() {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* `oxie init` in a crate that already has `[build-dependencies]` adds `oxie-build` to that
+  table instead of writing a second one, which Cargo rejected as a duplicate key.
 * The repository moved to [github.com/oxie-lang/oxie](https://github.com/oxie-lang/oxie); links
   to the old address redirect.
 * The crates declare `rust-version = "1.82"`, the oldest Rust that builds Oxie and its
