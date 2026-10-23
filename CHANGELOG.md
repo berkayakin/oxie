@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* Capture lists: `{ [counter, tx] -> ... }` gives a lambda its own clones of `counter` and `tx`
+  (and `[n = expr]` a computed value) and makes it `move`, replacing Rust's
+  `let tx = tx.clone(); move || ...` before every thread or callback.
 * `for (x in xs)` no longer uses up `xs` when the list is used after the loop (or by the next
   round of an outer loop): the loop borrows it (`for x in &xs`, or `for &n in &nums` for `Copy`
   elements). Loops over a class's collection fields borrow them too. Before, both were errors.

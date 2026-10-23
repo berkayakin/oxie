@@ -310,6 +310,21 @@ fun main() {
   other freely. A method that reaches the *same* object again through another handle (a node
   whose `next` is itself) panics with "already borrowed" instead of corrupting memory.
 
+A lambda that should keep its own handle lists it in a *capture list*: `{ [hits] -> ... }`
+clones the handle into the lambda (and makes it `move`), which is how threads and callbacks get
+one:
+
+```oxie
+@sync shared class Stats(var hits: i32 = 0)
+
+fun main() {
+    val stats = Stats()
+    val workers = (1..=3).map { n -> std.thread.spawn { [stats] -> stats.hits += n } }.collect::<Vec<_>>()
+    for (w in workers) w.join().unwrap()
+    println(stats.hits)   // 6
+}
+```
+
 ## Enums
 
 ```oxie

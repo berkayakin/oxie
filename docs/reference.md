@@ -415,6 +415,8 @@ val n = const { SIZE * 2 }                      // evaluated at compile time
 x => x * 2
 |a, b| a + b                    // Rust style
 move { ... }                    // capture by value
+{ [counter, tx] -> ... }        // capture list: moves in clones of `counter` and `tx`
+{ [n = items.len()] x -> ... }  // a computed capture, then parameters
 f(x) { trailing lambda }        // last argument outside the parentheses
 ```
 
@@ -425,6 +427,11 @@ f(x) { trailing lambda }        // last argument outside the parentheses
 * A lambda body is a block; its last expression is the result.
 * A lambda stored in a `val` that assigns to captured variables is declared `mut`
   automatically.
+* A **capture list** `[a, b = expr]` at the start of a brace lambda (followed by parameters or
+  `->`) gives the lambda its own values: `a` is `a.clone()`, `b` is `expr`, and the lambda is
+  `move`. `thread.spawn { [counter, tx] -> ... }` becomes
+  `thread::spawn({ let counter = counter.clone(); let tx = tx.clone(); move || ... })`, the usual
+  Rust pattern for handing shared handles and channel senders to threads and callbacks.
 * In predicates (`filter`, `find`, `position`, `any`, `all`, `count`, `take_while`, `retain`,
   ...) the parameter is a reference to the element (`&&T` for `iter().filter`). Comparing or
   computing it with a number, `char` or `bool` literal reads the value through the

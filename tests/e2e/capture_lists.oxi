@@ -1,0 +1,50 @@
+// `{ [a, b = expr] params -> body }`: the lambda moves in its own copies (`a` is `a.clone()`).
+
+import std::sync::mpsc
+import std::thread
+
+@sync shared class Counter(var n: i32 = 0) {
+    fun add(k: i32) { n += k }
+}
+
+shared class Clicks(var n: i32 = 0)
+class Button(on_click: () -> Unit)
+fun twice(f: () -> Unit) { f(); f() }
+
+fun main() {
+    // each thread gets its own handle to the counter and its own sender
+    val counter = Counter()
+    val (tx, rx) = mpsc.channel::<String>()
+    var handles = vec[]
+    for (i in 0 until 3) {
+        handles.push(thread.spawn { [counter, tx] ->
+            counter.add(i)
+            tx.send("worker $i").unwrap()
+        })
+    }
+    for (h in handles) h.join().unwrap()
+    drop(tx)
+    var got = rx.iter().collect::<Vec<_>>()
+    got.sort()
+    println("${counter.n} ${got:?}")
+
+    // a computed capture, and parameters after the list
+    val label = "x".to_string()
+    val tag = { [up = label.to_uppercase()] s: &str -> "$up:$s" }
+    println(tag("y"))
+    val double = { [label] -> "${label.len()} ${it * 2}" }
+    println("${double(4)} $label")
+
+    // stored in a field, passed to a function, assigned to a typed variable
+    val clicks = Clicks()
+    val b = Button({ [clicks] -> clicks.n += 1 })
+    (b.on_click)()
+    twice { [clicks] -> clicks.n += 10 }
+    val handler: () -> Unit = { [clicks] -> clicks.n += 100 }
+    handler()
+    println(clicks.n)
+
+    // a block starting with an array literal is still a block
+    val arr = run { [1, 2, 3] }
+    println("${arr:?}")
+}

@@ -397,7 +397,9 @@ impl<'a> Lowerer<'a> {
 
     /// Emits `e` converted to `ty` where Oxie allows implicit conversion.
     pub(crate) fn coerce(&mut self, e: &Expr, ty: &Type, pos: TyPos) {
-        if matches!(e.kind, ExprKind::If { .. } | ExprKind::When { .. } | ExprKind::Block(_)) && !matches!(&e.kind, ExprKind::If { else_: None, .. }) {
+        // a block ending in a lambda (`{ [a] -> ... }`) for an `impl Fn` parameter stays unboxed
+        let unboxed_fn = matches!(ty, Type::Fn { .. }) && !matches!(pos, TyPos::Field | TyPos::Generic | TyPos::Local);
+        if matches!(e.kind, ExprKind::If { .. } | ExprKind::When { .. } | ExprKind::Block(_)) && !matches!(&e.kind, ExprKind::If { else_: None, .. }) && !unboxed_fn {
             self.tail(e, &Target::ty(ty));
             return;
         }

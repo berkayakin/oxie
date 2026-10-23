@@ -3071,13 +3071,30 @@ impl<'a> Parser<'a> {
     /// Kotlin lambda `{ a, b -> body }` or `{ body using it }`.
     fn lambda_braces(&mut self) -> PResult<Expr> {
         let start = self.expect_punct("{")?;
-        // try parameter list followed by ->
+        // capture list `[a, b = expr]`, then a parameter list followed by ->
+        let save = self.pos;
+        let nd = self.diags.len();
+        self.skip_nl_only();
+        let captures = if self.is_punct("[") {
+            match self.capture_list() {
+                Ok(c) => c,
+                Err(()) => {
+                    self.pos = save;
+                    self.diags.truncate(nd);
+                    self.skip_nl_only();
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let save = self.pos;
         let nd = self.diags.len();
         let mut params = Vec::new();
-        let mut has_params = false;
-        self.skip_nl_only();
         let r: PResult<()> = (|| {
+            if !captures.is_empty() && self.eat_punct("->") {
+                return Ok(());
+            }
             loop {
                 let pat = self.pattern_no_or()?;
                 let ty = if self.eat_punct(":") { Some(self.ty()?) } else { None };
@@ -3091,9 +3108,7 @@ impl<'a> Parser<'a> {
                 return Err(());
             }
         })();
-        if r.is_ok() {
-            has_params = true;
-        } else {
+        if r.is_err() {
             self.pos = save;
             self.diags.truncate(nd);
             params.clear();
@@ -3108,7 +3123,59 @@ impl<'a> Parser<'a> {
         } else {
             Expr::new(ExprKind::Block(Block { stmts, span: sp }), sp)
         };
-        Ok(Expr::new(ExprKind::Lambda { params, ret: None, body: Box::new(body), is_move: false, implicit_it: !has_params, is_async: false }, sp))
+        let implicit_it = params.is_empty();
+        let lambda = Expr::new(ExprKind::Lambda { params, ret: None, body: Box::new(body), is_move: !captures.is_empty(), implicit_it, is_async: false }, sp);
+        if captures.is_empty() {
+            return Ok(lambda);
+        }
+        // `{ [a] x -> body }` is `{ val a = a.clone(); move { x -> body } }`
+        let mut stmts = captures;
+        stmts.push(Stmt::Expr { expr: lambda, semi: false });
+        Ok(Expr::new(ExprKind::Block(Block { stmts, span: sp }), sp))
+    }
+
+    /// `[a, b = expr] ->` at the start of a brace lambda: values the lambda moves in, `a` meaning
+    /// `a = a.clone()`. Fails (so the caller backtracks) unless a parameter list or `->` follows.
+    fn capture_list(&mut self) -> PResult<Vec<Stmt>> {
+        self.expect_punct("[")?;
+        let mut out = Vec::new();
+        loop {
+            let span = self.span();
+            let name = self.ident()?;
+            let init = if self.eat_punct("=") {
+                self.expr()?
+            } else {
+                let recv = Expr::new(ExprKind::Path { segs: vec![name.clone()], generics: None, global: false }, span);
+                Expr::new(ExprKind::MethodCall { recv: Box::new(recv), name: "clone".into(), generics: None, args: vec![], safe: false }, span)
+            };
+            let pat = Pat::Ident { name, by_ref: false, mutable: false, sub: None, span };
+            out.push(Stmt::Let { pat, mutable: false, ty: None, init: Some(init), else_: None, span: span.to(self.prev_span()) });
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct("]")?;
+        // a parameter list or `->` must follow; otherwise this was an array literal
+        let save = self.pos;
+        let ok = self.is_punct("->") || {
+            let r: PResult<()> = (|| loop {
+                self.pattern_no_or()?;
+                if self.eat_punct(":") {
+                    self.ty()?;
+                }
+                if self.eat_punct(",") {
+                    continue;
+                }
+                return if self.is_punct("->") { Ok(()) } else { Err(()) };
+            })();
+            self.pos = save;
+            r.is_ok()
+        };
+        if ok {
+            Ok(out)
+        } else {
+            Err(())
+        }
     }
 
     fn if_expr(&mut self) -> PResult<Expr> {
