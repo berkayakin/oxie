@@ -114,6 +114,19 @@ the fixes are code actions (quick fixes).
 
 Each generated file has a source map next to it (`main.rs.map`) used for the translation.
 
+The maps are used at run time too: when a program run with `oxie run` or `oxie test` panics,
+the message, the backtrace frames (`RUST_BACKTRACE=1`) and failed assertions in tests point at
+`.oxi` lines instead of the generated Rust:
+
+```
+thread 'main' panicked at src/main.oxi:12:5:
+index out of bounds: the len is 3 but the index is 7
+```
+
+To do this, `oxie` reads the program's error output (and, for `oxie test`, its normal output)
+as it is written and passes it on. A program run with `cargo run` writes straight to the
+terminal and reports the generated file.
+
 ### Scripts
 
 A `.oxi` file outside a project runs as a script. Its dependencies go in header comments:

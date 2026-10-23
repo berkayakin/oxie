@@ -1,0 +1,44 @@
+//! What `oxie run` and `oxie test` show while a program runs: panics and failed tests point at
+//! the `.oxi` source, not at the generated Rust.
+
+use std::path::PathBuf;
+use std::process::Command;
+
+fn repo() -> PathBuf {
+    oxie_compiler::compile::canonicalize(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap()
+}
+
+fn oxie() -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_oxie"));
+    c.env("NO_COLOR", "1").env("OXIE_HOME", repo()).env_remove("RUST_BACKTRACE");
+    c
+}
+
+/// A fresh directory holding `name` with `src`.
+fn script(name: &str, src: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("oxie-runtime-{}-{}", std::process::id(), name.trim_end_matches(".oxi")));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(name), src).unwrap();
+    oxie_compiler::compile::canonicalize(&dir).unwrap()
+}
+
+#[test]
+fn panics_point_at_the_oxi_source() {
+    let dir = script("panic.oxi", "fun nth(xs: &[i32], i: usize): i32 = xs[i]\n\nfun main() {\n    println(nth(vec[1, 2, 3], 7))\n}\n");
+    let out = oxie().args(["run", "panic.oxi"]).current_dir(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(101), "{stderr}");
+    assert!(stderr.contains("panicked at panic.oxi:1:38:"), "{stderr}");
+    assert!(!stderr.contains("main.rs"), "{stderr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn failed_tests_point_at_the_oxi_source() {
+    let dir = script("failing.oxi", "fun double(x: i32): i32 = x * 2\n\ntest \"doubles\" {\n    assert_eq(double(2), 5)\n}\n");
+    let out = oxie().args(["test", "failing.oxi"]).current_dir(&dir).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success());
+    assert!(stdout.contains("panicked at failing.oxi:4:5:"), "{stdout}");
+    let _ = std::fs::remove_dir_all(dir);
+}

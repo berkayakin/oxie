@@ -150,6 +150,19 @@ impl Mapper {
         Some((source, sl, sc + piece.chars().count() as u32))
     }
 
+    /// Maps a 1-based `line:col` in a generated file to the 1-based source position, exactly
+    /// when the generated text matches the source there, else at the nearest mark before it.
+    /// None for files without a source map.
+    pub fn map_location(&mut self, gen: &Path, line: u32, col: u32) -> Option<(PathBuf, u32, u32)> {
+        let (l, c) = (line.checked_sub(1)?, col.checked_sub(1)?);
+        if let Some((f, sl, sc)) = self.map_exact(gen, l, c) {
+            return Some((f, sl + 1, sc + 1));
+        }
+        let map = self.map_for(gen)?;
+        let (sl, sc) = map.lookup(l, c)?;
+        Some((map.source.clone(), sl + 1, sc + 1))
+    }
+
     fn gen_path(root: &Path, span: &Value) -> Option<PathBuf> {
         let mut path = PathBuf::from(span.get("file_name")?.as_str()?);
         if path.is_relative() {

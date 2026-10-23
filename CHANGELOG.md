@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* Panics point at the `.oxi` source: `oxie run` and `oxie test` rewrite the location of a
+  panic, backtrace frames and failed assertions in tests from the generated Rust to the `.oxi`
+  line they came from.
 * A VS Code extension in `editors/vscode-oxie`: highlighting, the language server, ▶ run and
   test buttons, the generated Rust beside the source, tasks and snippets.
 * Language server: files opened through a symlinked directory (on macOS, anything under `/tmp`)

@@ -3,11 +3,13 @@
 mod cargo;
 mod explain;
 mod from_rust;
+mod locations;
 mod lsp;
 mod project;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::io::IsTerminal;
+use std::process::{Command, ExitCode, Stdio};
 
 use oxie_compiler::{diag, Severity};
 use project::Project;
@@ -216,7 +218,12 @@ fn cmd_run(args: &[String]) -> R {
         .or(r.executables.last())
         .cloned()
         .ok_or("no executable was built (is this a library? try `oxie test`)")?;
-    let status = Command::new(&exe).args(&prog_args).status().map_err(|e| format!("cannot run {}: {}", exe.display(), e))?;
+    // stderr goes through the location rewriter, so panics point at the .oxi source
+    let mut child = Command::new(&exe).args(&prog_args).stderr(Stdio::piped()).spawn().map_err(|e| format!("cannot run {}: {}", exe.display(), e))?;
+    let err = child.stderr.take().unwrap();
+    let forwarder = std::thread::spawn(move || locations::forward(err, std::io::stderr()));
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let _ = forwarder.join();
     Ok(match status.code() {
         Some(0) => ExitCode::SUCCESS,
         Some(c) => ExitCode::from(c.clamp(1, 255) as u8),
@@ -257,12 +264,29 @@ fn cmd_test(args: &[String]) -> R {
     if opts.iter().any(|a| a == "--release") {
         cmd.arg("--release");
     }
-    if !filter.is_empty() || !extra.is_empty() {
-        cmd.arg("--");
-        cmd.args(&filter);
-        cmd.args(&extra);
+    // the output goes through the location rewriter (failed tests print panics on stdout), so
+    // ask for the colors a terminal would get
+    let mut harness: Vec<String> = filter.into_iter().chain(extra).collect();
+    if cargo::color() {
+        cmd.arg("--color=always");
     }
-    let status = cmd.status().map_err(|e| e.to_string())?;
+    if std::io::stdout().is_terminal() && std::env::var("NO_COLOR").is_err() && !harness.iter().any(|a| a.starts_with("--color")) {
+        harness.push("--color=always".into());
+    }
+    if !harness.is_empty() {
+        cmd.arg("--");
+        cmd.args(&harness);
+    }
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let (out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let forwarders = [
+        std::thread::spawn(move || locations::forward(out, std::io::stdout())),
+        std::thread::spawn(move || locations::forward(err, std::io::stderr())),
+    ];
+    let status = child.wait().map_err(|e| e.to_string())?;
+    for f in forwarders {
+        let _ = f.join();
+    }
     Ok(if status.success() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
