@@ -1,0 +1,59 @@
+---
+// The README's first example beside the Rust `oxie emit` generates for it, rebuilt with the site.
+import { Code } from '@astrojs/starlight/components';
+import { rust, source } from '../generated/home-example.json';
+---
+
+<div class="oxie-to-rust not-content">
+	<div class="side">
+		<Code code={source} lang="oxie" title="main.oxi" />
+	</div>
+	<div class="side generated">
+		<Code code={rust} lang="rust" title="main.rs, generated" />
+	</div>
+</div>
+<p class="oxie-to-rust-note">
+	The program from the README and the Rust that <code>oxie emit</code> generates for it, produced by the current
+	compiler each time the site is published.
+</p>
+
+<style>
+	.oxie-to-rust {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		gap: 1rem;
+		margin-top: 0;
+	}
+	/* the generated side is as tall as the Oxie side, and its code scrolls inside the frame */
+	.generated {
+		height: 0;
+		min-height: 100%;
+	}
+	.generated :global(.expressive-code),
+	.generated :global(.frame) {
+		height: 100%;
+	}
+	.generated :global(.frame) {
+		display: flex;
+		flex-direction: column;
+	}
+	.generated :global(pre) {
+		flex: 1;
+		min-height: 0;
+		overflow: auto;
+	}
+	.oxie-to-rust-note {
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-sm);
+		max-width: 60ch;
+	}
+	@media (max-width: 50rem) {
+		.oxie-to-rust {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.generated {
+			height: 28rem;
+			min-height: 0;
+		}
+	}
+</style>

@@ -190,7 +190,7 @@ Or run a single file as a script, with crates declared in its header:
 
 ```oxie
 // dep: rand = "0.8"
-fun main() = println("dice: ${rand.random::<u8>() % 6 + 1}")
+fun main() = println("dice: ${rand.random::<u8>() % 6 + 1}")    // output varies
 ```
 
 ```bash

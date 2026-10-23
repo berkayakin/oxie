@@ -115,7 +115,10 @@ fn examples_run_and_test() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
-/// Every ```oxie block with `fun main` in README.md and docs/*.md must compile and run.
+/// Every ```oxie block with `fun main` in README.md and docs/*.md must compile and run. Their
+/// output is recorded in `website/src/data/doc-outputs.json`, which the docs site shows beside
+/// each example (unless it contains `// output varies`); `OXIE_BLESS=1` rewrites it when an
+/// example or its output changes.
 #[test]
 fn documentation_examples_run() {
     let root = repo();
@@ -126,8 +129,10 @@ fn documentation_examples_run() {
     let tmp = std::env::temp_dir().join(format!("oxie-doc-examples-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let mut failures = Vec::new();
+    let mut outputs = Vec::new();
     let mut count = 0;
     for f in files {
+        let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         let text = std::fs::read_to_string(&f).unwrap();
         let mut in_block = false;
         let mut block = String::new();
@@ -151,6 +156,16 @@ fn documentation_examples_run() {
                     if out.status.success() == expect_failure {
                         failures.push(format!("{}:{}\n{}", f.display(), start_line, String::from_utf8_lossy(&out.stderr)));
                     }
+                    // a program that exits with an error shows the `Error: ...` line main prints
+                    let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
+                    for l in String::from_utf8_lossy(&out.stderr).lines().filter(|l| expect_failure && l.starts_with("Error: ")) {
+                        output.push_str(l);
+                        output.push('\n');
+                    }
+                    // no line numbers, so editing the text around an example doesn't make this stale
+                    if !block.contains("// output varies") {
+                        outputs.push((start_line, serde_json::json!({ "file": rel, "source": block, "output": output })));
+                    }
                 }
                 continue;
             }
@@ -163,6 +178,56 @@ fn documentation_examples_run() {
     let _ = std::fs::remove_dir_all(&tmp);
     assert!(count > 10, "found only {} runnable examples", count);
     assert!(failures.is_empty(), "{} documentation example(s) failed:\n{}", failures.len(), failures.join("\n\n"));
+
+    // OS error messages in the output read differently on Windows
+    if cfg!(windows) {
+        return;
+    }
+    let recorded_path = root.join("website/src/data/doc-outputs.json");
+    let actual = serde_json::Value::Array(outputs.iter().map(|(_, o)| o.clone()).collect());
+    if std::env::var_os("OXIE_BLESS").is_some() {
+        std::fs::write(&recorded_path, serde_json::to_string_pretty(&actual).unwrap() + "\n").unwrap();
+        return;
+    }
+    let recorded: serde_json::Value = std::fs::read_to_string(&recorded_path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut stale = Vec::new();
+    for (line, example) in &outputs {
+        let same = recorded.as_array().into_iter().flatten().find(|r| r["source"] == example["source"]);
+        match same {
+            Some(r) if r == example => {}
+            Some(r) => stale.push(format!("{}:{}: output changed\n--- recorded\n{}--- actual\n{}", example["file"].as_str().unwrap(), line, r["output"].as_str().unwrap_or(""), example["output"].as_str().unwrap())),
+            None => stale.push(format!("{}:{}: new or changed example", example["file"].as_str().unwrap(), line)),
+        }
+    }
+    if stale.is_empty() && recorded != actual {
+        stale.push("examples were removed or moved".into());
+    }
+    assert!(stale.is_empty(), "website/src/data/doc-outputs.json is out of date; after checking the changes below, update it with\n    OXIE_BLESS=1 cargo test -p oxie --test e2e documentation_examples_run\n\n{}", stale.join("\n\n"));
+}
+
+/// Every command `oxie --help` lists is described in docs/tooling.md.
+#[test]
+fn commands_are_documented() {
+    let help = oxie().arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    let docs = std::fs::read_to_string(repo().join("docs/tooling.md")).unwrap();
+    // command lines are indented by four spaces, their continuation lines by more
+    let commands = help.lines().skip_while(|l| !l.starts_with("COMMANDS:")).skip(1).take_while(|l| !l.trim().is_empty());
+    let missing: Vec<&str> = commands.filter(|l| !l.starts_with("     ")).filter_map(|l| l.split_whitespace().next()).filter(|c| !docs.contains(&format!("`oxie {c}"))).collect();
+    assert!(missing.is_empty(), "docs/tooling.md doesn't describe `oxie {}`", missing.join("`, `oxie "));
+}
+
+/// The reserved words listed in the language reference are the ones the parser reserves.
+#[test]
+fn keywords_are_documented() {
+    let reference = std::fs::read_to_string(repo().join("docs/reference.md")).unwrap();
+    let start = reference.find("Reserved: `").expect("docs/reference.md lists the reserved words after \"Reserved: `\"") + "Reserved: `".len();
+    let listed = &reference[start..start + reference[start..].find('`').unwrap()];
+    let mut listed: Vec<&str> = listed.split_whitespace().collect();
+    let mut reserved = oxie_compiler::parser::RESERVED.to_vec();
+    listed.sort();
+    reserved.sort();
+    assert_eq!(listed, reserved, "the reserved words in docs/reference.md differ from oxie_compiler::parser::RESERVED");
 }
 
 /// `oxie new` and `oxie init` take oxie-build from crates.io, or from `OXIE_HOME` when it is set.

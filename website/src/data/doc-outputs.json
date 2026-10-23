@@ -1,0 +1,157 @@
+[
+  {
+    "file": "README.md",
+    "output": "failed: need 250, have 100\nAda: 100\n",
+    "source": "error enum BankError {\n    Insufficient(needed: u64, available: u64) = \"need $needed, have $available\"\n    Frozen = \"account is frozen\"\n}\n\ndata class Account(owner: String, balance: u64 = 0, frozen: bool = false) {\n    fun deposit(amount: u64) { balance += amount }\n\n    fun withdraw(amount: u64): u64 throws BankError {\n        if (frozen) throw BankError.Frozen\n        if (amount > balance) throw BankError.Insufficient(amount, balance)\n        balance -= amount\n        balance\n    }\n\n    override fun toString() = \"$owner: $balance\"\n}\n\nfun main() {\n    var account = Account(\"Ada\")\n    account.deposit(100)\n\n    when (account.withdraw(250)) {\n        Ok(left) -> println(\"withdrew, $left left\")\n        Err(e) -> println(\"failed: $e\")\n    }\n    println(\"$account\")\n}\n"
+  },
+  {
+    "file": "docs/cheatsheet.md",
+    "output": "1 names\n[\"ada\", \"bob\"] [\"ada\", \"bob\"]\n",
+    "source": "fun show(names: &Vec<String>) = println(\"${names.len()} names\")\n\nfun main() {\n    var names = vec[\"ada\".to_string()]\n    show(&names)              // lend\n    names.push(\"bob\".to_string())\n    val copy = names.clone()  // explicit copy\n    val moved = names         // `names` is moved\n    println(\"${copy:?} ${moved:?}\")\n}\n"
+  },
+  {
+    "file": "docs/cheatsheet.md",
+    "output": "Ada: 10\n",
+    "source": "shared class Player(var name: String, var score: i32 = 0)\n\nfun main() {\n    val p = Player(\"Ada\")\n    val team = vec[p]       // the list holds the same player\n    team[0].score += 10\n    println(\"${p.name}: ${p.score}\")\n}\n"
+  },
+  {
+    "file": "docs/errors.md",
+    "output": "Ok(42)\nErr(ParseIntError { kind: InvalidDigit })\nErr(\"age 200 is not realistic\")\n",
+    "source": "fun parse_age(text: &str): u32 throws {\n    val age: u32 = text.trim().parse()?          // `?` passes a failure on to the caller\n    if (age > 150) throw \"age $age is not realistic\"\n    age                                          // wrapped in Ok automatically\n}\n\nfun main() {\n    println(\"${parse_age(\"42\"):?}\")\n    println(\"${parse_age(\"abc\"):?}\")\n    println(\"${parse_age(\"200\"):?}\")\n}\n"
+  },
+  {
+    "file": "docs/errors.md",
+    "output": "Ok(())\nErr(\"negative: -2\")\n",
+    "source": "fun check(x: i32) throws {\n    if (x < 0) throw \"negative: $x\"\n}\n\nfun check_all(xs: &[i32]) throws {\n    for (x in xs) check(*x)              // same as `check(*x)?`\n}\n\nfun main() {\n    println(\"${check_all(&[1, 2]):?}\")\n    println(\"${check_all(&[1, -2]):?}\")\n}\n"
+  },
+  {
+    "file": "docs/errors.md",
+    "output": "port 8080\nerror: missing setting 'port'\nerror: invalid digit found in string\nerror: port = 99999 is larger than 65535\n",
+    "source": "import std::num::ParseIntError\n\nerror enum ConfigError {\n    Missing(key: String) = \"missing setting '$key'\"\n    OutOfRange(key: String, value: i64, max: i64) = \"$key = $value is larger than $max\"\n    BadNumber(ParseIntError)                       // wraps another error\n}\n\nfun read_port(text: &str): u16 throws ConfigError {\n    if (text.is_empty()) throw ConfigError.Missing(\"port\")\n    val n: i64 = text.parse()?                      // ParseIntError converts via From\n    if (n > 65535) throw ConfigError.OutOfRange(\"port\", n, 65535)\n    n as u16\n}\n\nfun main() {\n    for (input in listOf(\"8080\", \"\", \"x\", \"99999\")) {\n        when (val r = read_port(input)) {\n            Ok(port) -> println(\"port $port\")\n            Err(e) -> println(\"error: $e\")\n        }\n    }\n}\n"
+  },
+  {
+    "file": "docs/errors.md",
+    "output": "Ok(5)\n500 exceeds the limit of 100\n",
+    "source": "error class TooBig(value: i64, limit: i64) = \"$value exceeds the limit of $limit\"\n\nfun check(v: i64): i64 throws TooBig {\n    if (v > 100) throw TooBig(v, 100)\n    v\n}\n\nfun main() {\n    println(\"${check(5):?}\")\n    println(\"${check(500).unwrap_err()}\")\n}\n"
+  },
+  {
+    "file": "docs/errors.md",
+    "output": "could not add: invalid digit found in string\ntotal = 0\n",
+    "source": "fun main() {\n    val total = try {\n        val a: i32 = \"10\".parse()?\n        val b: i32 = \"x\".parse()?\n        a + b\n    } catch (e) {\n        println(\"could not add: $e\")\n        0\n    }\n    println(\"total = $total\")\n}\n"
+  },
+  {
+    "file": "docs/errors.md",
+    "output": "0 7\n",
+    "source": "fun main() {\n    val n = \"abc\".parse::<i32>() ?: 0\n    val m = \"7\".parse::<i32>() ?: 0\n    println(\"$n $m\")\n}\n"
+  },
+  {
+    "file": "docs/errors.md",
+    "output": "error: cannot read config '/no/such/file.toml'\ncause: No such file or directory (os error 2)\n",
+    "source": "import std::fs\n\nfun load(path: &str): String throws {\n    val text = fs.read_to_string(path).context(\"cannot read config '$path'\")?\n    text\n}\n\nfun main() {\n    when (val r = load(\"/no/such/file.toml\")) {\n        Ok(t) -> println(t)\n        Err(e) -> {\n            println(\"error: $e\")\n            println(\"cause: ${e.source().unwrap()}\")\n        }\n    }\n}\n"
+  },
+  {
+    "file": "docs/errors.md",
+    "output": "",
+    "source": "import std::fs\n\nfun main() throws {\n    val config = fs.read_to_string(\"/no/such/app.toml\").context(\"loading app.toml\")?\n    println(config)\n}\n// exits with an error:\n//   error: loading app.toml\n//     caused by: No such file or directory (os error 2)\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "Hello, World!\n",
+    "source": "fun main() {\n    val name = \"World\"\n    println(\"Hello, $name!\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "42 1 3.14159 10000000 true x 3 2\n",
+    "source": "fun main() {\n    val answer = 42              // immutable (Rust `let`)\n    var count = 0                // mutable (Rust `let mut`)\n    count += 1\n\n    val pi: f64 = 3.14159        // explicit type\n    val big: Long = 10_000_000L  // Kotlin names work too: Int, Long, Double, Boolean, Char\n    val flag = true\n    val letter = 'x'\n    val (q, r) = (17 / 5, 17 % 5)  // destructuring\n\n    println(\"$answer $count $pi $big $flag $letter $q $r\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "5\n49\n9\nHello, Ada!\nHi, Bob!\n",
+    "source": "fun add(a: i32, b: i32): i32 {\n    return a + b\n}\n\n// expression body; the return type is inferred when it is obvious\nfun square(x: i32) = x * x\n\n// the last expression of a block is its value, like Rust\nfun max(a: i32, b: i32): i32 {\n    if (a > b) a else b\n}\n\n// default and named arguments\nfun greet(name: &str, greeting: &str = \"Hello\"): String = \"$greeting, $name!\"\n\nfun main() {\n    println(add(2, 3))\n    println(square(7))\n    println(max(4, 9))\n    println(greet(\"Ada\"))\n    println(greet(name = \"Bob\", greeting = \"Hi\"))\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "Oxie 1.2\nnext: 2\ndebug: [1, 2]\nHello, Oxie!\nRoses are red,\n  Oxie is new.\na dollar: $5\n",
+    "source": "fun main() {\n    val name = \"Oxie\"\n    val version = 1.25\n    println(\"$name ${version:.1}\")       // format spec after `:` (Rust format syntax)\n    println(\"next: ${version + 0.75}\")\n    println(\"debug: ${listOf(1, 2):?}\")  // `:?` is Debug formatting\n\n    val greeting = \"Hello, \" + name + \"!\"  // `+` with strings builds a String\n    println(greeting)\n\n    val poem = \"\"\"\n        Roses are red,\n          $name is new.\n        \"\"\"                                // indentation is trimmed automatically\n    println(poem)\n    println(\"a dollar: \\$5\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "7 is odd and small\nsingle digit\n0 1 2 10 5 0 1 2 3 \nfound 21\n",
+    "source": "fun describe(n: i32): &str = when {\n    n < 0 -> \"negative\"\n    n == 0 -> \"zero\"\n    n < 10 -> \"small\"\n    else -> \"large\"\n}\n\nfun main() {\n    val n = 7\n    val parity = if (n % 2 == 0) \"even\" else \"odd\"\n    println(\"$n is $parity and ${describe(n)}\")\n\n    val kind = when (n) {\n        0 -> \"zero\"\n        1, 2, 3 -> \"tiny\"\n        in 4..=9 -> \"single digit\"\n        x if x < 0 -> \"negative\"\n        else -> \"big\"\n    }\n    println(kind)\n\n    for (i in 0 until 3) print(\"$i \")          // 0 1 2\n    for (i in 10 downTo 0 step 5) print(\"$i \")  // 10 5 0\n    for (i in 1..=3) print(\"$i \")               // Rust ranges: `..` excludes the end, `..=` includes it\n    println()\n\n    var i = 0\n    while (i < 3) i += 1\n    do {\n        i -= 1\n    } while (i > 0)\n\n    val found = loop {\n        i += 7\n        if (i > 20) break i\n    }\n    println(\"found $found\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "[10, 6, 16, 2] 2 17 [1, 3, 5, 8]\nada is 36\na: 3\n5 8\n",
+    "source": "import std::collections::HashMap\n\nfun main() {\n    val nums = listOf(5, 3, 8, 1)              // Vec<i32>; `vec[5, 3, 8, 1]` is the same\n    val doubled = nums.map { it * 2 }          // a new list: [10, 6, 16, 2]\n    val big = nums.count { it > 3 }\n    val sum = nums.iter().fold(0) { acc, x -> acc + x }\n    println(\"${doubled:?} $big $sum ${nums.sorted():?}\")\n\n    val ages = mapOf(\"ada\" to 36, \"bob\" to 25)  // HashMap\n    println(\"ada is ${ages[\"ada\"]}\")\n\n    var counts = HashMap()\n    for (word in \"a b a c a\".split(' ')) {\n        *counts.entry(word).or_insert(0) += 1\n    }\n    println(\"a: ${counts[\"a\"]}\")\n\n    val add = (a: i32, b: i32) => a + b        // TypeScript-style arrow function\n    val twice = { x: i32 -> x * 2 }            // Kotlin-style lambda\n    println(\"${add(2, 3)} ${twice(4)}\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "Ada, Grace\ntotal age 109, oldest Grace\nLinus < Ada < Grace\nLondon: 2\n",
+    "source": "data class User(name: String, age: u32, city: String)\n\nfun main() {\n    val users = vec[User(\"Ada\", 36, \"London\"), User(\"Linus\", 28, \"Helsinki\"), User(\"Grace\", 45, \"London\")]\n    println(users.filter { it.age > 30 }.map { it.name.clone() }.join_to_string(\", \"))\n    println(\"total age ${users.sum_of { it.age }}, oldest ${users.max_by_key { it.age }?.name ?: \"-\"}\")\n    println(users.sorted_by { it.age }.join_with(\" < \") { it.name.as_str() })\n    val by_city = users.group_by { it.city.clone() }\n    println(\"London: ${by_city[\"London\"].len()}\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "Some(\"London\")\n0\nfound Bob\nhello Ada\ntrue\n6\n",
+    "source": "data class Address(city: String)\ndata class Person(name: String, address: Address?)\n\nfun find(people: &[Person], name: &str): &Person? = people.iter().find { it.name == name }\n\nfun main() {\n    val people = listOf(Person(\"Ada\", Address(\"London\")), Person(\"Bob\", null))\n\n    val city = find(&people, \"Ada\")?.address?.city   // safe navigation\n    println(\"${city:?}\")\n\n    val len = find(&people, \"Zed\")?.name?.len() ?: 0  // elvis: default when null\n    println(len)\n\n    if (val p = find(&people, \"Bob\")) {             // unwraps (Rust `if let Some(p)`)\n        println(\"found ${p.name}\")\n    }\n    find(&people, \"Ada\")?.let { println(\"hello ${it.name}\") }\n\n    var x: i32? = null\n    println(x.is_none())\n    x = 5                                           // wrapped in Some automatically\n    println(\"${x!! + 1}\")                           // `!!` unwraps (panics on null)\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "10 [5, 10]\n10\nPoint { x: 3.0, y: 4.0 } 5 true\n",
+    "source": "class Counter(var count: i32 = 0, step: i32 = 1) {\n    var history: Vec<i32> = vec[]\n\n    fun increment() {              // changes fields, so it takes `&mut self` automatically\n        count += step\n        history.push(count)\n    }\n\n    fun current(): i32 = count     // only reads: `&self`\n\n    companion object {\n        fun starting_at(n: i32): Counter = Counter(n)   // static\n    }\n}\n\ndata class Point(x: f64, y: f64) {\n    fun distance_to(other: Point): f64 = ((x - other.x).powi(2) + (y - other.y).powi(2)).sqrt()\n}\n\nfun main() {\n    var c = Counter(step = 5)\n    c.increment()\n    c.increment()\n    println(\"${c.current()} ${c.history:?}\")\n    println(Counter.starting_at(10).current())\n\n    val p = Point(0.0, 0.0)\n    val q = p.copy(x = 3.0, y = 4.0)\n    println(\"${q:?} ${p.distance_to(q)} ${p == Point(0.0, 0.0)}\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "55 [50, 5] true\n",
+    "source": "shared class Account(var owner: String, var balance: i64 = 0) {\n    var history: Vec<i64> = vec[]\n\n    fun deposit(amount: i64) {\n        balance += amount\n        history.push(amount)\n    }\n}\n\nfun main() {\n    val a = Account(\"Ada\")\n    val b = a                  // the same account\n    b.deposit(50)\n    a.balance += 5             // fields can be read and changed through any handle\n    a.history.push(5)\n    println(\"${a.balance} ${b.history:?} ${a == b}\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "6\n",
+    "source": "@sync shared class Stats(var hits: i32 = 0)\n\nfun main() {\n    val stats = Stats()\n    val workers = (1..=3).map { n -> std.thread.spawn { [stats] -> stats.hits += n } }.collect::<Vec<_>>()\n    for (w in workers) w.join().unwrap()\n    println(stats.hits)   // 6\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "Circle { radius: 1.0 } has area 3.14\nRect { w: 2.0, h: 3.0 } has area 6.00\nEmpty has area 0.00\nfalse\n",
+    "source": "enum Shape {\n    Circle(radius: f64)\n    Rect(w: f64, h: f64)\n    Empty\n\n    fun area(): f64 = when (this) {\n        Circle(r) -> 3.14159 * r * r      // variants can be used without `Shape.`\n        Rect(w, h) -> w * h\n        Empty -> 0.0\n    }\n}\n\nenum Direction { North, East, South, West }\n\nfun main() {\n    val shapes = listOf(Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Empty)\n    for (s in &shapes) println(\"${s:?} has area ${s.area():.2}\")\n    println(Direction.North == Direction.East)\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "Dog says woof\nTom says meow\n",
+    "source": "interface Animal {\n    fun name(): String\n    fun sound(): String\n    fun speak(): String = \"${name()} says ${sound()}\"    // default method\n}\n\nclass Dog : Animal {\n    override fun name() = \"Dog\"\n    override fun sound() = \"woof\"\n}\n\nclass Cat(name: String) : Animal {\n    override fun name() = name.clone()\n    override fun sound() = \"meow\"\n}\n\nfun introduce(a: &Animal) = println(a.speak())           // `&dyn Animal`\n\nfun main() {\n    val zoo: Vec<Box<Animal>> = vec[Box.new(Dog()), Box.new(Cat(\"Tom\".to_string()))]\n    for (a in &zoo) introduce(a.as_ref())\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "HEY!\ntrue\n(7, 10)\n",
+    "source": "fun str.shout(): String = self.to_uppercase() + \"!\"\nfun i32.is_even(): bool = this % 2 == 0\n\ndata class Vec2(x: f64, y: f64) {\n    operator fun plus(o: Vec2): Vec2 = Vec2(x + o.x, y + o.y)\n    operator fun times(k: f64): Vec2 = Vec2(x * k, y * k)\n    override fun toString() = \"($x, $y)\"                  // implements Display\n}\n\nfun main() {\n    println(\"hey\".shout())\n    println(4.is_even())\n    println(Vec2(1.0, 2.0) + Vec2(3.0, 4.0) * 2.0)\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "8080\nerror: invalid value 'eighty' for port\n80\n",
+    "source": "error enum ConfigError {\n    Missing(key: String) = \"missing key: $key\"\n    Invalid(key: String, value: String) = \"invalid value '$value' for $key\"\n}\n\nfun port(text: &str): u16 throws ConfigError {\n    if (text.is_empty()) throw ConfigError.Missing(\"port\".to_string())\n    text.parse().map_err { ConfigError.Invalid(\"port\".to_string(), text.to_string()) }?\n}\n\nfun main() {\n    println(port(\"8080\").unwrap())\n    when (val r = port(\"eighty\")) {\n        Ok(p) -> println(\"port $p\")\n        Err(e) -> println(\"error: $e\")\n    }\n    val fallback = port(\"\") ?: 80\n    println(fallback)\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "7\n[1, 2, 3, 1] [1, 2, 3, 1]\n",
+    "source": "fun total(xs: &[i32]): i32 = xs.iter().sum()\nfun add_one(xs: &mut Vec<i32>) = xs.push(1)\n\nfun main() {\n    var v = vec[1, 2, 3]\n    add_one(v)            // the parameter is `&mut`, so `v` is lent mutably: add_one(&mut v)\n    println(total(v))     // ... and here lent for reading: total(&v)\n    val w = v.clone()     // explicit copy\n    val moved = v         // `v` can't be used after this\n    println(\"${w:?} ${moved:?}\")\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "2\n",
+    "source": "fun add(a: i32, b: i32) = a + b\n\ntest \"adds numbers\" {\n    assert_eq(add(2, 2), 4)\n}\n\ntest \"parsing fails on letters\" throws {\n    val r = \"x\".parse::<i32>()\n    assert(r.is_err())\n}\n\nfun main() = println(add(1, 1))\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "item 1, item 2\nitem 3\n",
+    "source": "// dep: tokio = { version = \"1\", features = [\"full\"] }\nimport std::time::Duration\n\nasync fun fetch(id: u32): String {\n    tokio.time.sleep(Duration.from_millis(10)).await\n    \"item $id\"\n}\n\n@tokio::main\nasync fun main() {\n    val a = fetch(1)\n    val b = fetch(2)\n    val (x, y) = tokio::join!(a, b)\n    println(\"$x, $y\")\n    println(await fetch(3))                       // TypeScript-style `await` works too\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
+    "output": "25 8\nplain Rust macro: 2\n",
+    "source": "macro_rules! square {\n    ($x:expr) => { $x * $x };\n}\n\nrust {\n    fn rust_only(x: u32) -> u32 {\n        x.rotate_left(3)\n    }\n}\n\nfun main() {\n    println(\"${square!(5)} ${rust_only(1)}\")\n    println!(\"plain Rust macro: {}\", 1 + 1)\n}\n"
+  },
+  {
+    "file": "docs/rust-interop.md",
+    "output": "api on 8080\n{\"name\":\"api\",\"port\":9090,\"debug\":true}\n",
+    "source": "// dep: serde = { version = \"1\", features = [\"derive\"] }\n// dep: serde_json = \"1\"\nimport serde::{Deserialize, Serialize}\n\n@derive(Serialize, Deserialize)\ndata class Config(name: String, port: u16, debug: bool = false)\n\nfun main() throws {\n    val c: Config = serde_json.from_str(\"\"\"{\"name\": \"api\", \"port\": 8080, \"debug\": true}\"\"\")?\n    println(\"${c.name} on ${c.port}\")\n    println(serde_json.to_string(&c.copy(port = 9090))?)\n}\n"
+  }
+]

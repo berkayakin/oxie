@@ -1,0 +1,29 @@
+---
+title: The Oxie programming language
+description: A programming language for the Rust ecosystem, with a concise, familiar syntax that compiles to plain Rust.
+template: splash
+hero:
+  title: Oxie is a concise, familiar language that compiles to plain Rust
+  tagline: It keeps Rust's ownership, traits and speed, and drops the bookkeeping. Every crate works, and programs run exactly as fast as hand-written Rust, because they are Rust.
+  actions:
+    - text: Take the tour
+      link: /guide/
+      icon: right-arrow
+    - text: Install
+      link: /tooling/#installing
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/oxie-lang/oxie
+      icon: github
+      variant: minimal
+---
+
+import OxieToRust from '../../components/OxieToRust.astro';
+import Why from '../../generated/readme-why.md';
+import Install from '../../generated/readme-install.md';
+
+<OxieToRust />
+
+<Why />
+
+<Install />

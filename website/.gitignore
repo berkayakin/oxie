@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.astro/
+.netlify/
+
+# generated from docs/, CHANGELOG.md and README.md by scripts/sync-docs.mjs
+src/content/docs/*.md
+src/generated/
