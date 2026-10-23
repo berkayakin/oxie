@@ -6,6 +6,7 @@ mod from_rust;
 mod locations;
 mod lsp;
 mod project;
+mod sources;
 
 use std::path::{Path, PathBuf};
 use std::io::IsTerminal;

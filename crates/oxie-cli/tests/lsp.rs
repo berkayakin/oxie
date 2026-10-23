@@ -280,6 +280,71 @@ fn borrow_errors_have_quick_fixes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const PROJECT_MAIN: &str = r#"import text::{describe, keep, Tag}
+
+fun main() {
+    val nums = vec[1, 2, 3]
+    val kept = keep(nums)
+    println("${kept.len()} ${nums.len()}")
+    val tag = Tag("new".to_string())
+    println(describe(tag))
+    println(tag.name)
+}
+"#;
+
+const PROJECT_TEXT: &str = r##"fun keep(v: Vec<i32>): Vec<i32> = v
+data class Tag(name: String)
+fun describe(t: Tag): String = "#${t.name}"
+"##;
+
+/// In a project, an explanation can point at another file (where a function keeps the value
+/// moved into it), and a quick fix can edit it (let the function borrow the value).
+#[test]
+fn explanations_and_fixes_reach_other_files_of_the_project() {
+    let dir = std::env::temp_dir().join(format!("oxie-lsp-project-test-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let build = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../oxie-build").display().to_string().replace('\\', "/");
+    std::fs::write(dir.join("Cargo.toml"), format!("[package]\nname = \"two_files\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n\n[build-dependencies]\noxie-build = {{ path = \"{build}\" }}\n")).unwrap();
+    std::fs::write(dir.join("build.rs"), "fn main() {\n    oxie_build::compile();\n}\n").unwrap();
+    std::fs::write(dir.join("src/main.rs"), "include!(concat!(env!(\"OUT_DIR\"), \"/oxie/main.rs\"));\n").unwrap();
+    std::fs::write(dir.join("src/main.oxi"), PROJECT_MAIN).unwrap();
+    std::fs::write(dir.join("src/text.oxi"), PROJECT_TEXT).unwrap();
+    let uri = file_uri(&oxie_compiler::compile::canonicalize(dir.join("src/main.oxi")).unwrap());
+    let text_uri = file_uri(&oxie_compiler::compile::canonicalize(dir.join("src/text.oxi")).unwrap());
+
+    let mut c = Client::start_with(false);
+    c.request("initialize", json!({"rootUri": file_uri(&dir), "capabilities": {}}));
+    c.notify("initialized", json!({}));
+    c.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "oxie", "version": 1, "text": PROJECT_MAIN}}));
+    let diags = loop {
+        let diags = c.wait_diagnostics(&uri);
+        if diags.as_array().unwrap().iter().filter(|d| d["source"] == "rustc").count() >= 2 {
+            break diags;
+        }
+    };
+    let at_line = |l: u64| diags.as_array().unwrap().iter().find(|d| d["source"] == "rustc" && d["range"]["start"]["line"] == l).cloned().unwrap_or_else(|| panic!("no rustc error on line {l}: {diags}"));
+
+    // `nums` moved into `keep`, which keeps it in text.oxi
+    let moved = at_line(5);
+    let related = moved["relatedInformation"].as_array().unwrap();
+    let kept = related.iter().find(|r| r["location"]["uri"] == text_uri).unwrap_or_else(|| panic!("{moved}"));
+    assert_eq!(kept["location"]["range"]["start"], json!({"line": 0, "character": 34}), "{moved}");
+    assert!(kept["message"].as_str().unwrap().contains("it returns `v`"), "{moved}");
+
+    // `tag` moved into `describe`: the fix changes the parameter in text.oxi
+    let moved = at_line(8);
+    let actions = c.request("textDocument/codeAction", json!({"textDocument": {"uri": uri}, "range": moved["range"], "context": {"diagnostics": [moved]}}));
+    let borrow = actions.as_array().unwrap().iter().find(|a| a["title"] == "Let `describe` borrow it (parameter type `&Tag`)").unwrap_or_else(|| panic!("{actions}"));
+    let edit = &borrow["edit"]["changes"][&text_uri][0];
+    assert_eq!(edit["range"]["start"], json!({"line": 2, "character": 16}), "{borrow}");
+    assert_eq!(edit["newText"], "&Tag", "{borrow}");
+    assert!(borrow["edit"]["changes"].get(&uri).is_none(), "{borrow}");
+
+    let _ = c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A script opened while another script is being checked is checked next (editors open several
 /// files at once when they restore their tabs).
 #[test]

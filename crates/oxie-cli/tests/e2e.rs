@@ -63,23 +63,41 @@ fn run_programs(rel: &str) {
     assert!(failures.is_empty(), "{} program(s) failed:\n{}", failures.len(), failures.join("\n\n"));
 }
 
+/// Programs in `tests/diagnostics`, and projects there (directories with a `Cargo.toml`, built
+/// with `oxie build`) whose errors are explained from declarations in other files. A comment in
+/// any `.oxi` file of a project names a line of that file.
 #[test]
 fn diagnostics_point_at_oxie_sources() {
     let dir = repo().join("tests/diagnostics");
-    let results = parallel(&programs(&dir), |p, cache| {
+    let mut items = programs(&dir);
+    let mut projects: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.join("Cargo.toml").exists()).collect();
+    projects.sort();
+    items.extend(projects);
+    let results = parallel(&items, |p, cache| {
         let mut failures = Vec::new();
-        let src = std::fs::read_to_string(p).unwrap();
-        let comments = |prefix: &str| -> Vec<(String, String)> {
-            src.lines()
-                .filter_map(|l| l.trim().strip_prefix(prefix))
-                .map(|rest| {
+        // (file name, source) of the files whose comments list the errors
+        let files: Vec<(String, String)> = if p.is_dir() { programs(&p.join("src")) } else { vec![p.clone()] }
+            .iter()
+            .map(|f| (f.file_name().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(f).unwrap()))
+            .collect();
+        // (file name, line, text)
+        let comments = |prefix: &str| -> Vec<(String, String, String)> {
+            let mut out = Vec::new();
+            for (name, src) in &files {
+                for rest in src.lines().filter_map(|l| l.trim().strip_prefix(prefix)) {
                     let (line, text) = rest.trim().split_once(':').unwrap();
-                    (line.trim().to_string(), text.trim().to_string())
-                })
-                .collect()
+                    out.push((name.clone(), line.trim().to_string(), text.trim().to_string()));
+                }
+            }
+            out
         };
         let expected = comments("// error:");
-        let out = oxie().arg("run").arg(p).current_dir(&dir).env("OXIE_CACHE", cache).output().unwrap();
+        let out = if p.is_dir() {
+            let target = cache.join("projects").join(p.file_name().unwrap());
+            oxie().arg("build").current_dir(p).env("OXIE_CACHE", cache).env("CARGO_TARGET_DIR", target).output().unwrap()
+        } else {
+            oxie().arg("run").arg(p).current_dir(&dir).env("OXIE_CACHE", cache).output().unwrap()
+        };
         let stderr = String::from_utf8_lossy(&out.stderr);
         if out.status.success() {
             failures.push(format!("{}: expected compilation to fail", p.display()));
@@ -89,18 +107,17 @@ fn diagnostics_point_at_oxie_sources() {
         if stderr.contains("a bug in Oxie") {
             failures.push(format!("{}: reported as a compiler bug\nstderr:\n{}", p.display(), stderr));
         }
-        let name = p.file_name().unwrap().to_string_lossy().to_string();
-        for (line, text) in expected {
+        for (name, line, text) in expected {
             let loc = format!("{}:{}:", name, line);
             let found = stderr.split("\n\n").any(|block| block.contains(&loc) && block.contains(&text));
             if !found {
-                failures.push(format!("{}: missing error at line {} containing `{}`\nstderr:\n{}", p.display(), line, text, stderr));
+                failures.push(format!("{}: missing error at {}:{} containing `{}`\nstderr:\n{}", p.display(), name, line, text, stderr));
             }
         }
-        for (line, text) in comments("// not:") {
+        for (name, line, text) in comments("// not:") {
             let loc = format!("{}:{}:", name, line);
             if stderr.split("\n\n").any(|block| block.contains(&loc) && block.contains(&text)) {
-                failures.push(format!("{}: unexpected error at line {} containing `{}`\nstderr:\n{}", p.display(), line, text, stderr));
+                failures.push(format!("{}: unexpected error at {}:{} containing `{}`\nstderr:\n{}", p.display(), name, line, text, stderr));
             }
         }
         // rustc reports some mistakes twice; each is shown once

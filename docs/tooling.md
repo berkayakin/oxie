@@ -119,6 +119,21 @@ rustc's own suggestions are kept as fixes when they map exactly onto the `.oxi` 
 the original message is shown last (`rustc: ...`) so it can still be searched for. In editors
 the fixes are code actions (quick fixes).
 
+The declaration an explanation depends on may be in another file of the project, such as the
+function a value moved into. A label there is shown under that file's name, and a fix there
+says which file it changes:
+
+```
+ ::: src/text.oxi:3:35
+  |
+3 | fun keep(v: Vec<i32>): Vec<i32> = v
+  |                                   - `keep` keeps it: it returns `v`
+  ...
+  = fix: let `describe` borrow it (parameter type `&Tag`) (in src/text.oxi): `fun describe(t: &Tag): String = "#${t.name}"`
+```
+
+In editors the label is a related location, and the fix edits the other file.
+
 Each generated file has a source map next to it (`main.rs.map`) used for the translation.
 
 Some errors can only come from a bug in Oxie: an error inside the support module `__oxie.rs`,

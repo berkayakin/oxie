@@ -37,6 +37,10 @@
   now names the value and its type and offers to remove the default or to use `.`; a `?:`
   default of another type than the optional value says so. Backtrace frames of `main() throws`
   say `main` instead of the generated `__oxie_main`.
+* Explanations look at every file of the project: when the function a value moved into, a type
+  or a `shared class` is declared in another file, the error points there
+  (`::: src/text.oxi:3:35`) and its fix edits that file, in the terminal and as a quick fix in
+  editors. Before, they only found declarations in the error's own file.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

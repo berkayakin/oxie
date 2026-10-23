@@ -325,16 +325,31 @@ impl Server {
                 let end_line_text = text.lines().nth(d.end_line as usize).unwrap_or("");
                 let end_col: usize = end_line_text.chars().take(d.end_col as usize).map(|c| c.len_utf16()).sum();
                 let uri = path_to_uri(&d.file);
+                // labels and edits may be in another file of the crate
+                let in_file = |f: &Option<PathBuf>| match f {
+                    Some(f) => (path_to_uri(f), std::fs::read_to_string(f).unwrap_or_default()),
+                    None => (uri.clone(), text.clone()),
+                };
                 let related: Vec<Value> = d
                     .secondary
                     .iter()
-                    .map(|s| json!({"location": {"uri": uri, "range": char_range(&text, s.line, s.col, s.line, s.end_col)}, "message": s.text}))
+                    .map(|s| {
+                        let (uri, text) = in_file(&s.file);
+                        json!({"location": {"uri": uri, "range": char_range(&text, s.line, s.col, s.line, s.end_col)}, "message": s.text})
+                    })
                     .collect();
                 let fixes: Vec<Value> = d
                     .fixes
                     .iter()
                     .map(|f| {
-                        let edits: Vec<Value> = f.edits.iter().map(|e| json!({"range": char_range(&text, e.line, e.col, e.end_line, e.end_col), "newText": e.text})).collect();
+                        let edits: Vec<Value> = f
+                            .edits
+                            .iter()
+                            .map(|e| {
+                                let (uri, text) = in_file(&e.file);
+                                json!({"uri": uri, "range": char_range(&text, e.line, e.col, e.end_line, e.end_col), "newText": e.text})
+                            })
+                            .collect();
                         json!({"title": f.title, "edits": edits})
                     })
                     .collect();
@@ -857,12 +872,20 @@ fn code_actions(server: &Server, params: &Value) -> Value {
             if let Some(o) = diag.as_object_mut() {
                 o.remove("data");
             }
+            // edits by file: the diagnostic's, or another file of the crate
+            let mut changes = serde_json::Map::new();
+            for e in f["edits"].as_array().into_iter().flatten() {
+                let target = e["uri"].as_str().unwrap_or(uri).to_string();
+                if let Value::Array(list) = changes.entry(target).or_insert_with(|| json!([])) {
+                    list.push(json!({"range": e["range"], "newText": e["newText"]}));
+                }
+            }
             actions.push(json!({
                 "title": f["title"].as_str().map(capitalize).unwrap_or_default(),
                 "kind": "quickfix",
                 "diagnostics": [diag],
                 "isPreferred": i == 0,
-                "edit": {"changes": {uri: f["edits"].clone()}},
+                "edit": {"changes": changes},
             }));
         }
     }

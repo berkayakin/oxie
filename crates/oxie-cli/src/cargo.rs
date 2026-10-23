@@ -4,9 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 
 use oxie_compiler::SourceMap;
 use serde_json::Value;
+
+use crate::sources::Sources;
 
 pub struct BuildResult {
     pub success: bool,
@@ -31,7 +34,7 @@ pub struct MappedDiag {
     pub notes: Vec<String>,
     /// Whether the location came from a .oxi source map.
     pub from_oxie: bool,
-    /// Other labeled spans in the same file ("value moved here", ...).
+    /// Other labeled spans ("value moved here", ...).
     pub secondary: Vec<Label>,
     /// rustc's suggestions whose spans map exactly onto the .oxi source.
     pub suggestions: Vec<Suggestion>,
@@ -50,6 +53,8 @@ pub struct MappedDiag {
 /// A labeled span on one line (zero-based, character columns).
 #[derive(Clone, Debug)]
 pub struct Label {
+    /// Another file of the crate (a function's declaration); None for the diagnostic's file.
+    pub file: Option<PathBuf>,
     pub line: u32,
     pub col: u32,
     pub end_col: u32,
@@ -70,6 +75,8 @@ pub struct Suggestion {
 /// A text replacement in a source file (zero-based lines, character columns).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Edit {
+    /// Another file of the crate; None for the diagnostic's file.
+    pub file: Option<PathBuf>,
     pub line: u32,
     pub col: u32,
     pub end_line: u32,
@@ -77,7 +84,7 @@ pub struct Edit {
     pub text: String,
 }
 
-/// A quick fix: edits to the diagnostic's file.
+/// A quick fix: edits to the diagnostic's file, and to other files of its crate.
 #[derive(Clone, Debug)]
 pub struct Fix {
     pub title: String,
@@ -88,6 +95,7 @@ pub struct Fix {
 pub struct Mapper {
     maps: HashMap<PathBuf, Option<SourceMap>>,
     texts: HashMap<PathBuf, String>,
+    sources: Vec<Rc<Sources>>,
 }
 
 impl Mapper {
@@ -267,13 +275,13 @@ impl Mapper {
             let site = expansion_site(s);
             if let Some((f, l, c, el, ec)) = self.map_span_exact(root, site) {
                 if f == file && el == l {
-                    secondary.push(Label { line: l, col: c, end_col: ec, text: text.to_string(), exact: true });
+                    secondary.push(Label { file: None, line: l, col: c, end_col: ec, text: text.to_string(), exact: true });
                     continue;
                 }
             }
             if let Some((f, l, c, el, ec, true)) = self.map_span(root, site) {
                 if f == file {
-                    secondary.push(Label { line: l, col: c, end_col: if el == l { ec } else { c + 1 }, text: text.to_string(), exact: false });
+                    secondary.push(Label { file: None, line: l, col: c, end_col: if el == l { ec } else { c + 1 }, text: text.to_string(), exact: false });
                 }
             }
         }
@@ -329,10 +337,20 @@ impl Mapper {
             covers_position: false,
         };
         if d.from_oxie {
-            let src = self.text_of(&d.file).to_string();
-            crate::explain::explain(&mut d, &src);
+            let sources = self.sources_of(&d.file);
+            crate::explain::explain(&mut d, &sources);
         }
         Some(d)
+    }
+
+    /// The `.oxi` files of the crate `file` belongs to, read once per crate.
+    fn sources_of(&mut self, file: &Path) -> Rc<Sources> {
+        if let Some(s) = self.sources.iter().find(|s| s.file(file).is_some()) {
+            return s.clone();
+        }
+        let s = Rc::new(Sources::of(file));
+        self.sources.push(s.clone());
+        s
     }
 }
 
@@ -369,39 +387,57 @@ pub fn render(d: &MappedDiag, root: &Path) -> String {
     let (red, yellow, blue, bold, reset) = if c { ("\x1b[31m", "\x1b[33m", "\x1b[34m", "\x1b[1m", "\x1b[0m") } else { ("", "", "", "", "") };
     let lc = if d.level == "error" { red } else { yellow };
     let cwd = std::env::current_dir().unwrap_or_default();
-    let shown = d.file.strip_prefix(&cwd).or_else(|_| d.file.strip_prefix(root)).unwrap_or(&d.file).display().to_string();
+    let shown = |p: &Path| p.strip_prefix(&cwd).or_else(|_| p.strip_prefix(root)).unwrap_or(p).display().to_string();
     let text = std::fs::read_to_string(&d.file).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     let primary_width = if d.end_line == d.line { d.end_col.saturating_sub(d.col).max(1) } else { 1 };
     // (line, col, width, label, is_primary)
     let mut labels: Vec<(u32, u32, u32, String, bool)> = vec![(d.line, d.col, primary_width, d.label.clone().unwrap_or_default(), true)];
+    // labels in other files of the crate, by file
+    let mut elsewhere: Vec<(&Path, Vec<(u32, u32, u32, String, bool)>)> = Vec::new();
     for s in &d.secondary {
-        labels.push((s.line, s.col, s.end_col.saturating_sub(s.col).max(1), s.text.clone(), false));
+        let label = (s.line, s.col, s.end_col.saturating_sub(s.col).max(1), s.text.clone(), false);
+        match &s.file {
+            None => labels.push(label),
+            Some(f) => match elsewhere.iter_mut().find(|(p, _)| p == f) {
+                Some((_, ls)) => ls.push(label),
+                None => elsewhere.push((f, vec![label])),
+            },
+        }
     }
-    labels.sort_by_key(|l| (l.0, !l.4, l.1));
-    let num_width = labels.iter().map(|l| (l.0 + 1).to_string().len()).max().unwrap_or(1);
+    let num_width = labels.iter().chain(elsewhere.iter().flat_map(|(_, ls)| ls)).map(|l| (l.0 + 1).to_string().len()).max().unwrap_or(1);
     let pad = " ".repeat(num_width);
+    let snippet = |out: &mut String, lines: &[&str], labels: &mut Vec<(u32, u32, u32, String, bool)>| {
+        labels.sort_by_key(|l| (l.0, !l.4, l.1));
+        let mut last_line: Option<u32> = None;
+        for (line, col, width, label, is_primary) in labels.iter() {
+            let line_text = lines.get(*line as usize).copied().unwrap_or("");
+            if last_line != Some(*line) {
+                if last_line.is_some_and(|l| *line > l + 1) {
+                    *out += &format!("{blue}{}{reset}\n", ".".repeat(num_width.max(3)));
+                }
+                *out += &format!("{blue}{:>num_width$} |{reset} {}\n", line + 1, line_text);
+            }
+            last_line = Some(*line);
+            let width = (*width as usize).min(line_text.chars().count().saturating_sub(*col as usize).max(1));
+            let (mark, color) = if *is_primary { ("^", lc) } else { ("-", blue) };
+            *out += &format!("{pad} {blue}|{reset} {}{color}{}{reset}", " ".repeat(*col as usize), mark.repeat(width));
+            if !label.is_empty() {
+                *out += &format!(" {color}{}{reset}", label);
+            }
+            out.push('\n');
+        }
+    };
     let code = d.code.as_ref().map(|c| format!("[{}]", c)).unwrap_or_default();
     let mut out = format!("{bold}{lc}{}{}{reset}{bold}: {}{reset}\n", d.level, code, d.message);
-    out += &format!("{pad}{blue}-->{reset} {}:{}:{}\n", shown, d.line + 1, d.col + 1);
+    out += &format!("{pad}{blue}-->{reset} {}:{}:{}\n", shown(&d.file), d.line + 1, d.col + 1);
     out += &format!("{pad} {blue}|{reset}\n");
-    let mut last_line: Option<u32> = None;
-    for (line, col, width, label, is_primary) in &labels {
-        let line_text = lines.get(*line as usize).copied().unwrap_or("");
-        if last_line != Some(*line) {
-            if last_line.is_some_and(|l| *line > l + 1) {
-                out += &format!("{blue}{}{reset}\n", ".".repeat(num_width.max(3)));
-            }
-            out += &format!("{blue}{:>num_width$} |{reset} {}\n", line + 1, line_text);
-        }
-        last_line = Some(*line);
-        let width = (*width as usize).min(line_text.chars().count().saturating_sub(*col as usize).max(1));
-        let (mark, color) = if *is_primary { ("^", lc) } else { ("-", blue) };
-        out += &format!("{pad} {blue}|{reset} {}{color}{}{reset}", " ".repeat(*col as usize), mark.repeat(width));
-        if !label.is_empty() {
-            out += &format!(" {color}{}{reset}", label);
-        }
-        out.push('\n');
+    snippet(&mut out, &lines, &mut labels);
+    for (file, mut ls) in elsewhere {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        let first = ls.iter().map(|l| (l.0, l.1)).min().unwrap_or_default();
+        out += &format!("{pad} {blue}|{reset}\n{pad}{blue}:::{reset} {}:{}:{}\n{pad} {blue}|{reset}\n", shown(file), first.0 + 1, first.1 + 1);
+        snippet(&mut out, &text.lines().collect::<Vec<_>>(), &mut ls);
     }
     for n in &d.notes {
         let n = n.replace('\n', &format!("\n{pad}   "));
@@ -409,7 +445,14 @@ pub fn render(d: &MappedDiag, root: &Path) -> String {
     }
     for f in &d.fixes {
         out += &format!("{pad} {blue}={reset} {bold}fix{reset}: {}", f.title);
-        if let Some(preview) = fix_preview(&lines, f) {
+        // a fix in another file says where
+        let other = f.edits.first().and_then(|e| e.file.as_deref()).filter(|o| f.edits.iter().all(|e| e.file.as_deref() == Some(*o)));
+        if let Some(o) = other {
+            out += &format!(" (in {})", shown(o));
+        }
+        let other_text = other.map(|o| std::fs::read_to_string(o).unwrap_or_default());
+        let preview_lines: Vec<&str> = other_text.as_deref().unwrap_or(&text).lines().collect();
+        if let Some(preview) = fix_preview(&preview_lines, f) {
             out += &format!(": `{}`", preview);
         }
         out.push('\n');
@@ -420,10 +463,11 @@ pub fn render(d: &MappedDiag, root: &Path) -> String {
     out
 }
 
-/// The changed line, when a fix only touches one line.
+/// The changed line, when a fix only touches one line (of one file).
 fn fix_preview(lines: &[&str], f: &Fix) -> Option<String> {
-    let line = f.edits.first()?.line;
-    if f.edits.iter().any(|e| e.line != line || e.end_line != line || e.text.contains('\n')) {
+    let first = f.edits.first()?;
+    let line = first.line;
+    if f.edits.iter().any(|e| e.line != line || e.end_line != line || e.text.contains('\n') || e.file != first.file) {
         return None;
     }
     let mut chars: Vec<char> = lines.get(line as usize)?.chars().collect();

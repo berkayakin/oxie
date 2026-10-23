@@ -157,9 +157,10 @@ fn rebinds(body: &Block, name: &str) -> bool {
     found
 }
 
-/// A `String` or `Vec<T>` parameter that may be borrowed: its function, position, kind and name,
-/// and the function's body.
+/// A `String` or `Vec<T>` parameter that may be borrowed: its function (and the index of the
+/// file declaring it), position, kind and name, and the function's body.
 struct Cand<'a> {
+    file: usize,
     fun: &'a FunDecl,
     index: usize,
     kind: Kind,
@@ -176,15 +177,18 @@ struct Analysis<'a> {
 
 impl<'a> Analysis<'a> {
     fn new(files: &[&'a File]) -> Analysis<'a> {
+        // (file index, item, function)
         let mut funs = Vec::new();
-        for f in files {
-            top_level_funs(&f.items, &mut funs);
+        for (i, f) in files.iter().enumerate() {
+            let mut here = Vec::new();
+            top_level_funs(&f.items, &mut here);
+            funs.extend(here.into_iter().map(|(it, d)| (i, it, d)));
         }
         let mut count: HashMap<&str, usize> = HashMap::new();
-        for (_, f) in &funs {
+        for (_, _, f) in &funs {
             *count.entry(f.name.as_str()).or_default() += 1;
         }
-        let decls: HashMap<&str, &FunDecl> = funs.iter().filter(|(_, f)| count[f.name.as_str()] == 1).map(|(_, f)| (f.name.as_str(), *f)).collect();
+        let decls: HashMap<&str, &FunDecl> = funs.iter().filter(|(_, _, f)| count[f.name.as_str()] == 1).map(|(_, _, f)| (f.name.as_str(), *f)).collect();
 
         // functions used as values (`xs.map(greet)`) or called through a path (`util.greet(x)`,
         // whose arguments aren't matched to parameters) keep their signature
@@ -208,7 +212,7 @@ impl<'a> Analysis<'a> {
 
         let mut cands = Vec::new();
         let mut alive = HashSet::new();
-        for (it, f) in &funs {
+        for &(file, it, f) in &funs {
             let eligible = it.vis != Vis::Public
                 && decls.contains_key(f.name.as_str())
                 && !as_value.contains(&f.name)
@@ -227,7 +231,7 @@ impl<'a> Analysis<'a> {
                 if rebinds(&body, name) {
                     continue;
                 }
-                cands.push(Cand { fun: f, index: i, kind, name: name.as_str(), body: body.clone() });
+                cands.push(Cand { file, fun: f, index: i, kind, name: name.as_str(), body: body.clone() });
                 alive.insert((f.name.clone(), i));
             }
         }
@@ -343,9 +347,10 @@ impl<'a> Analysis<'a> {
 }
 
 /// Why the top-level function `fun` keeps its `String` or `Vec` parameter number `index`
-/// instead of borrowing it: the first use that needs the owned value, and what that use does
-/// ("it returns `v`"). None when the parameter is borrowed or isn't a candidate.
-pub fn kept_reason(files: &[&File], fun: &str, index: usize) -> Option<(Span, String)> {
+/// instead of borrowing it: the index of the file declaring it, the first use that needs the
+/// owned value, and what that use does ("it returns `v`"). None when the parameter is borrowed
+/// or isn't a candidate.
+pub fn kept_reason(files: &[&File], fun: &str, index: usize) -> Option<(usize, Span, String)> {
     let a = Analysis::new(files);
     let c = a.cands.iter().find(|c| c.fun.name == fun && c.index == index)?;
     let at = a.first_owned_use(c)?;
@@ -379,7 +384,7 @@ pub fn kept_reason(files: &[&File], fun: &str, index: usize) -> Option<(Span, St
         true
     });
     let len = if what.as_deref().is_some_and(|w| w.starts_with("a `move`")) { 1 } else { name.len() as u32 };
-    Some((Span { start: at, end: at + len }, what.unwrap_or_else(|| format!("it uses `{}` by value", name))))
+    Some((c.file, Span { start: at, end: at + len }, what.unwrap_or_else(|| format!("it uses `{}` by value", name))))
 }
 
 pub fn borrow_params(files: &mut [&mut File]) {
@@ -427,7 +432,7 @@ mod tests {
     fn reason(src: &str, fun: &str) -> Option<(String, String)> {
         let (file, diags) = crate::parser::parse_file(src);
         assert!(diags.is_empty(), "{:?}", diags);
-        kept_reason(&[&file], fun, 0).map(|(s, w)| (src[s.start as usize..s.end as usize].to_string(), w))
+        kept_reason(&[&file], fun, 0).map(|(_, s, w)| (src[s.start as usize..s.end as usize].to_string(), w))
     }
 
     #[test]

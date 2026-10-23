@@ -1,0 +1,23 @@
+// Errors explained from declarations in another file of the crate (text.oxi).
+
+import text::{describe, first_word, keep, Tag, Total}
+
+fun main() {
+    val nums = vec[1, 2, 3]
+    val kept = keep(nums)
+    println("${kept.len()} ${nums.len()}")
+    // error: 8: `keep` keeps it (it returns `v`)
+    val tag = Tag("new".to_string())
+    println(describe(tag))
+    println(tag.name)
+    // error: 12: fix: let `describe` borrow it (parameter type `&Tag`) (in src/text.oxi): `fun describe(t: &Tag): String = "#${t.name}"`
+    val line = "hello world".to_string()
+    val w = first_word(line, " ".to_string())
+    // error: 15: name the lifetime yourself (in text.oxi): `fun first_word<'a>(text: &'a str, sep: &str): &'a str`
+    println(w)
+}
+
+fun show(t: Total) {
+    println("$t")
+    // error: 21: print its debug form with a `:?` spec
+}

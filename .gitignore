@@ -1,2 +1,4 @@
 target/
 .DS_Store
+# the lock files of the test projects under tests/diagnostics
+tests/diagnostics/*/Cargo.lock

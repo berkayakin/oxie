@@ -1,0 +1,11 @@
+// Declarations the errors in main.oxi depend on.
+
+fun keep(v: Vec<i32>): Vec<i32> = v
+// error: 3: `keep` keeps it: it returns `v`
+
+data class Tag(name: String)
+fun describe(t: Tag): String = "#${t.name}"
+
+data class Total(sum: i32)
+
+fun first_word(text: &str, sep: &str): &str = text.split(sep).next().unwrap_or(text)

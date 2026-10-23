@@ -153,6 +153,18 @@ into a function that keeps its parameter points at the use `params::kept_reason`
 borrow that ends too early because of the shared `'a` of automatic lifetimes shows the
 signature with a narrower one.
 
+An explanation sees every `.oxi` file of the crate (`sources.rs`: the project's `src/`, or the
+script): the function a value moved into, a type or a `shared class` may be declared in
+another file. Labels (`Label::file`) and edits (`Edit::file`) there name their file; the CLI
+shows such labels under `::: file:line:col`, and the language server sends them as related
+information and the edits as part of the quick fix. A name declared in several files isn't
+looked up, since which one is meant isn't known.
+
+`?:` and `?.` on a value that can't be null are recognized from rustc's errors about the
+runtime helpers (`ElvisOr`, `Elvis`, the `as_ref`/`map` of a safe call) and the `Elvis` or safe
+call expression at the error's position in the parsed file. The explanation `covers_position`:
+rustc's later errors at that position (a `?` in a `throws` function) aren't shown.
+
 Before any of that, `Mapper::compiler_bug` sets aside errors that only a bug in Oxie can cause:
 one inside `__oxie.rs`, or a Rust syntax error in code generated from a file without verbatim
 Rust (`rust { }` blocks and macro calls). They are reported as "Oxie generated Rust that doesn't
@@ -184,7 +196,9 @@ scopes asserted in `editors/vscode-oxie/test/grammar/*.oxi`.
 * `crates/oxie-cli/tests/e2e.rs`:
   * `tests/e2e/*.oxi` programs run and compared with `.out` files;
   * `tests/coverage/*.oxi`: one program per Rust feature, compared with `.out` files;
-  * `tests/diagnostics/*.oxi` must fail with `// error: <line>: <text>` errors at the right lines;
+  * `tests/diagnostics/*.oxi` must fail with `// error: <line>: <text>` errors at the right lines
+    (and without the `// not: <line>: <text>` ones), each shown once; projects in
+    `tests/diagnostics/*/` are built the same way, for explanations that use other files;
   * every example in `examples/` runs (compared with `expected.txt`) and its tests pass;
   * every runnable code block in `README.md` and `docs/*.md` compiles and runs.
 * `crates/oxie-cli/tests/emit.rs`: the Rust generated for `tests/emit/*.oxi` must equal the

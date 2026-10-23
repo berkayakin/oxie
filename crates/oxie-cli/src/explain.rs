@@ -4,14 +4,20 @@
 //! this module rewrites the common ones in Oxie terms (`val`/`var`, lambdas, `throws`), relabels
 //! the related spans ("moved here", "borrowed here") and computes fixes as edits to the .oxi
 //! source. Fixes come from two places: rustc's own suggestions whose spans map exactly onto the
-//! source, and Oxie-specific edits found by looking at the source text.
+//! source, and Oxie-specific edits found by looking at the source text. A declaration the error
+//! depends on (the function a value moved into, a type) may be in another file of the crate.
+
+use std::path::{Path, PathBuf};
 
 use crate::cargo::{Edit, Fix, Label, MappedDiag};
+use crate::sources::Sources;
 use oxie_compiler::ast::ExprKind;
 use oxie_compiler::diag::Span;
 
-pub fn explain(d: &mut MappedDiag, src: &str) {
-    let lines: Vec<&str> = src.lines().collect();
+pub fn explain(d: &mut MappedDiag, sources: &Sources) {
+    let Some(here) = sources.file(&d.file) else { return };
+    let src = here.text.as_str();
+    let lines = here.lines();
     if not_optional(d, src) {
         generated_names(d);
         return;
@@ -20,9 +26,9 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
     let first = names.first().cloned().unwrap_or_default();
     let code = d.code.clone().unwrap_or_default();
     match code.as_str() {
-        "E0382" => moved_value(d, src, &lines, &first),
+        "E0382" => moved_value(d, sources, &lines, &first),
         "E0384" => assign_twice(d, &lines, &first),
-        "E0596" => borrow_mut(d, &lines, &first),
+        "E0596" => borrow_mut(d, sources, &lines, &first),
         "E0499" | "E0502" | "E0505" | "E0506" => borrow_conflict(d, &lines, &first, &code),
         "E0507" => {
             rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
@@ -33,13 +39,13 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
         "E0597" => {
             rewrite(d, format!("`{}` is dropped while something still refers to it", first));
             d.notes.push(help(&format!("a reference to `{}` is used after `{}` goes out of scope (the end of its block). Declare `{}` in an outer block, or store a copy instead of a reference.", first, first, first)));
-            lifetime_hint(d, &lines);
+            lifetime_hint(d, sources, &lines);
         }
         "E0716" => {
             rewrite(d, "a temporary value is dropped while something still refers to it".to_string());
             d.notes.retain(|n| !n.contains("`let` binding"));
             d.notes.push(help("store the value in a `val` first, then borrow from that variable."));
-            lifetime_hint(d, &lines);
+            lifetime_hint(d, sources, &lines);
         }
         "E0106" => {
             d.notes.push(help("Oxie fills in lifetimes for functions and for classes that hold references, but not here; write them yourself (`fun f<'a>(x: &'a str): &'a str`), or hold owned values (`String` instead of `&str`) to avoid lifetimes altogether."));
@@ -51,11 +57,11 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
             }
             imports(d, &lines);
         }
-        "E0277" => trait_missing(d, &lines, &names),
+        "E0277" => trait_missing(d, sources, &lines, &names),
         "E0308" => mismatched(d, src, &lines),
         "E0615" => getter_call(d, &lines, &first),
         // reported without a code
-        _ if d.message.starts_with("future cannot be sent between threads safely") => thread_safety(d, &lines, ""),
+        _ if d.message.starts_with("future cannot be sent between threads safely") => thread_safety(d, sources, ""),
         _ => {}
     }
     match d.code.as_deref() {
@@ -87,7 +93,7 @@ fn generated_names(d: &mut MappedDiag) {
 // ---------------------------------------------------------------------------------------------
 // individual errors
 
-fn moved_value(d: &mut MappedDiag, src: &str, lines: &[&str], name: &str) {
+fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str) {
     refine(d, lines, name);
     let in_loop = d.label.as_deref().is_some_and(|l| l.contains("previous iteration")) || d.secondary.iter().any(|s| s.text.contains("previous iteration"));
     let mut move_site: Option<(u32, u32)> = None;
@@ -126,18 +132,22 @@ fn moved_value(d: &mut MappedDiag, src: &str, lines: &[&str], name: &str) {
     );
     d.notes.retain(|n| !n.starts_with("note: move occurs") && !n.contains("consider changing this parameter type") && !n.contains("consider cloning"));
     let callee_text = callee.as_ref().map(|(f, _)| format!("`{}`", f)).unwrap_or_else(|| "the new owner".into());
-    let param = callee.as_ref().and_then(|(f, index)| fun_param(lines, f, *index));
+    // the callee's parameter, declared in this file or another one: (file, line, type start,
+    // type end, type, declaration line)
+    let param = callee.as_ref().and_then(|(f, index)| {
+        let file = sources.declaring(&d.file, |ls| fun_param(ls, f, *index).is_some())?;
+        let lines = file.lines();
+        let (pl, pc, pe, ty) = fun_param(&lines, f, *index)?;
+        Some((sources.elsewhere(&file.path, &d.file), pl, pc, pe, ty, lines[pl as usize].to_string()))
+    });
     // Oxie already lends `String` and `Vec` parameters that a top-level function only reads; one
     // that stayed owned is kept by the function (stored or returned), so `&` wouldn't compile
-    let kept = param.as_ref().is_some_and(|(pl, _, _, ty)| {
-        let decl = lines.get(*pl as usize).copied().unwrap_or("");
-        ["fun ", "private fun ", "internal fun "].iter().any(|p| decl.starts_with(p)) && (ty == "String" || ty.starts_with("Vec<"))
-    });
+    let kept = param.as_ref().is_some_and(|(.., ty, decl)| ["fun ", "private fun ", "internal fun "].iter().any(|p| decl.starts_with(p)) && (ty == "String" || ty.starts_with("Vec<")));
     if kept {
         // say where and why the function keeps it, from the same rules that decided it
-        let why = callee.as_ref().and_then(|(f, index)| kept_reason(src, f, *index));
-        if let Some((l, c, e, why)) = &why {
-            d.secondary.push(Label { line: *l, col: *c, end_col: *e, text: format!("{} keeps it: {}", callee_text, why), exact: true });
+        let why = callee.as_ref().and_then(|(f, index)| kept_reason(sources, &d.file, f, *index));
+        if let Some((file, l, c, e, why)) = &why {
+            d.secondary.push(Label { file: file.clone(), line: *l, col: *c, end_col: *e, text: format!("{} keeps it: {}", callee_text, why), exact: true });
         }
         let because = why.map(|(.., w)| format!(" ({})", w)).unwrap_or_default();
         d.notes.push(help(&format!(
@@ -157,10 +167,10 @@ fn moved_value(d: &mut MappedDiag, src: &str, lines: &[&str], name: &str) {
             d.fixes.push(Fix { title: format!("pass a copy of `{}`", name), edits: vec![edit(l, end, end, ".clone()")] });
         }
     }
-    if let (Some((f, _)), Some((pl, pc, pe, ty))) = (callee, param) {
+    if let (Some((f, _)), Some((file, pl, pc, pe, ty, _))) = (callee, param) {
         if !ty.starts_with('&') && !is_copy_type(&ty) && !kept {
             let borrowed = borrowed_type(&ty);
-            d.fixes.push(Fix { title: format!("let `{}` borrow it (parameter type `{}`)", f, borrowed), edits: vec![edit(pl, pc, pe, &borrowed)] });
+            d.fixes.push(Fix { title: format!("let `{}` borrow it (parameter type `{}`)", f, borrowed), edits: vec![Edit { file, ..edit(pl, pc, pe, &borrowed) }] });
         }
     }
 }
@@ -178,7 +188,7 @@ fn assign_twice(d: &mut MappedDiag, lines: &[&str], name: &str) {
     make_var(d, lines, name);
 }
 
-fn borrow_mut(d: &mut MappedDiag, lines: &[&str], first: &str) {
+fn borrow_mut(d: &mut MappedDiag, sources: &Sources, lines: &[&str], first: &str) {
     let name = first.trim_start_matches('*').split(['.', '[']).next().unwrap_or("").to_string();
     refine(d, lines, &name);
     if d.message.contains("behind a `&` reference") {
@@ -189,13 +199,18 @@ fn borrow_mut(d: &mut MappedDiag, lines: &[&str], first: &str) {
             let rest: String = line.chars().skip(pc as usize).collect();
             if rest.starts_with('&') && !rest.starts_with("&mut ") && !rest.starts_with("&'") {
                 let mut edits = vec![edit(pl, pc, pc + 1, "&mut ")];
-                // callers in this file that pass `&x` now need `&mut x`
-                for (cl, cline) in lines.iter().enumerate() {
-                    for (start, args) in calls_of(cline, &fname) {
-                        if let Some((ac, atext)) = args.get(index) {
-                            if atext.starts_with('&') && !atext.starts_with("&mut ") && cl as u32 != pl {
-                                let c = (start + ac) as u32;
-                                edits.push(edit(cl as u32, c, c + 1, "&mut "));
+                // callers that pass `&x` now need `&mut x`: in every file of the crate, unless
+                // another file declares a function with the same name
+                let unique = sources.count_declaring(|ls| ls.iter().any(|t| declares_fun(t, &fname))) <= 1;
+                for file in sources.files.iter().filter(|f| unique || sources.elsewhere(&f.path, &d.file).is_none()) {
+                    let other = sources.elsewhere(&file.path, &d.file);
+                    for (cl, cline) in file.lines().iter().enumerate() {
+                        for (start, args) in calls_of(cline, &fname) {
+                            if let Some((ac, atext)) = args.get(index) {
+                                if atext.starts_with('&') && !atext.starts_with("&mut ") && (other.is_some() || cl as u32 != pl) {
+                                    let c = (start + ac) as u32;
+                                    edits.push(Edit { file: other.clone(), ..edit(cl as u32, c, c + 1, "&mut ") });
+                                }
                             }
                         }
                     }
@@ -222,7 +237,7 @@ fn make_var(d: &mut MappedDiag, lines: &[&str], name: &str) {
     }
     if let Some((l, c)) = find_decl(lines, name, d.line, "val") {
         if !d.secondary.iter().any(|s| s.line == l) {
-            d.secondary.push(Label { line: l, col: c, end_col: c + 3, text: "declared with `val` here".into(), exact: true });
+            d.secondary.push(Label { file: None, line: l, col: c, end_col: c + 3, text: "declared with `val` here".into(), exact: true });
         }
         d.notes.push(help(&format!("declare it with `var` to allow changes: `var {} = ...`.", name)));
         d.fixes.push(Fix { title: format!("declare `{}` with `var`", name), edits: vec![edit(l, c, c + 3, "var")] });
@@ -323,19 +338,25 @@ fn borrow_conflict(d: &mut MappedDiag, lines: &[&str], name: &str, code: &str) {
 }
 
 /// A value that isn't `Send`/`Sync` used from another thread: usually a `shared class` handle.
-fn thread_safety(d: &mut MappedDiag, lines: &[&str], ty: &str) {
+fn thread_safety(d: &mut MappedDiag, sources: &Sources, ty: &str) {
     let future = d.message.starts_with("future cannot be");
     // for a future, the type is in a note: "the trait `Send` is not implemented for `Rc<..>`"
     let noted = d.notes.iter().find_map(|n| n.split("is not implemented for `").nth(1).and_then(|t| t.rsplit_once('`')).map(|(t, _)| t.to_string()));
     let ty = if ty.is_empty() { noted.as_deref().unwrap_or("") } else { ty };
     d.notes.retain(|n| !n.contains("full name for the type") && !n.contains("--verbose") && !n.contains("{closure@") && !n.contains("required because it's used within"));
     let class = ty.strip_prefix("Rc<RefCell<").and_then(|t| t.strip_suffix("Data>>"));
-    let decl = class.and_then(|c| {
+    // `shared class C` in some file of the crate: (the file unless it's this one, line, column)
+    let decl_in = |lines: &[&str], c: &str| -> Option<(u32, u32)> {
         let pat = format!("shared class {}", c);
         lines.iter().enumerate().find_map(|(l, t)| t.find(&pat).filter(|i| t[i + pat.len()..].chars().next().is_none_or(|c| !is_ident_char(c))).map(|i| (l as u32, t[..i].chars().count() as u32)))
+    };
+    let decl = class.and_then(|c| {
+        let file = sources.declaring(&d.file, |ls| decl_in(ls, c).is_some())?;
+        let (l, col) = decl_in(&file.lines(), c)?;
+        Some((sources.elsewhere(&file.path, &d.file), l, col))
     });
     match (class, decl) {
-        (Some(c), Some((l, col))) => {
+        (Some(c), Some((file, l, col))) => {
             if future {
                 rewrite(d, format!("this task can't move between threads: it holds a `{}` across an `await`", c));
                 d.notes.retain(|n| !n.contains("is not implemented for"));
@@ -347,7 +368,7 @@ fn thread_safety(d: &mut MappedDiag, lines: &[&str], ty: &str) {
                 "a `shared class` handle (`Rc<RefCell<..>>`) belongs to one thread. Declare it `@sync shared class {}`, which uses `Arc<Mutex<..>>` so threads can share it.",
                 c
             )));
-            d.fixes.push(Fix { title: format!("make `{}` usable from several threads (`@sync`)", c), edits: vec![edit(l, col, col, "@sync ")] });
+            d.fixes.push(Fix { title: format!("make `{}` usable from several threads (`@sync`)", c), edits: vec![Edit { file, ..edit(l, col, col, "@sync ") }] });
         }
         _ if future => {
             rewrite(d, "this task can't move between threads: it holds a value across an `await` that belongs to one thread".into());
@@ -487,10 +508,10 @@ fn import_line(lines: &[&str]) -> u32 {
     lines.iter().rposition(|l| l.starts_with("import ")).map(|i| i as u32 + 1).unwrap_or(0)
 }
 
-fn trait_missing(d: &mut MappedDiag, lines: &[&str], names: &[String]) {
+fn trait_missing(d: &mut MappedDiag, sources: &Sources, lines: &[&str], names: &[String]) {
     let msg = d.message.clone();
     if msg.contains("cannot be sent between threads safely") || msg.contains("cannot be shared between threads safely") {
-        thread_safety(d, lines, names.first().map(String::as_str).unwrap_or(""));
+        thread_safety(d, sources, names.first().map(String::as_str).unwrap_or(""));
         return;
     }
     if msg.contains("the `?` operator can only be used") {
@@ -519,7 +540,7 @@ fn trait_missing(d: &mut MappedDiag, lines: &[&str], names: &[String]) {
     }
     let base = ty.split('<').next().unwrap_or(ty).trim_start_matches('&').to_string();
     let is_std_collection = matches!(base.as_str(), "Vec" | "Option" | "HashMap" | "HashSet" | "BTreeMap" | "BTreeSet" | "VecDeque" | "Result") || base.starts_with('(') || base.starts_with('[');
-    let user_kind = user_type_kind(lines, &base);
+    let user_kind = sources.declaring(&d.file, |ls| user_type_kind(ls, &base).is_some()).and_then(|f| user_type_kind(&f.lines(), &base));
     d.notes.retain(|n| !n.contains("in format strings you may be able to use") && !n.contains("is not implemented for"));
     if display {
         rewrite(d, format!("`{}` has no text form for `$` templates", ty));
@@ -778,7 +799,7 @@ fn not_optional(d: &mut MappedDiag, src: &str) -> bool {
         let idx = oxie_compiler::LineIndex::new(src);
         let (l, c) = idx.line_col(src, removed.start as usize);
         let (el, ec) = idx.line_col(src, removed.end as usize);
-        d.fixes = vec![Fix { title, edits: vec![Edit { line: l as u32, col: c as u32, end_line: el as u32, end_col: ec as u32, text: replacement.to_string() }] }];
+        d.fixes = vec![Fix { title, edits: vec![Edit { file: None, line: l as u32, col: c as u32, end_line: el as u32, end_col: ec as u32, text: replacement.to_string() }] }];
     }
     let idx = oxie_compiler::LineIndex::new(src);
     let (l, c) = idx.line_col(src, value.start as usize);
@@ -878,7 +899,7 @@ fn rustc_fixes(d: &mut MappedDiag, lines: &[&str]) {
             }
             _ => continue,
         };
-        let e = Edit { line: s.line, col: s.col, end_line: s.end_line, end_col: s.end_col, text: r.to_string() };
+        let e = Edit { file: None, line: s.line, col: s.col, end_line: s.end_line, end_col: s.end_col, text: r.to_string() };
         if d.fixes.iter().any(|f| f.edits.iter().any(|x| x.line == e.line && x.col == e.col)) {
             continue;
         }
@@ -901,7 +922,7 @@ fn help(s: &str) -> String {
 }
 
 fn edit(line: u32, col: u32, end_col: u32, text: &str) -> Edit {
-    Edit { line, col, end_line: line, end_col, text: text.to_string() }
+    Edit { file: None, line, col, end_line: line, end_col, text: text.to_string() }
 }
 
 fn describe(path: &str) -> String {
@@ -1155,10 +1176,30 @@ fn param_decl(lines: &[&str], name: &str, line: u32) -> Option<(u32, u32, String
     None
 }
 
-/// Parameter `index` of `fun name(...)` declared in this file: (line, type start, type end, type).
+/// The line without a `//` comment at its end.
+fn code(line: &str) -> &str {
+    let (mut in_str, mut escaped) = (false, false);
+    for (i, c) in line.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if in_str => escaped = true,
+            '"' => in_str = !in_str,
+            '/' if !in_str && line[i + 1..].starts_with('/') => return &line[..i],
+            _ => {}
+        }
+    }
+    line
+}
+
+/// Does this line declare `fun name(` (outside a comment)?
+fn declares_fun(line: &str, name: &str) -> bool {
+    code(line).contains(&format!("fun {}(", name))
+}
+
+/// Parameter `index` of `fun name(...)` declared in these lines: (line, type start, type end, type).
 fn fun_param(lines: &[&str], name: &str, index: usize) -> Option<(u32, u32, u32, String)> {
     let pat = format!("fun {}(", name);
-    let l = lines.iter().position(|t| t.contains(&pat))?;
+    let l = lines.iter().position(|t| declares_fun(t, name))?;
     let text = lines[l];
     let open = text.find(&pat)? + pat.len();
     let params = split_args(&text[open..]);
@@ -1172,35 +1213,42 @@ fn fun_param(lines: &[&str], name: &str, index: usize) -> Option<(u32, u32, u32,
     Some((l as u32, col as u32, (col + ty_text.chars().count()) as u32, ty_text.to_string()))
 }
 
-/// Where and why the function `f` declared in `src` keeps its parameter number `index` (zero-based
-/// line and columns, and a clause like "it returns `v`").
-fn kept_reason(src: &str, f: &str, index: usize) -> Option<(u32, u32, u32, String)> {
-    let (file, _) = oxie_compiler::parser::parse_file(src);
-    let (span, why) = oxie_compiler::params::kept_reason(&[&file], f, index)?;
-    let idx = oxie_compiler::LineIndex::new(src);
-    let (l, c) = idx.line_col(src, span.start as usize);
-    let (el, ec) = idx.line_col(src, span.end as usize);
-    Some((l as u32, c as u32, if el == l { ec as u32 } else { c as u32 + 1 }, why))
+/// Where and why the function `f` keeps its parameter number `index`: the file when it isn't
+/// `current`, zero-based line and columns, and a clause like "it returns `v`". The rules that
+/// decided it see the whole crate, as when it was compiled.
+fn kept_reason(sources: &Sources, current: &Path, f: &str, index: usize) -> Option<(Option<PathBuf>, u32, u32, u32, String)> {
+    let files: Vec<&oxie_compiler::ast::File> = sources.files.iter().map(|s| s.ast()).collect();
+    let (i, span, why) = oxie_compiler::params::kept_reason(&files, f, index)?;
+    let file = &sources.files[i];
+    let idx = oxie_compiler::LineIndex::new(&file.text);
+    let (l, c) = idx.line_col(&file.text, span.start as usize);
+    let (el, ec) = idx.line_col(&file.text, span.end as usize);
+    Some((sources.elsewhere(&file.path, current), l as u32, c as u32, if el == l { ec as u32 } else { c as u32 + 1 }, why))
 }
 
-/// When the borrow that ends too early is an argument of a function declared in this file whose
+/// When the borrow that ends too early is an argument of a function declared in the crate whose
 /// result Oxie tied to all its reference parameters, a hint with the signature that leaves this
 /// argument out. Only a hint: Oxie can't tell whether the result really doesn't borrow from it.
-fn lifetime_hint(d: &mut MappedDiag, lines: &[&str]) {
+fn lifetime_hint(d: &mut MappedDiag, sources: &Sources, lines: &[&str]) {
     let Some((f, index)) = call_around(lines.get(d.line as usize).copied().unwrap_or(""), d.col as usize) else { return };
-    let Some(sig) = narrower_lifetime(lines, &f, index) else { return };
+    let Some(file) = sources.declaring(&d.file, |ls| narrower_lifetime(ls, &f, index).is_some()) else { return };
+    let Some(sig) = narrower_lifetime(&file.lines(), &f, index) else { return };
+    let place = match sources.elsewhere(&file.path, &d.file) {
+        Some(p) => format!(" (in {})", p.file_name().unwrap_or_default().to_string_lossy()),
+        None => String::new(),
+    };
     d.notes.push(help(&format!(
-        "`{}` returns a reference, and Oxie ties it to all of its reference parameters, so the result can't outlive this argument. If the result doesn't borrow from it, name the lifetime yourself: `{}`.",
-        f, sig
+        "`{}` returns a reference, and Oxie ties it to all of its reference parameters, so the result can't outlive this argument. If the result doesn't borrow from it, name the lifetime yourself{}: `{}`.",
+        f, place, sig
     )));
 }
 
-/// The signature of the function `f` declared in this file, when it returns a reference and has
+/// The signature of the function `f` declared in these lines, when it returns a reference and has
 /// no lifetimes written (so Oxie ties the result to all its reference parameters), with the
 /// lifetime on every reference parameter except number `index`.
 fn narrower_lifetime(lines: &[&str], f: &str, index: usize) -> Option<String> {
     let pat = format!("fun {}(", f);
-    let text = lines.iter().find(|t| t.contains(&pat))?.trim();
+    let text = code(lines.iter().find(|t| declares_fun(t, f))?).trim();
     if text.contains('\'') {
         return None;
     }
@@ -1249,7 +1297,7 @@ fn is_type_param(ty: &str) -> bool {
     t.len() <= 2 && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
-/// How a type is declared in this file: "data class", "class", "enum".
+/// How a type is declared in these lines: "data class", "class", "enum".
 fn user_type_kind(lines: &[&str], name: &str) -> Option<&'static str> {
     for l in lines {
         let t = l.trim_start();
@@ -1302,5 +1350,25 @@ mod tests {
         assert_eq!(elvis("a?.b"), None);
         assert_eq!(byte_offset("ab\ncdé f", 1, 4), 8);
         assert_eq!(between("the trait bound `String: ElvisOr<_>` is not satisfied", "the trait bound `", ": Elvis"), Some("String".into()));
+        assert_eq!(code(r#"val s = "a // b" // note"#), r#"val s = "a // b" "#);
+        assert!(declares_fun("fun keep(v: Vec<i32>) = v", "keep") && !declares_fun("// see fun keep(v)", "keep"));
+    }
+
+    #[test]
+    fn declarations_are_found_in_other_files() {
+        let s = Sources::from_texts(&[
+            ("/crate/main.oxi", "fun main() {\n    keep(v)\n}\n"),
+            ("/crate/a.oxi", "fun keep(v: Vec<i32>): Vec<i32> = v\nfun twice() {}\n"),
+            ("/crate/b.oxi", "fun twice() {}\n"),
+        ]);
+        let declares = |name: &'static str| move |ls: &[&str]| ls.iter().any(|t| declares_fun(t, name));
+        let main = Path::new("/crate/main.oxi");
+        assert_eq!(s.declaring(main, declares("keep")).map(|f| f.path.clone()), Some(PathBuf::from("/crate/a.oxi")));
+        assert_eq!(s.elsewhere(Path::new("/crate/a.oxi"), main), Some(PathBuf::from("/crate/a.oxi")));
+        assert_eq!(s.elsewhere(main, main), None);
+        // declared in two other files: which one is meant is unknown
+        assert!(s.declaring(main, declares("twice")).is_none());
+        // the error's own file wins
+        assert_eq!(s.declaring(Path::new("/crate/b.oxi"), declares("twice")).map(|f| f.path.clone()), Some(PathBuf::from("/crate/b.oxi")));
     }
 }
