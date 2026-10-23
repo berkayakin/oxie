@@ -61,11 +61,14 @@
   `Vec<MutexGuard<i32>>`, or a class without `Clone`, used to get a `.clone()` that rustc
   rejects, and is now told to use the value before the call, or to let the function borrow it.
   `if (val v = cache.get(&id)) return v` before `cache.insert(id, ...)` suggests the entry API,
-  `cache.entry(id).or_insert_with { ... }`, and changing `v[i]` in a loop over
-  `v.iter().enumerate()` suggests `for (x in v.iter_mut()) { *x = ... }`, both with a quick fix
-  in the simple cases. A quick fix is no longer one part of a rustc suggestion that edits
-  several places (`value` without the `let value = name.clone()` it needs), and the quick fix
-  test checks the lines a fix changes too.
+  `cache.entry(id).or_insert_with { ... }`, with a quick fix when the insert takes the key as it
+  was looked up. When it converts the key (`key.to_string()`), the explanation says that the
+  entry API makes that key on every call, even when it is already in the map, and offers no fix.
+  Changing `v[i]` in a loop over `v.iter().enumerate()` suggests
+  `for (x in v.iter_mut()) { *x = ... }`, with a quick fix in the simple cases. A quick fix is
+  no longer one part of a rustc suggestion that edits several places (`value` without the
+  `let value = name.clone()` it needs), and the quick fix test checks the lines a fix changes
+  too.
 * A method that calls an interface method taking `&mut self` takes `&mut self` too. It used to
   stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
   method being `&mut self` because another implementation changes its object), when it was a
@@ -78,6 +81,11 @@
   `String`), and their variants, constructors and impl blocks weren't recognized.
 * A class constructed through its module (`shapes.Circle(2.0)`, `a.Counter(1)`) calls its
   constructor; it used to be emitted as `shapes::Circle(2.0)`, which rustc rejects.
+* A cast compares with `<` without parentheses, as it already shifted with `<<`:
+  `n as usize < limit` used to be a parse error ("expected `>`"), as in Rust, which reads the
+  `<` as the start of generic arguments. The generated Rust has `(n as usize) < limit`. Written
+  with parentheses, the comparison used to lose them, and rustc rejected the result, also when
+  the cast ended a longer operand (`i + (n as usize) < limit`).
 * A function called through its module (`util.total(v)` or `util::total(v)`) is treated like a
   direct call: arguments are lent to `&` and `&mut` parameters, defaults and named arguments
   work, and a `throws` function's error propagates. Before, arguments were passed as written

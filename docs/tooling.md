@@ -106,7 +106,7 @@ fixes:
 | behind a `&` reference (E0596) | the parameter needs `&mut` (callers updated) |
 | borrow conflicts (E0499, E0502, E0505, E0506) | where it's borrowed and still used; copy instead of borrowing |
 | a loop over a field while the body changes `this` (E0502) | loop over a copy of the field |
-| a map lookup returned before an `insert` into the same map (E0502) | look the key up once: `cache.entry(id).or_insert_with { load(id) }` |
+| a map lookup returned before an `insert` into the same map (E0502) | look the key up once: `cache.entry(id).or_insert_with { load(id) }`; when the insert converts the key (`key.to_string()`), the entry API would convert it on every call, so that is explained as a trade-off, without a fix |
 | changing `v[i]` in a loop over `v.iter().enumerate()` (E0502) | loop over `v.iter_mut()` and change each element through it: `for (x in v.iter_mut()) { *x = *x * 2 }` |
 | not thread-safe (E0277 `Send`/`Sync`, a future held across `await`) | declare the `shared class` `@sync` |
 | lambda may outlive (E0373) | make it a `move` lambda |

@@ -28,14 +28,17 @@ fun main() {
     val flag = true
     val letter = 'x'
     val (q, r) = (17 / 5, 17 % 5)  // destructuring
+    val few = count as usize < 3   // `as` converts between number types
 
-    println("$answer $count $pi $big $flag $letter $q $r")
+    println("$answer $count $pi $big $flag $letter $q $r $few")
 }
 ```
 
 The Rust primitive types (`i32`, `u64`, `f64`, `bool`, `char`, `usize`, ...) are the native
 names; `Int`, `Long`, `Double`, `Float`, `Boolean`, `Char`, `Unit` are accepted as aliases.
-Integer literals default to `i32`, floats to `f64`, as in Rust.
+Integer literals default to `i32`, floats to `f64`, as in Rust. Numbers never convert silently:
+`as` converts them, and `count as usize < 3` compares the result, where Rust needs
+`(count as usize) < 3`.
 
 ## Functions
 

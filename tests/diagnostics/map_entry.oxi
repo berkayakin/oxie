@@ -12,16 +12,26 @@ fun name_of(cache: &mut HashMap<u32, String>, id: u32): &String {
 // error: 9: `cache.entry(id).or_insert_with { load(id) }`
 // error: 9: fix: look `id` up once with `cache.entry()`
 
-class Users(var names: HashMap<String, String> = HashMap::new()) {
-    fun name_of(key: &str): &String {
-        if (val name = names.get(key)) return name
+// the insert converts the key: the entry API would convert it on every call
+fun upper_of(cache: &mut HashMap<String, String>, key: &str): &String {
+    if (val name = cache.get(key)) return name
+    cache.insert(key.to_string(), key.to_uppercase())
+    return cache.get(key)!!
+}
+// error: 18: `cache.entry(key.to_string()).or_insert_with { key.to_uppercase() }`
+// error: 18: so `key.to_string()` then runs on every call, even when the key is already there
+// not: 18: fix:
+
+class Users(var names: HashMap<u32, String> = HashMap::new()) {
+    fun name_of(id: u32): &String {
+        if (val name = names.get(&id)) return name
         // a field, and a comment the fix would remove: only the explanation
-        names.insert(key.to_string(), key.to_uppercase())
-        return names.get(key)!!
+        names.insert(id, load(id))
+        return names.get(&id)!!
     }
 }
-// error: 19: `names.entry(key.to_string()).or_insert_with { key.to_uppercase() }`
-// not: 19: fix:
+// error: 29: `names.entry(id).or_insert_with { load(id) }`
+// not: 29: fix:
 
 // another key than the one looked up
 fun next_of(cache: &mut HashMap<u32, String>, id: u32): &String {
@@ -29,13 +39,15 @@ fun next_of(cache: &mut HashMap<u32, String>, id: u32): &String {
     cache.insert(id + 1, load(id))
     return cache.get(&id)!!
 }
-// error: 29: can't be changed while it is borrowed
-// not: 29: or_insert_with
+// error: 39: can't be changed while it is borrowed
+// not: 39: or_insert_with
 
 fun main() {
     var cache: HashMap<u32, String> = HashMap::new()
     println(name_of(cache, 1))
     println(next_of(cache, 1))
+    var names: HashMap<String, String> = HashMap::new()
+    println(upper_of(names, "ada"))
     var users = Users()
-    println(users.name_of("ada"))
+    println(users.name_of(2))
 }

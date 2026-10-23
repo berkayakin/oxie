@@ -448,7 +448,9 @@ fn borrow_conflict(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: 
 /// `if (val v = m.get(&k)) return v` right before `m.insert(k, value)`, on a `HashMap` or
 /// `BTreeMap` parameter or field: returning the reference keeps `m` borrowed after the `if` too,
 /// since rustc doesn't tell the path that returned from the one that goes on. The entry API looks
-/// the key up once. When the next statement is `return m.get(&k)!!`, the fix replaces the three.
+/// the key up once, but takes an owned key: a key the insert converts (`k.to_string()`) would be
+/// made on every call, which the explanation says. When the key isn't converted and the next
+/// statement is `return m.get(&k)!!`, the fix replaces the three.
 fn entry_instead(d: &mut MappedDiag, sources: &Sources) -> bool {
     let Some(here) = sources.file(&d.file) else { return false };
     let src = here.text.as_str();
@@ -507,18 +509,28 @@ fn entry_instead(d: &mut MappedDiag, sources: &Sources) -> bool {
     for s in d.secondary.iter_mut().filter(|s| s.text.starts_with("returning this value requires")) {
         s.text = format!("returned here, so `{}` stays borrowed for the rest of the function", map);
     }
+    // the insert makes the map's key from the one looked up (`key.to_string()`, `key.clone()`)
+    let converted = key_text != k;
+    let advice = if converted {
+        format!(
+            "The entry API looks the key up once and inserts only when it is missing: `{}`. It needs an owned key for every lookup, though, so `{}` then runs on every call, even when the key is already there: a trade-off, not a change that costs nothing.",
+            entry, key_text
+        )
+    } else {
+        format!("Look the key up once with the entry API, which inserts only when the key is missing: `{}`.", entry)
+    };
     d.notes.push(help(&format!(
-        "returning the reference from `{}.get()` keeps `{}` borrowed until the function returns, even on the path where the key is missing, so `{}.insert()` can't change it. Look the key up once with the entry API, which inserts only when the key is missing: `{}`.",
-        map, map, map, entry
+        "returning the reference from `{}.get()` keeps `{}` borrowed until the function returns, even on the path where the key is missing, so `{}.insert()` can't change it. {}",
+        map, map, map, advice
     )));
     // the lookup that ends the function, after the insert (the fix keeps comments, so there are
     // none in between); the value runs in a lambda while the map parameter is borrowed (a field's
     // lambda could need `this`)
     let tail = |s: Span, ret: bool| ret || src[s.end as usize..].trim_start().starts_with('}');
     let last = after.into_iter().find(|(s, ret, l)| gap(call.end, s.start, true) && tail(*s, *ret) && *l == (map.clone(), k.clone()));
-    if let Some((s, ret, _)) = last.filter(|_| is_param && value_ok && !value.contains('\n') && gap(if_span.end, call.start, true)) {
+    if let Some((s, ret, _)) = last.filter(|_| !converted && is_param && value_ok && !value.contains('\n') && gap(if_span.end, call.start, true)) {
         let edit = span_edit(src, Span { start: if_span.start, end: s.end }, &format!("{}{}", if ret { "return " } else { "" }, entry));
-        d.fixes.push(Fix { title: format!("look `{}` up once with `{}.entry()`", key_text, map), edits: vec![edit] });
+        d.fixes.push(Fix { title: format!("look `{}` up once with `{}.entry()`", k, map), edits: vec![edit] });
     }
     true
 }
