@@ -24,7 +24,7 @@ generated .rs files → rustc
 ```
 
 The compiler is a library (`oxie-compiler`) with no dependencies. `oxie-build` calls it from
-`build.rs`; `oxie-cli` calls it for checking, `oxie emit`, formatting and the language server.
+`build.rs`; the `oxie` command (`crates/oxie-cli`) calls it for checking, `oxie emit`, formatting and the language server.
 
 ## Lexer
 
@@ -129,7 +129,7 @@ oxie-sourcemap 1
 ...
 ```
 
-`oxie-cli`'s `cargo.rs` runs cargo with `--message-format=json`, maps the primary span of each
+`crates/oxie-cli/src/cargo.rs` runs cargo with `--message-format=json`, maps the primary span of each
 message (following macro expansions back to the call site) to the `.oxi` file, and renders it
 in rustc's format. Secondary labels are mapped too; those that don't map exactly (the generated
 text between the nearest mark and the span differs from the source) are dropped unless an

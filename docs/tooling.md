@@ -3,12 +3,13 @@
 ## Installing
 
 ```bash
-cargo install --git https://github.com/berkayakin/oxie oxie-cli
+cargo install oxie
 ```
 
-installs `oxie` into `~/.cargo/bin`. New projects and scripts take the `oxie-build` crate from
-the repository on GitHub, so their first build needs network access. Cargo pins the commit in
-the project's `Cargo.lock`; `cargo update -p oxie-build` moves it to the latest.
+installs `oxie` into `~/.cargo/bin`. New projects and scripts depend on the `oxie-build` release
+from crates.io that matches the installed `oxie` (`oxie-build = "0.1.0"` for `oxie` 0.1.0).
+After updating `oxie` with `cargo install oxie`, `cargo update -p oxie-build` brings a project's
+build helper up to date.
 
 ### Working on Oxie
 
@@ -19,7 +20,7 @@ export OXIE_HOME="$PWD"
 ```
 
 With `OXIE_HOME` set to a checkout, new projects and scripts use its `crates/oxie-build` by
-path instead, so they build with your changes and without network access. The test suite sets
+path instead, so they build with your changes. The test suite sets
 it to the checkout it runs in.
 
 ## The `oxie` command
@@ -167,7 +168,7 @@ fun parse_point(s: &str): Point throws {
 ## Project layout
 
 ```
-Cargo.toml          [build-dependencies] oxie-build = { git = "https://github.com/berkayakin/oxie" }
+Cargo.toml          [build-dependencies] oxie-build = "0.1.0"
 build.rs            fn main() { oxie_build::compile(); }
 src/main.rs         include!(concat!(env!("OUT_DIR"), "/oxie/main.rs"));
 src/main.oxi        crate root (src/lib.oxi for libraries)

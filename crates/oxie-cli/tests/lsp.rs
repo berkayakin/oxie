@@ -21,6 +21,8 @@ impl Client {
 
     fn start_with(no_check: bool) -> Client {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxie"));
+        // cargo check builds with this checkout's oxie-build, not the one on crates.io
+        cmd.env("OXIE_HOME", PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
         if no_check {
             cmd.env("OXIE_LSP_NO_CHECK", "1");
         }

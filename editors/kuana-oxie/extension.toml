@@ -14,5 +14,5 @@ name = "oxie"
 languages = ["Oxie"]
 command = "oxie"
 args = ["lsp"]
-install = "cargo install --git https://github.com/berkayakin/oxie oxie-cli"
+install = "cargo install oxie"
 root_markers = ["Cargo.toml"]

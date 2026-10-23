@@ -5,16 +5,13 @@ use std::path::{Path, PathBuf};
 
 use oxie_compiler::compile::{extern_crates_from_manifest, Input, Options, Output};
 
-/// The Oxie repository, where new projects and scripts get `oxie-build` from.
-pub const REPOSITORY: &str = "https://github.com/berkayakin/oxie";
-
-/// The `oxie-build` build-dependency of new projects and scripts, as a TOML inline table:
-/// from the repository on GitHub, or from the local checkout at `OXIE_HOME` when it is set
-/// (working on Oxie itself, or offline).
+/// The `oxie-build` build-dependency of new projects and scripts, as a TOML value: the
+/// crates.io release matching this `oxie`, or the local checkout at `OXIE_HOME` when it is set
+/// (working on Oxie itself).
 pub fn oxie_build_dep() -> String {
     match std::env::var("OXIE_HOME") {
         Ok(home) if !home.is_empty() => format!("{{ path = \"{}\" }}", toml_path(&Path::new(&home).join("crates/oxie-build"))),
-        _ => format!("{{ git = \"{REPOSITORY}\" }}"),
+        _ => format!("\"{}\"", env!("CARGO_PKG_VERSION")),
     }
 }
 

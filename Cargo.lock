@@ -128,6 +128,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxie"
+version = "0.1.0"
+dependencies = [
+ "oxie-compiler",
+ "oxie-from-rust",
+ "serde_json",
+]
+
+[[package]]
 name = "oxie-bench"
 version = "0.1.0"
 dependencies = [
@@ -139,15 +148,6 @@ name = "oxie-build"
 version = "0.1.0"
 dependencies = [
  "oxie-compiler",
-]
-
-[[package]]
-name = "oxie-cli"
-version = "0.1.0"
-dependencies = [
- "oxie-compiler",
- "oxie-from-rust",
- "serde_json",
 ]
 
 [[package]]

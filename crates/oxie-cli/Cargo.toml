@@ -1,16 +1,21 @@
 [package]
-name = "oxie-cli"
+name = "oxie"
 description = "Command line tool and language server for the Oxie programming language"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["oxie", "language", "compiler", "transpiler", "lsp"]
+categories = ["compilers", "command-line-utilities", "development-tools"]
+documentation = "https://github.com/berkayakin/oxie/tree/main/docs"
 
 [[bin]]
 name = "oxie"
 path = "src/main.rs"
 
 [dependencies]
-oxie-compiler = { path = "../oxie-compiler" }
-oxie-from-rust = { path = "../oxie-from-rust" }
+oxie-compiler.workspace = true
+oxie-from-rust.workspace = true
 serde_json = "1"

@@ -7,6 +7,12 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/berkayakin/oxie"
+homepage = "https://github.com/berkayakin/oxie"
+
+# The crates published to crates.io; a path for building here, a version for crates.io.
+[workspace.dependencies]
+oxie-compiler = { path = "crates/oxie-compiler", version = "0.1.0" }
+oxie-from-rust = { path = "crates/oxie-from-rust", version = "0.1.0" }
 
 [profile.release]
 debug = false

@@ -153,11 +153,11 @@ into `consume()` on line 5") and offers fixes your editor can apply.
 Requirements: Rust 1.80+ (`rustup`).
 
 ```bash
-cargo install --git https://github.com/berkayakin/oxie oxie-cli
+cargo install oxie
 ```
 
 This installs the `oxie` command (compiler driver, formatter and language server). Projects
-it creates get the `oxie-build` helper from this repository on GitHub. To work on Oxie itself,
+it creates get the `oxie-build` helper from crates.io. To work on Oxie itself,
 see [working on Oxie](docs/tooling.md#working-on-oxie).
 
 ## Quick start

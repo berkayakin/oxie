@@ -11,7 +11,7 @@ fn repo() -> PathBuf {
 
 fn oxie() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_oxie"));
-    // scripts and new projects build with this checkout's oxie-build, not the one on GitHub
+    // scripts and new projects build with this checkout's oxie-build, not the one on crates.io
     c.env("NO_COLOR", "1").env("OXIE_HOME", repo());
     c
 }
@@ -165,7 +165,7 @@ fn documentation_examples_run() {
     assert!(failures.is_empty(), "{} documentation example(s) failed:\n{}", failures.len(), failures.join("\n\n"));
 }
 
-/// `oxie new` and `oxie init` take oxie-build from GitHub, or from `OXIE_HOME` when it is set.
+/// `oxie new` and `oxie init` take oxie-build from crates.io, or from `OXIE_HOME` when it is set.
 #[test]
 fn new_projects_depend_on_oxie_build() {
     let tmp = std::env::temp_dir().join(format!("oxie-new-{}", std::process::id()));
@@ -175,8 +175,8 @@ fn new_projects_depend_on_oxie_build() {
         manifest.lines().find(|l| l.starts_with("oxie-build")).unwrap_or_default().to_string()
     };
 
-    assert!(oxie().env_remove("OXIE_HOME").args(["new", "from_github"]).current_dir(&tmp).status().unwrap().success());
-    assert_eq!(build_dep(&tmp.join("from_github")), r#"oxie-build = { git = "https://github.com/berkayakin/oxie" }"#);
+    assert!(oxie().env_remove("OXIE_HOME").args(["new", "from_crates_io"]).current_dir(&tmp).status().unwrap().success());
+    assert_eq!(build_dep(&tmp.join("from_crates_io")), format!(r#"oxie-build = "{}""#, env!("CARGO_PKG_VERSION")));
 
     assert!(oxie().args(["new", "from_checkout"]).current_dir(&tmp).status().unwrap().success());
     let local = repo().join("crates/oxie-build").display().to_string().replace('\\', "/");
@@ -186,7 +186,7 @@ fn new_projects_depend_on_oxie_build() {
     std::fs::create_dir_all(rust.join("src")).unwrap();
     std::fs::write(rust.join("Cargo.toml"), "[package]\nname = \"rust_crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
     assert!(oxie().env_remove("OXIE_HOME").arg("init").current_dir(&rust).status().unwrap().success());
-    assert_eq!(build_dep(&rust), r#"oxie-build = { git = "https://github.com/berkayakin/oxie" }"#);
+    assert_eq!(build_dep(&rust), format!(r#"oxie-build = "{}""#, env!("CARGO_PKG_VERSION")));
     assert!(rust.join("build.rs").exists());
 
     let _ = std::fs::remove_dir_all(&tmp);

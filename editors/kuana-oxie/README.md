@@ -15,7 +15,7 @@ Support for the [Oxie programming language](../../README.md) in the Kuana editor
 1. Install the `oxie` command (the language server is `oxie lsp`):
 
    ```bash
-   cargo install --git https://github.com/berkayakin/oxie oxie-cli
+   cargo install oxie
    ```
 
 2. In Kuana: Settings → Extensions → **Install from Folder…** and choose this folder

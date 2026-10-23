@@ -5,9 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["oxie", "rust", "translator", "transpiler"]
+categories = ["compilers", "development-tools"]
 
 [dependencies]
-oxie-compiler = { path = "../oxie-compiler" }
+oxie-compiler.workspace = true
 syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"

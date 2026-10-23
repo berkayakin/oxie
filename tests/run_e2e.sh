@@ -2,7 +2,7 @@
 # Runs every tests/e2e/*.oxi program and compares stdout with the matching .out file.
 cd "$(dirname "$0")/e2e" || exit 1
 OXIE="${OXIE:-../../target/debug/oxie}"
-# build with this checkout's oxie-build, not the one on GitHub
+# build with this checkout's oxie-build, not the one on crates.io
 OXIE_HOME="${OXIE_HOME:-$(cd ../.. && pwd)}"; export OXIE_HOME
 pass=0; fail=0; failed=""
 for f in ${@:-*.oxi}; do
