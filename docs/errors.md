@@ -69,9 +69,9 @@ error enum ConfigError {
 }
 
 fun read_port(text: &str): u16 throws ConfigError {
-    if (text.is_empty()) throw ConfigError.Missing("port".to_string())
+    if (text.is_empty()) throw ConfigError.Missing("port")
     val n: i64 = text.parse()?                      // ParseIntError converts via From
-    if (n > 65535) throw ConfigError.OutOfRange("port".to_string(), n, 65535)
+    if (n > 65535) throw ConfigError.OutOfRange("port", n, 65535)
     n as u16
 }
 
