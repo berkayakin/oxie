@@ -6,7 +6,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use oxie_compiler::ast::{File, ItemKind, Type};
@@ -57,7 +56,32 @@ pub fn uri_to_path(uri: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// Directories the editor reaches through a symlink, as (canonical path, editor's path), like
+/// macOS's `/tmp` for `/private/tmp`. URIs sent back use the editor's path: with the canonical
+/// one it would put diagnostics on a file that isn't open and open locations a second time.
+static ALIASES: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
+
+/// Remembers the editor's name for the directory of `path` if it differs from the canonical one.
+fn remember_alias(path: &Path) {
+    let (mut editor, mut real) = (path.to_path_buf(), canonical(path));
+    while editor.file_name().is_some() && editor.file_name() == real.file_name() {
+        editor.pop();
+        real.pop();
+    }
+    let mut aliases = ALIASES.lock().unwrap();
+    if editor != real && !aliases.iter().any(|(r, _)| *r == real) {
+        aliases.push((real, editor));
+    }
+}
+
 pub fn path_to_uri(p: &Path) -> String {
+    let aliases = ALIASES.lock().unwrap();
+    let alias = aliases.iter().filter(|(real, _)| p.starts_with(real)).max_by_key(|(real, _)| real.components().count());
+    let p = match alias.and_then(|(real, editor)| p.strip_prefix(real).ok().map(|rest| (editor, rest))) {
+        Some((editor, rest)) if rest.as_os_str().is_empty() => editor.clone(),
+        Some((editor, rest)) => editor.join(rest),
+        None => p.to_path_buf(),
+    };
     let s = p.to_string_lossy().replace('\\', "/");
     let mut out = String::from("file://");
     if !s.starts_with('/') {
@@ -116,13 +140,27 @@ impl Analysis {
     }
 }
 
+/// A `cargo check` of one crate: a project, or the hidden project of a script.
+struct Check {
+    root: PathBuf,
+    files: Vec<PathBuf>,
+    is_script: bool,
+}
+
+/// Checks run one at a time on a background thread; requests made meanwhile wait here, one per
+/// crate, so a script opened during another script's check is checked next.
+#[derive(Default)]
+struct CheckQueue {
+    running: bool,
+    pending: Vec<Check>,
+}
+
 struct Server {
     out: Out,
     docs: HashMap<PathBuf, String>,
     cargo_diags: Arc<Mutex<HashMap<PathBuf, Vec<Value>>>>,
     oxie_diags: Arc<Mutex<HashMap<PathBuf, Vec<Value>>>>,
-    check_running: Arc<AtomicBool>,
-    check_again: Arc<AtomicBool>,
+    checks: Arc<Mutex<CheckQueue>>,
     cargo_check_enabled: bool,
 }
 
@@ -235,22 +273,32 @@ impl Server {
             // Oxie errors already reported; rustc would only repeat them
             return;
         }
-        if self.check_running.swap(true, Ordering::SeqCst) {
-            self.check_again.store(true, Ordering::SeqCst);
-            return;
+        {
+            let mut checks = self.checks.lock().unwrap();
+            checks.pending.retain(|c| c.root != root);
+            checks.pending.push(Check { root, files, is_script: a.is_script });
+            if checks.running {
+                return;
+            }
+            checks.running = true;
         }
         let out = self.out.clone();
         let cargo_diags = self.cargo_diags.clone();
         let oxie_diags = self.oxie_diags.clone();
-        let running = self.check_running.clone();
-        let again = self.check_again.clone();
-        let is_script = a.is_script;
+        let checks = self.checks.clone();
         std::thread::spawn(move || loop {
+            let Check { root, files, is_script } = {
+                let mut checks = checks.lock().unwrap();
+                if checks.pending.is_empty() {
+                    checks.running = false;
+                    break;
+                }
+                checks.pending.remove(0)
+            };
             notify(&out, "$/progress", json!({"token": "oxie-check", "value": {"kind": "begin", "title": "cargo check"}}));
-            if is_script {
-                std::env::set_var("CARGO_TARGET_DIR", project::cache_dir().join("target"));
-            }
-            let result = cargo::check_collect(&root).unwrap_or_default();
+            // scripts share one target directory
+            let target_dir = is_script.then(|| project::cache_dir().join("target"));
+            let result = cargo::check_collect(&root, target_dir.as_deref()).unwrap_or_default();
             let mut by_file: HashMap<PathBuf, Vec<Value>> = HashMap::new();
             for d in result {
                 if !d.from_oxie {
@@ -327,10 +375,6 @@ impl Server {
                 }
             }
             notify(&out, "$/progress", json!({"token": "oxie-check", "value": {"kind": "end"}}));
-            if !again.swap(false, Ordering::SeqCst) {
-                running.store(false, Ordering::SeqCst);
-                break;
-            }
         });
     }
 }
@@ -1211,8 +1255,7 @@ pub fn run() {
         docs: HashMap::new(),
         cargo_diags: Arc::new(Mutex::new(HashMap::new())),
         oxie_diags: Arc::new(Mutex::new(HashMap::new())),
-        check_running: Arc::new(AtomicBool::new(false)),
-        check_again: Arc::new(AtomicBool::new(false)),
+        checks: Arc::new(Mutex::new(CheckQueue::default())),
         cargo_check_enabled: std::env::var("OXIE_LSP_NO_CHECK").is_err(),
     };
     let stdin = std::io::stdin();
@@ -1254,6 +1297,9 @@ pub fn run() {
             "exit" => break,
             "textDocument/didOpen" | "textDocument/didChange" => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                if method == "textDocument/didOpen" {
+                    remember_alias(&uri_to_path(uri));
+                }
                 let path = canonical(&uri_to_path(uri));
                 let text = if method == "textDocument/didOpen" {
                     params["textDocument"]["text"].as_str().unwrap_or("").to_string()

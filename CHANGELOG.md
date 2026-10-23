@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* Language server: files opened through a symlinked directory (on macOS, anything under `/tmp`)
+  get their diagnostics, and definitions point at the open file instead of a second copy. A
+  script opened while another script's `cargo check` runs is checked next; before, its rustc
+  errors appeared only after saving it.
 * Clearer errors: a borrow conflict on `self` says `this`, and a loop over a field whose body
   changes `this` offers to loop over a copy; a `shared class` handle sent to another thread (or
   held across an `await` in a spawned task) offers to declare the class `@sync`.

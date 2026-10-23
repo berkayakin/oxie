@@ -1,7 +1,7 @@
 //! Drives `oxie lsp` over stdio like an editor would.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value};
@@ -117,6 +117,16 @@ fun main() {
 }
 "#;
 
+/// A `file://` URI as editors send it: forward slashes, and `file:///C:/...` on Windows.
+fn file_uri(p: &Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
+    }
+}
+
 fn pos(src: &str, needle: &str, delta: usize) -> Value {
     let off = src.find(needle).unwrap() + delta;
     let before = &src[..off];
@@ -131,10 +141,10 @@ fn language_server_features() {
     std::fs::create_dir_all(&dir).unwrap();
     let file: PathBuf = dir.join("demo.oxi");
     std::fs::write(&file, SRC).unwrap();
-    let uri = format!("file://{}", oxie_compiler::compile::canonicalize(&file).unwrap().display());
+    let uri = file_uri(&oxie_compiler::compile::canonicalize(&file).unwrap());
 
     let mut c = Client::start();
-    let init = c.request("initialize", json!({"rootUri": format!("file://{}", dir.display()), "capabilities": {}}));
+    let init = c.request("initialize", json!({"rootUri": file_uri(&dir), "capabilities": {}}));
     assert_eq!(init["capabilities"]["hoverProvider"], true);
     c.notify("initialized", json!({}));
     c.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "oxie", "version": 1, "text": SRC}}));
@@ -195,6 +205,35 @@ fn language_server_features() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A file opened through a symlinked directory (on macOS, any file under /tmp) keeps the editor's
+/// URI in diagnostics and locations.
+#[cfg(unix)]
+#[test]
+fn symlinked_directories_keep_the_editors_uri() {
+    let dir = std::env::temp_dir().join(format!("oxie-lsp-link-test-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("real")).unwrap();
+    let _ = std::os::unix::fs::symlink(dir.join("real"), dir.join("link"));
+    let text = "fun one() = 1\n\nfun main() {\n    val x = (one() + \n}\n";
+    std::fs::write(dir.join("real/a.oxi"), text).unwrap();
+    let uri = file_uri(&dir.join("link/a.oxi"));
+
+    let mut c = Client::start();
+    c.request("initialize", json!({"rootUri": file_uri(&dir), "capabilities": {}}));
+    c.notify("initialized", json!({}));
+    c.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "oxie", "version": 1, "text": text}}));
+    let d = c.request("textDocument/definition", json!({"textDocument": {"uri": uri}, "position": pos(text, "one() +", 1)}));
+    assert_eq!(d[0]["uri"], uri, "{d}");
+    // the diagnostics for didOpen were sent before the answer
+    let published: Vec<&Value> = c.notifications.iter().filter(|n| n["method"] == "textDocument/publishDiagnostics").map(|n| &n["params"]).collect();
+    assert_eq!(published.len(), 1, "{published:?}");
+    assert_eq!(published[0]["uri"], uri, "{published:?}");
+    assert_eq!(published[0]["diagnostics"][0]["source"], "oxie", "{published:?}");
+
+    let _ = c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // `pub`, so Oxie keeps the owned parameter (it would lend a private function's)
 const MOVED: &str = r#"pub fun consume(v: Vec<i32>): usize = v.len()
 
@@ -212,10 +251,10 @@ fn borrow_errors_have_quick_fixes() {
     std::fs::create_dir_all(&dir).unwrap();
     let file: PathBuf = dir.join("moved.oxi");
     std::fs::write(&file, MOVED).unwrap();
-    let uri = format!("file://{}", oxie_compiler::compile::canonicalize(&file).unwrap().display());
+    let uri = file_uri(&oxie_compiler::compile::canonicalize(&file).unwrap());
 
     let mut c = Client::start_with(false);
-    let init = c.request("initialize", json!({"rootUri": format!("file://{}", dir.display()), "capabilities": {}}));
+    let init = c.request("initialize", json!({"rootUri": file_uri(&dir), "capabilities": {}}));
     assert!(init["capabilities"]["codeActionProvider"].is_object());
     c.notify("initialized", json!({}));
     c.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "oxie", "version": 1, "text": MOVED}}));
@@ -235,6 +274,46 @@ fn borrow_errors_have_quick_fixes() {
     let edit = &actions[0]["edit"]["changes"][&uri][0];
     assert_eq!(edit["range"]["start"], json!({"line": 4, "character": 24}), "{edit}");
     assert_eq!(edit["newText"], ".clone()");
+
+    let _ = c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A script opened while another script is being checked is checked next (editors open several
+/// files at once when they restore their tabs).
+#[test]
+fn scripts_opened_together_are_all_checked() {
+    let dir = std::env::temp_dir().join(format!("oxie-lsp-scripts-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut uris = Vec::new();
+    for name in ["one", "two"] {
+        let file = dir.join(format!("{name}.oxi"));
+        std::fs::write(&file, MOVED).unwrap();
+        uris.push(file_uri(&oxie_compiler::compile::canonicalize(&file).unwrap()));
+    }
+
+    let mut c = Client::start_with(false);
+    c.request("initialize", json!({"rootUri": file_uri(&dir), "capabilities": {}}));
+    c.notify("initialized", json!({}));
+    for uri in &uris {
+        c.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "oxie", "version": 1, "text": MOVED}}));
+    }
+    // two checks run, one after the other
+    let mut ended = 0;
+    while ended < 2 {
+        let m = c.read();
+        if m["method"] == "$/progress" && m["params"]["value"]["kind"] == "end" {
+            ended += 1;
+        }
+        c.notifications.push(m);
+    }
+    for uri in &uris {
+        let checked = c.notifications.iter().any(|n| {
+            n["method"] == "textDocument/publishDiagnostics" && n["params"]["uri"] == *uri && n["params"]["diagnostics"].as_array().unwrap().iter().any(|d| d["source"] == "rustc")
+        });
+        assert!(checked, "no rustc diagnostics for {uri}");
+    }
 
     let _ = c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);
