@@ -204,7 +204,7 @@ oxie run dice.oxi
 | `oxie build` / `oxie check` | Build / type-check |
 | `oxie test [name]` | Run `test "name" { }` blocks |
 | `oxie fmt [--check]` | Format `.oxi` files |
-| `oxie emit file.oxi` | Show the generated Rust |
+| `oxie emit file.oxi [--annotate]` | Show the generated Rust (`--annotate` marks each statement's `.oxi` line) |
 | `oxie from-rust file.rs` | Translate Rust to Oxie |
 | `oxie lsp` | Language server for editors |
 
@@ -217,6 +217,8 @@ error[E0308]: mismatched types
 7 |     val s: String = add(1, 2)
   |                     ^^^^^^^^^ expected `String`, found `i32`
 ```
+
+So do panics in programs run with `oxie run` and `oxie test`.
 
 ## 100% Rust compatible
 

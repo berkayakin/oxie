@@ -128,4 +128,5 @@ each type it's used with — no boxing, no runtime type checks. Interfaces used 
   `if let`, macros), so you can mix styles while learning.
 * Differences: `?.` is Kotlin's safe call on optional values (and error propagation on
   `Result`s); strings use `$name` templates; default visibility is `pub(crate)`.
-* `oxie emit file.oxi` shows exactly what your code becomes.
+* `oxie emit file.oxi` shows exactly what your code becomes (`--annotate` marks each statement
+  with its `.oxi` line).

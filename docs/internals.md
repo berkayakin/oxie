@@ -48,6 +48,8 @@ The compiler is a library (`oxie-compiler`) with no dependencies. `oxie-build` c
     after a type name followed by `name:`/`name,`/`}` it is a struct literal;
   * `(a, b) =>` and `x =>` are arrow functions (found by scanning to the matching parenthesis);
   * `Type<Args>` in expressions is tried as generic arguments and backtracked if it isn't one.
+* A brace lambda without parameters used as a statement (not the block's value) is an error,
+  since it would never run; the help points to `run { }`.
 * Errors are collected; after an error the parser skips to the end of the statement.
 * `rust { }` blocks and `name!( )` macro calls keep their source text verbatim.
 
@@ -103,6 +105,12 @@ Notable translations:
   `&`/`&mut`; references (`&x`, reference-typed locals, `self`, string literals, untyped
   lambda parameters) don't. Receiver inference (`sema.rs`) treats a field passed to a `&mut`
   parameter as a mutation of `self`.
+* **Borrowed parameters** (`params.rs`, before lowering): a `String`/`Vec<T>` parameter of a
+  non-`pub` top-level function becomes `&str`/`&[T]` when every use is a read (a method that
+  exists on `str`/slices, printing, comparing, indexing, or passing it to a parameter that is
+  itself borrowed). A greatest fixpoint over the crate handles forwarding and recursion; a
+  `move` lambda or async block capturing the parameter keeps it owned. `kept_reason` reports the
+  first use that keeps a parameter owned ("it returns `v`"), for the explanation of E0382.
 * **Inferred bounds** (`bounds.rs`): before a function or method signature is emitted, its
   body is scanned for uses of values of a type parameter (parameters typed `T`/`&T`, elements of
   `&[T]`/`Vec<T>` in `for` loops, lambdas over such collections, `val y = x` aliases) and the
@@ -140,7 +148,20 @@ parameters, closures outliving their scope, missing `throws`, `Display`, bounds 
 Kotlin method names) in Oxie terms and computes fixes as text edits on the `.oxi` source,
 found from the source text and the mapped spans. The CLI prints the fixes with a preview of
 the changed line; the language server attaches them to the diagnostic (`data.fixes`) and
-returns them from `textDocument/codeAction`.
+returns them from `textDocument/codeAction`. Errors caused by an Oxie decision say why: a move
+into a function that keeps its parameter points at the use `params::kept_reason` finds, and a
+borrow that ends too early because of the shared `'a` of automatic lifetimes shows the
+signature with a narrower one.
+
+Before any of that, `Mapper::compiler_bug` sets aside errors that only a bug in Oxie can cause:
+one inside `__oxie.rs`, or a Rust syntax error in code generated from a file without verbatim
+Rust (`rust { }` blocks and macro calls). They are reported as "Oxie generated Rust that doesn't
+compile" with rustc's message and the generated line, never explained as the user's error.
+
+The maps are used at run time too. `oxie run` pipes the program's stderr, and `oxie test`
+cargo's stdout and stderr, through `locations.rs`, which rewrites every `path.rs:line:col`
+whose file has a map (panic messages, backtrace frames, failed assertions) to the `.oxi`
+position, line by line as the output arrives.
 
 ## Tree-sitter grammar
 

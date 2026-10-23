@@ -194,7 +194,8 @@ fun main() throws {
 ## Unrecoverable errors
 
 `panic("message")`, `unreachable()`, `todo()` and `!!` (unwrap) stop the program as in Rust.
-Use them for bugs, not for expected failures.
+Use them for bugs, not for expected failures. Under `oxie run` and `oxie test` the panic
+message names the `.oxi` line (`panicked at src/main.oxi:12:5`).
 
 ## Using Rust error crates
 

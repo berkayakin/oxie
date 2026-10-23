@@ -109,7 +109,8 @@ Rust users depend on it like any crate: `geometry::Point::new(1.0, 2.0).distance
 
 * Generated files are in `target/<profile>/build/<crate>-*/out/oxie/` (one `.rs` per `.oxi`,
   plus `__oxie.rs`, the tiny support module, and `.map` source maps).
-* `oxie emit file.oxi` prints them.
+* `oxie emit file.oxi` prints them; `oxie emit --annotate file.oxi` adds a `// file.oxi:line`
+  comment above each statement, to find the Rust for a line of your code.
 * The support module contains only zero-cost helpers: the `AnyError` type alias, the `?:`
   helpers (`#[inline(always)]` trait methods on `Option`/`Result`), `.context()`, and the error
   printer for `main() throws`. There is no runtime.
@@ -120,5 +121,7 @@ Rust users depend on it like any crate: `geometry::Point::new(1.0, 2.0).distance
   server (`oxie lsp`) works on `.oxi` files.
 * **Debuggers** (lldb, gdb) step through the generated Rust, which mirrors the `.oxi` source
   closely.
+* **Panics** point at `.oxi` lines under `oxie run` and `oxie test`; run with `cargo run` or a
+  debugger, they report the generated file (the `.map` next to it gives the `.oxi` line).
 * **clippy / rustfmt** run on the crate; generated code is formatted for reading but isn't meant
   to be edited.
