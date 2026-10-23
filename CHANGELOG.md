@@ -60,6 +60,8 @@
   stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
   method being `&mut self` because another implementation changes its object), when it was a
   default method of the interface, or when it called a default method its class inherits.
+* Receiver inference no longer stops after 8 rounds: in a chain of 9 or more methods calling
+  each other on `this`, declared before the methods they call, the first ones stayed `&self`.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

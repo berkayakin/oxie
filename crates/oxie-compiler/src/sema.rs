@@ -830,8 +830,15 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             format!("the interface method `{}.{}` changes its object in `{}`, so every implementation takes `&mut self`", t, name, by)
         }
     };
-    // fixpoint
-    for _round in 0..8 {
+    // Methods sharing an owner and name (same-named classes in two modules) would undo each other's
+    // receiver every round, so a receiver is never lowered: `&self` < static < `&mut self`.
+    let rank = |r: Recv| match r {
+        Recv::RefMut => 2,
+        Recv::Static => 1,
+        _ => 0,
+    };
+    // fixpoint: receivers only rise, so it ends, however long a chain of calls on `this` is
+    loop {
         let mut changed = false;
         for &i in &pending {
             let m = &methods[i];
@@ -849,9 +856,12 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                 Recv::Ref
             };
             let key = (m.owner.clone(), m.fun.name.clone());
+            let recv = if rank(decided[&key]) > rank(recv) { decided[&key] } else { recv };
             match (facts.mut_cause, by) {
                 (Some((at, why)), _) => whys.insert(key.clone(), (why, Some(at))),
                 (None, Some((t, by))) => whys.insert(key.clone(), (trait_why(t, &m.fun.name, by), None)),
+                // kept `&mut self` from a method with the same owner and name, and its reason
+                (None, None) if recv == Recv::RefMut => None,
                 (None, None) => whys.remove(&key),
             };
             if decided.get(&key) != Some(&recv) {
@@ -1436,5 +1446,49 @@ class Quiet() : Counter {
         // overriding it
         let why = "the default method `Counter.bump_twice` changes its object, so every implementation takes `&mut self`";
         assert_eq!(receivers(src, "Quiet")["bump_twice"], (Recv::RefMut, Some((why.into(), None))));
+    }
+
+    #[test]
+    fn long_call_chains_reach_the_first_caller() {
+        // callers come first, so each round reaches one more of them (inference used to stop after 8)
+        let src = r#"
+class Chain(var n: i32) {
+    fun a() { b() }
+    fun b() { c() }
+    fun c() { d() }
+    fun d() { e() }
+    fun e() { f() }
+    fun f() { g() }
+    fun g() { h() }
+    fun h() { i() }
+    fun i() { n += 1 }
+}
+"#;
+        let r = receivers(src, "Chain");
+        assert!(r.values().all(|(recv, _)| *recv == Recv::RefMut), "{:?}", r);
+        assert_eq!(r["a"].1, Some(("it calls `b()`, which changes `this`".into(), Some("b()".into()))));
+    }
+
+    #[test]
+    fn methods_sharing_an_owner_and_name_dont_undo_each_other() {
+        // one `bump` (and one `make`) would undo the other's receiver every round, forever
+        let src = r#"
+mod a {
+    class Counter(var n: i32) {
+        fun bump() { n += 1 }
+        fun make(): Self = Counter(0)
+    }
+}
+mod b {
+    class Counter(var n: i32) {
+        fun bump() {}
+        fun make(): Self = Counter(n)
+    }
+}
+"#;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(receivers(src, "Counter")).unwrap());
+        let r = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("receiver inference doesn't end");
+        assert_eq!(r["bump"], (Recv::RefMut, Some(("it changes `n`".into(), Some("n".into())))));
     }
 }
