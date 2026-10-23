@@ -193,7 +193,10 @@ A fix that costs nothing comes before a copy, and a copy is offered only when it
 moved value gets `.clone()` only where rustc suggests it, which rustc does only for types that
 implement `Clone`. Two borrow conflicts are recognized in the parsed file and get a form without
 a copy: a map lookup returned before an `insert` into the same map (the entry API), and a loop
-over `v.iter().enumerate()` that changes `v[i]` (a loop over `v.iter_mut()`).
+over `v.iter().enumerate()` that changes `v[i]` (a loop over `v.iter_mut()`). The entry API
+takes an owned key, so it costs nothing only when the insert takes the key as it was looked
+up; a key the insert converts (`key.to_string()`) would be converted on every call, which the
+explanation says, without a fix.
 
 An explanation sees every `.oxi` file of the crate (`sources.rs`: the project's `src/`, or the
 script): the function a value moved into, a type or a `shared class` may be declared in

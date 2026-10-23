@@ -61,11 +61,14 @@
   `Vec<MutexGuard<i32>>`, or a class without `Clone`, used to get a `.clone()` that rustc
   rejects, and is now told to use the value before the call, or to let the function borrow it.
   `if (val v = cache.get(&id)) return v` before `cache.insert(id, ...)` suggests the entry API,
-  `cache.entry(id).or_insert_with { ... }`, and changing `v[i]` in a loop over
-  `v.iter().enumerate()` suggests `for (x in v.iter_mut()) { *x = ... }`, both with a quick fix
-  in the simple cases. A quick fix is no longer one part of a rustc suggestion that edits
-  several places (`value` without the `let value = name.clone()` it needs), and the quick fix
-  test checks the lines a fix changes too.
+  `cache.entry(id).or_insert_with { ... }`, with a quick fix when the insert takes the key as it
+  was looked up. When it converts the key (`key.to_string()`), the explanation says that the
+  entry API makes that key on every call, even when it is already in the map, and offers no fix.
+  Changing `v[i]` in a loop over `v.iter().enumerate()` suggests
+  `for (x in v.iter_mut()) { *x = ... }`, with a quick fix in the simple cases. A quick fix is
+  no longer one part of a rustc suggestion that edits several places (`value` without the
+  `let value = name.clone()` it needs), and the quick fix test checks the lines a fix changes
+  too.
 * A method that calls an interface method taking `&mut self` takes `&mut self` too. It used to
   stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
   method being `&mut self` because another implementation changes its object), when it was a
