@@ -1,16 +1,19 @@
-// A cast on the left of `<` or `<<` keeps its parentheses: Rust reads `n as usize < 3` as the
-// start of generic arguments of `usize`. A cast before `<=`, `>` or `==` doesn't need them.
+// A cast compares with `<` and shifts with `<<` with or without parentheses: Rust reads the `<`
+// in `n as usize < 3` as the start of generic arguments of `usize`, so the generated Rust has
+// `(n as usize) < 3`. A cast before `<=`, `>` or `==` needs no parentheses, and a cast to a
+// generic type keeps its generic arguments.
+import std::fmt::Display
 
 class Buffer(var used: i32, val capacity: usize) {
     var shift: u32 = 2
 
-    fun has_room(): Boolean = (used as usize) < capacity
+    fun has_room(): Boolean = used as usize < capacity
     fun fits(): Boolean = (used as usize) <= capacity
     fun scaled(): u32 = (used as u32) << shift
-    fun has_room_for_two(): Boolean = (used as usize) + 1 < capacity
+    fun has_room_for_two(): Boolean = used as usize + 1 < capacity
 
     fun push() {
-        if ((used as usize) < capacity) used += 1
+        if (used as usize < capacity) used += 1
     }
 
     fun fill() {
@@ -19,47 +22,58 @@ class Buffer(var used: i32, val capacity: usize) {
         }
     }
 
-    fun report(): String = "${(used as usize) < capacity} ${(used as usize) <= capacity} ${(used as u32) << shift}"
+    fun report(): String = "${(used as usize) < capacity} ${used as usize <= capacity} ${used as u32 << shift}"
 }
 
 shared class Gauge(var level: i64, val max: u64) {
-    fun low(): Boolean = (level as u64) < max
+    fun low(): Boolean = level as u64 < max
 }
 
 fun main() {
     val n = 3
     val limit = 5usize
-    val below = (n as usize) < limit
+    val below = n as usize < limit
     val within = (n as usize) <= 2
     val scaled = (n as u32) << 2
     println("$below $within $scaled")
     val hi = 0x12u8
     val lo = 0x34u8
-    val word = (hi as u16) << 8 | lo as u16
+    val word = hi as u16 << 8 | lo as u16
     var flags = 1u32
     flags |= (n as u32) << 4
     println("$word $flags")
     println(((n as usize) < 3))
+    println(n as usize < 3)
     println((n as usize) <= 3)
     println(n as u32 << 1)
     // the cast at the end of a longer operand
     println(1 + (n as usize) < limit)
+    println(1 + n as usize < limit)
     println(1 << (n as u32) < 16)
     println(2 * (n as usize) <= limit)
+    println(n as usize < limit && n as i64 > -1)
+    println(n as usize < limit - 2)
     // no parentheses needed
     println((n as usize) > 2)
     println((n as usize) == 3)
     println((n as u32) >> 1)
-    println("${(n as usize) < 3} ${(n as usize) <= 3} ${(n as u32) << 3}")
-    if ((n as usize) < limit) {
+    println("${(n as usize) < 3} ${n as usize < 4} ${n as usize <= 3} ${n as u32 << 3}")
+    if (n as usize < limit) {
         println("below the limit")
     }
+    if ((n as usize) < limit) {
+        println("still below")
+    }
     val size = when {
-        (n as usize) < 2 -> "small"
+        n as usize < 2 -> "small"
         (n as usize) <= 4 -> "medium"
         else -> "large"
     }
     println(size)
+    // generic arguments of a cast type
+    val shown = Box.new(n) as Box<dyn Display>
+    val add = Box.new(move |x: i32| x + n) as Box<dyn Fn(i32) -> i32>
+    println("$shown ${add(1)}")
     var b = Buffer(3, 5)
     println("${b.has_room()} ${b.fits()} ${b.scaled()} ${b.has_room_for_two()}")
     println(b.report())

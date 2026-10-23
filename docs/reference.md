@@ -314,6 +314,7 @@ the right-hand side (`impl Mul<f64> for Vec2` for `operator fun times(k: f64)`).
 | `a until b`, `a downTo b`, `r step n` | `a..b`, `(b..=a).rev()`, `r.step_by(n)` |
 | `a..b`, `a..=b`, `a..<b` | `a..b`, `a..=b`, `a..b` |
 | `x as T` | `x as T` |
+| `x as T < y`, `x as T << n` | `(x as T) < y`, `(x as T) << n` |
 | `x?` | `x?` |
 | `x!!` | `x.unwrap()` |
 | `a ?: b` | `a.unwrap_or(b)`-like; see [Null safety](#null-safety) |

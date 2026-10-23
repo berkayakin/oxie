@@ -61,8 +61,8 @@
   },
   {
     "file": "docs/guide.md",
-    "output": "42 1 3.14159 10000000 true x 3 2\n",
-    "source": "fun main() {\n    val answer = 42              // immutable (Rust `let`)\n    var count = 0                // mutable (Rust `let mut`)\n    count += 1\n\n    val pi: f64 = 3.14159        // explicit type\n    val big: Long = 10_000_000L  // Kotlin names work too: Int, Long, Double, Boolean, Char\n    val flag = true\n    val letter = 'x'\n    val (q, r) = (17 / 5, 17 % 5)  // destructuring\n\n    println(\"$answer $count $pi $big $flag $letter $q $r\")\n}\n"
+    "output": "42 1 3.14159 10000000 true x 3 2 true\n",
+    "source": "fun main() {\n    val answer = 42              // immutable (Rust `let`)\n    var count = 0                // mutable (Rust `let mut`)\n    count += 1\n\n    val pi: f64 = 3.14159        // explicit type\n    val big: Long = 10_000_000L  // Kotlin names work too: Int, Long, Double, Boolean, Char\n    val flag = true\n    val letter = 'x'\n    val (q, r) = (17 / 5, 17 % 5)  // destructuring\n    val few = count as usize < 3   // `as` converts between number types\n\n    println(\"$answer $count $pi $big $flag $letter $q $r $few\")\n}\n"
   },
   {
     "file": "docs/guide.md",

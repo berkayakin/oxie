@@ -35,11 +35,14 @@ pub struct Parser<'a> {
     pub diags: Vec<Diag>,
     /// Rust-style condition context: `{` ends the expression.
     no_struct: bool,
+    /// The type after `as`: a `<` after its path starts generic arguments only if they parse,
+    /// otherwise it compares (`n as usize < m`).
+    cast_ty: bool,
 }
 
 pub fn parse_file(src: &str) -> (File, Vec<Diag>) {
     let (toks, mut diags) = lexer::lex(src);
-    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false };
+    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false };
     let file = p.file();
     diags.append(&mut p.diags);
     (file, diags)
@@ -48,7 +51,7 @@ pub fn parse_file(src: &str) -> (File, Vec<Diag>) {
 /// Parses a standalone expression (used for tests and tooling).
 pub fn parse_expr_str(src: &str) -> (Expr, Vec<Diag>) {
     let (toks, mut diags) = lexer::lex(src);
-    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false };
+    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false };
     let e = p.expr().unwrap_or(Expr::new(ExprKind::Error, Span::default()));
     diags.append(&mut p.diags);
     (e, diags)
@@ -1023,7 +1026,7 @@ impl<'a> Parser<'a> {
                 self.expect_punct(">")?;
                 let mut rest = Vec::new();
                 while self.eat_punct("::") {
-                    rest.push(self.path_seg(true)?);
+                    rest.push(self.path_seg(true, false)?);
                 }
                 Ok(Type::Qualified { ty: Box::new(ty), trait_, rest })
             }
@@ -1065,13 +1068,14 @@ impl<'a> Parser<'a> {
 
     fn ty_path_dots(&mut self, dots: bool) -> PResult<Type> {
         let start = self.span();
+        let cast = std::mem::take(&mut self.cast_ty);
         let global = self.eat_punct("::");
-        let mut segs = vec![self.path_seg(false)?];
+        let mut segs = vec![self.path_seg(false, cast)?];
         loop {
             let dot_path = dots && self.is_punct(".") && matches!(self.tok_at(1), Tok::Ident(_)) && !self.is_punct_at(2, "(");
             if self.is_punct("::") || dot_path {
                 self.bump();
-                segs.push(self.path_seg(true)?);
+                segs.push(self.path_seg(true, cast)?);
             } else {
                 break;
             }
@@ -1079,10 +1083,21 @@ impl<'a> Parser<'a> {
         Ok(Type::Path { global, segs, span: start.to(self.prev_span()) })
     }
 
-    fn path_seg(&mut self, _after_sep: bool) -> PResult<PathSeg> {
+    /// `cast`: a segment of the path after `as` (see `cast_ty`).
+    fn path_seg(&mut self, _after_sep: bool, cast: bool) -> PResult<PathSeg> {
         let name = self.member_name()?;
         let mut seg = PathSeg::plain(name);
-        if self.is_punct("<") || (self.is_punct("::") && self.is_punct_at(1, "<")) {
+        if cast && self.is_punct("<") {
+            let save = self.pos;
+            let nd = self.diags.len();
+            match self.generic_args() {
+                Ok(g) => seg.generics = Some(g),
+                Err(()) => {
+                    self.pos = save;
+                    self.diags.truncate(nd);
+                }
+            }
+        } else if self.is_punct("<") || (self.is_punct("::") && self.is_punct_at(1, "<")) {
             if self.is_punct("::") {
                 self.bump();
             }
@@ -2151,7 +2166,10 @@ impl<'a> Parser<'a> {
         let mut e = self.unary_expr()?;
         while self.is_kw("as") {
             self.bump();
-            let t = self.ty_base(true)?;
+            self.cast_ty = true;
+            let t = self.ty_base(true);
+            self.cast_ty = false;
+            let t = t?;
             let sp = e.span.to(self.prev_span());
             e = Expr::new(ExprKind::Cast(Box::new(e), t), sp);
         }
@@ -2741,7 +2759,7 @@ impl<'a> Parser<'a> {
                 StrPart::Interp { src: s, offset, spec } => {
                     let (toks, mut diags) = lexer::lex_at(&s, offset);
                     self.diags.append(&mut diags);
-                    let mut sub = Parser { src: self.src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false };
+                    let mut sub = Parser { src: self.src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false };
                     let e = sub.expr();
                     if e.is_ok() && !matches!(sub.tok(), Tok::Newline | Tok::Eof) {
                         let sp = sub.span();

@@ -47,7 +47,8 @@ The compiler is a library (`oxie-compiler`) with no dependencies. `oxie-build` c
   * `{` in expression position is a lambda; after a lowercase name it is a trailing lambda;
     after a type name followed by `name:`/`name,`/`}` it is a struct literal;
   * `(a, b) =>` and `x =>` are arrow functions (found by scanning to the matching parenthesis);
-  * `Type<Args>` in expressions is tried as generic arguments and backtracked if it isn't one.
+  * `Type<Args>` in expressions is tried as generic arguments and backtracked if it isn't one;
+    so is a `<` after the type of `as`, which is a comparison when it isn't (`n as usize < m`).
 * A brace lambda without parameters used as a statement (not the block's value) is an error,
   since it would never run; the help points to `run { }`.
 * Errors are collected; after an error the parser skips to the end of the statement.
