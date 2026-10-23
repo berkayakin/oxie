@@ -716,21 +716,26 @@ pub struct BodyFacts {
 }
 
 struct MethodRef<'a> {
+    /// The type the method belongs to; the interface for its own methods (required and default).
     owner: String,
     fun: &'a FunDecl,
     trait_recv: Option<Recv>,
-    /// Implements this Oxie trait method (whose receiver is inferred from its implementations).
+    /// Is or implements a method of this Oxie interface whose receiver is inferred (from its
+    /// default body and its implementations).
     implements: Option<String>,
 }
 
 fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
-    // gather method bodies per owner type
+    // gather method bodies per owner type, and the Oxie interfaces each type implements or extends
     let mut methods: Vec<MethodRef> = Vec::new();
-    fn gather<'a>(k: &Crate, items: &'a [Item], out: &mut Vec<MethodRef<'a>>) {
+    let mut supers: HashMap<String, Vec<String>> = HashMap::new();
+    fn gather<'a>(k: &Crate, items: &'a [Item], out: &mut Vec<MethodRef<'a>>, supers: &mut HashMap<String, Vec<String>>) {
         for it in items {
             match &it.kind {
                 ItemKind::Type(t) => {
-                    gather(k, &t.members, out);
+                    gather(k, &t.members, out, supers);
+                    let traits = t.supertypes.iter().filter_map(|st| st.last_name()).filter(|n| k.traits.contains_key(*n));
+                    supers.entry(t.name.clone()).or_default().extend(traits.map(String::from));
                     for m in &t.members {
                         if let ItemKind::Fun(f) = &m.kind {
                             // methods implementing an Oxie interface take its receiver
@@ -751,9 +756,23 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                         }
                     }
                 }
+                ItemKind::Trait(t) => {
+                    // default bodies are inferred like other methods (calling a `&mut self` method makes them `&mut self`)
+                    let traits = t.supertraits.iter().filter_map(|st| st.last_name()).filter(|n| k.traits.contains_key(*n));
+                    supers.entry(t.name.clone()).or_default().extend(traits.map(String::from));
+                    for m in &t.members {
+                        if let ItemKind::Fun(f) = &m.kind {
+                            let implements = k.traits.get(&t.name).and_then(|ti| ti.methods.get(&f.name)).filter(|mi| !mi.explicit).map(|_| t.name.clone());
+                            out.push(MethodRef { owner: t.name.clone(), fun: f, trait_recv: None, implements });
+                        }
+                    }
+                }
                 ItemKind::Impl(imp) => {
                     let Some(owner) = imp.self_ty.last_name() else { continue };
                     let tinfo = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| k.traits.get(n));
+                    if let Some(ti) = tinfo {
+                        supers.entry(owner.to_string()).or_default().push(ti.name.clone());
+                    }
                     for m in &imp.members {
                         if let ItemKind::Fun(f) = &m.kind {
                             let mi = tinfo.and_then(|t| t.methods.get(&f.name));
@@ -763,13 +782,13 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                         }
                     }
                 }
-                ItemKind::Mod { items, .. } => gather(k, items, out),
+                ItemKind::Mod { items, .. } => gather(k, items, out, supers),
                 _ => {}
             }
         }
     }
     for u in units {
-        gather(k, &u.file.items, &mut methods);
+        gather(k, &u.file.items, &mut methods, &mut supers);
     }
 
     // initial: explicit receivers fixed, others start as Ref/Static
@@ -800,16 +819,29 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
     }
     // why an inferred receiver is `&mut self`, from the last round
     let mut whys: HashMap<(String, String), (String, Option<Span>)> = HashMap::new();
+    // An interface method is `&mut self` if its default body or any implementation needs it; then all
+    // implementations use it. Kept across rounds (interface, method) -> the type that needed it, so
+    // that an implementation which changes nothing stays `&mut self` for the methods calling it.
+    let mut trait_mut: HashMap<(String, String), String> = HashMap::new();
+    let trait_why = |t: &str, name: &str, by: &str| {
+        if by == t {
+            format!("the default method `{}.{}` changes its object, so every implementation takes `&mut self`", t, name)
+        } else {
+            format!("the interface method `{}.{}` changes its object in `{}`, so every implementation takes `&mut self`", t, name, by)
+        }
+    };
     // fixpoint
     for _round in 0..8 {
         let mut changed = false;
         for &i in &pending {
             let m = &methods[i];
             let fields: HashSet<String> = k.classes.get(&m.owner).map(|c| c.fields.iter().map(|f| f.name.clone()).collect()).unwrap_or_default();
-            let recvs: HashMap<String, Recv> = decided.iter().filter(|((o, _), _)| *o == m.owner).map(|((_, n), r)| (n.clone(), *r)).collect();
+            let recvs = callable_recvs(&m.owner, &decided, &supers);
             let facts = analyze_fun_with(m.fun, &fields, &recvs, &mut_params);
             let returns_self = m.fun.ret.as_ref().is_some_and(|t| t.single_name() == Some("Self") || t.single_name() == Some(m.owner.as_str()));
-            let recv = if facts.mutates_self {
+            // implementations of an interface method that is `&mut self` stay `&mut self`
+            let by = m.implements.as_ref().and_then(|t| trait_mut.get(&(t.clone(), m.fun.name.clone())).map(|by| (t, by)));
+            let recv = if facts.mutates_self || by.is_some() {
                 Recv::RefMut
             } else if !facts.uses_self && returns_self && m.trait_recv.is_none() && m.implements.is_none() {
                 Recv::Static
@@ -817,43 +849,32 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                 Recv::Ref
             };
             let key = (m.owner.clone(), m.fun.name.clone());
-            match facts.mut_cause {
-                Some((at, why)) => whys.insert(key.clone(), (why, Some(at))),
-                None => whys.remove(&key),
+            match (facts.mut_cause, by) {
+                (Some((at, why)), _) => whys.insert(key.clone(), (why, Some(at))),
+                (None, Some((t, by))) => whys.insert(key.clone(), (trait_why(t, &m.fun.name, by), None)),
+                (None, None) => whys.remove(&key),
             };
             if decided.get(&key) != Some(&recv) {
                 decided.insert(key, recv);
                 changed = true;
             }
         }
-        // An interface method is `&mut self` if any implementation needs it; then all implementations use it.
-        let mut trait_recv: HashMap<(String, String), (Recv, String)> = HashMap::new();
+        // the first `&mut self` implementation (or default body) of an interface method spreads to the others
         for m in &methods {
             if let Some(t) = &m.implements {
-                let r = decided[&(m.owner.clone(), m.fun.name.clone())];
-                let e = trait_recv.entry((t.clone(), m.fun.name.clone())).or_insert((Recv::Ref, String::new()));
-                if r == Recv::RefMut && e.0 != Recv::RefMut {
-                    *e = (Recv::RefMut, m.owner.clone());
+                if decided[&(m.owner.clone(), m.fun.name.clone())] == Recv::RefMut {
+                    trait_mut.entry((t.clone(), m.fun.name.clone())).or_insert_with(|| m.owner.clone());
                 }
             }
         }
         for m in &methods {
             if let Some(t) = &m.implements {
-                let (want, by) = &trait_recv[&(t.clone(), m.fun.name.clone())];
+                let Some(by) = trait_mut.get(&(t.clone(), m.fun.name.clone())) else { continue };
                 let key = (m.owner.clone(), m.fun.name.clone());
-                if *want == Recv::RefMut && decided.get(&key) != Some(&Recv::RefMut) {
-                    let why = format!("the interface method `{}.{}` changes its object in `{}`, so every implementation takes `&mut self`", t, m.fun.name, by);
-                    whys.insert(key.clone(), (why, None));
+                if decided.get(&key) != Some(&Recv::RefMut) {
+                    whys.insert(key.clone(), (trait_why(t, &m.fun.name, by), None));
                     decided.insert(key, Recv::RefMut);
                     changed = true;
-                }
-            }
-        }
-        let trait_recv: HashMap<(String, String), Recv> = trait_recv.into_iter().map(|(k, (r, _))| (k, r)).collect();
-        for ((t, name), r) in trait_recv {
-            if let Some(ti) = k.traits.get_mut(&t) {
-                if let Some(mi) = ti.methods.get_mut(&name) {
-                    mi.recv = r;
                 }
             }
         }
@@ -863,18 +884,35 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
     }
     for ((owner, name), recv) in decided {
         let why = (recv == Recv::RefMut).then(|| whys.remove(&(owner.clone(), name.clone()))).flatten();
-        if let Some(c) = k.classes.get_mut(&owner) {
-            if let Some(mi) = c.methods.get_mut(&name) {
-                mi.recv = recv;
-                mi.recv_why = why;
-            }
+        let mi = if let Some(c) = k.classes.get_mut(&owner) {
+            c.methods.get_mut(&name)
         } else if let Some(e) = k.enums.get_mut(&owner) {
-            if let Some(mi) = e.methods.get_mut(&name) {
-                mi.recv = recv;
-                mi.recv_why = why;
-            }
+            e.methods.get_mut(&name)
+        } else {
+            k.traits.get_mut(&owner).and_then(|t| t.methods.get_mut(&name))
+        };
+        if let Some(mi) = mi {
+            mi.recv = recv;
+            mi.recv_why = why;
         }
     }
+}
+
+/// The receivers of the methods `owner` can call on `this`: its own, then those of the interfaces
+/// it implements or extends (default methods are callable without `this.`).
+fn callable_recvs(owner: &str, decided: &HashMap<(String, String), Recv>, supers: &HashMap<String, Vec<String>>) -> HashMap<String, Recv> {
+    let mut recvs = HashMap::new();
+    let mut todo = vec![owner];
+    let mut seen = HashSet::new();
+    while let Some(o) = todo.pop() {
+        if seen.insert(o) {
+            for ((_, n), r) in decided.iter().filter(|((x, _), _)| x == o) {
+                recvs.entry(n.clone()).or_insert(*r);
+            }
+            todo.extend(supers.get(o).into_iter().flatten().map(|s| s.as_str()));
+        }
+    }
+    recvs
 }
 
 pub fn analyze_fun(f: &FunDecl, fields: &HashSet<String>, methods: &HashMap<String, Recv>) -> BodyFacts {
@@ -1292,13 +1330,20 @@ pub fn is_type_name_like(s: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// The receiver of each method of `owner`, with the reason and the source it points at.
+    /// The receiver of each method of `owner` (a class, enum or interface), with the reason and the
+    /// source it points at.
     fn receivers(src: &str, owner: &str) -> HashMap<String, (Recv, Option<(String, Option<String>)>)> {
         let (file, diags) = crate::parser::parse_file(src);
         assert!(diags.is_empty(), "{:?}", diags);
         let k = collect(&[SourceUnit { module: Vec::new(), file: &file }], "main", HashSet::new(), false);
         let text = |s: Span| src[s.start as usize..s.end as usize].to_string();
-        let methods = k.classes.get(owner).map(|c| c.methods.clone()).or_else(|| k.enums.get(owner).map(|e| e.methods.clone())).unwrap();
+        let methods = k
+            .classes
+            .get(owner)
+            .map(|c| c.methods.clone())
+            .or_else(|| k.enums.get(owner).map(|e| e.methods.clone()))
+            .or_else(|| k.traits.get(owner).map(|t| t.methods.clone()))
+            .unwrap();
         methods.into_iter().map(|(n, m)| (n, (m.recv, m.recv_why.map(|(w, s)| (w, s.map(text)))))).collect()
     }
 
@@ -1335,5 +1380,61 @@ class Dot() : Shape { override fun grow() {} }
         let (recv, why) = receivers(src, "Dot")["grow"].clone();
         assert_eq!(recv, Recv::RefMut);
         assert_eq!(why, Some(("the interface method `Shape.grow` changes its object in `Circle`, so every implementation takes `&mut self`".into(), None)));
+    }
+
+    #[test]
+    fn calling_an_interface_method_that_changes_its_object_changes_this() {
+        // `Dot.grow` and `Point.grow` change nothing, but are `&mut self` like `Circle.grow`
+        let src = r#"
+interface Shape {
+    fun grow()
+    fun grow_twice() { grow(); grow() }
+}
+class Dot() : Shape {
+    override fun grow() {}
+    fun twice() { grow() }
+    fun thrice() { twice(); this.grow() }
+}
+class Circle(var r: i32) : Shape { override fun grow() { r += 1 } }
+class Point()
+impl Shape for Point { fun grow() {} }
+impl Point { fun twice() { this.grow() } }
+"#;
+        let calls = |name: &str, call: &str| Some((format!("it calls `{}()`, which changes `this`", name), Some(call.to_string())));
+        let dot = receivers(src, "Dot");
+        assert_eq!(dot["grow"].1, Some(("the interface method `Shape.grow` changes its object in `Circle`, so every implementation takes `&mut self`".into(), None)));
+        assert_eq!(dot["twice"], (Recv::RefMut, calls("grow", "grow()")));
+        assert_eq!(dot["thrice"], (Recv::RefMut, calls("twice", "twice()")));
+        assert_eq!(receivers(src, "Point")["twice"], (Recv::RefMut, calls("grow", "this.grow()")));
+        let shape = receivers(src, "Shape");
+        assert_eq!(shape["grow"].0, Recv::RefMut);
+        assert_eq!(shape["grow_twice"], (Recv::RefMut, calls("grow", "grow()")));
+    }
+
+    #[test]
+    fn default_methods_take_the_receiver_of_the_methods_they_call() {
+        let src = r#"
+interface Counter {
+    mut fun bump()
+    fun bump_twice() { bump(); bump() }
+    fun peek() {}
+}
+class Clicks(var n: i32) : Counter {
+    override fun bump() { n += 1 }
+    fun again() { bump_twice() }
+}
+class Quiet() : Counter {
+    override fun bump() {}
+    override fun bump_twice() {}
+}
+"#;
+        let counter = receivers(src, "Counter");
+        assert_eq!(counter["bump_twice"], (Recv::RefMut, Some(("it calls `bump()`, which changes `this`".into(), Some("bump()".into())))));
+        assert_eq!(counter["peek"], (Recv::Ref, None));
+        // calling the inherited default method
+        assert_eq!(receivers(src, "Clicks")["again"], (Recv::RefMut, Some(("it calls `bump_twice()`, which changes `this`".into(), Some("bump_twice()".into())))));
+        // overriding it
+        let why = "the default method `Counter.bump_twice` changes its object, so every implementation takes `&mut self`";
+        assert_eq!(receivers(src, "Quiet")["bump_twice"], (Recv::RefMut, Some((why.into(), None))));
     }
 }

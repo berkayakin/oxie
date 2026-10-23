@@ -56,6 +56,10 @@
 * The quick fix "make it a `move` lambda" for a trailing lambda (`thread::spawn { .. }`) writes
   `thread::spawn(move { .. })`; it used to write `thread::spawn move { .. }`, which doesn't
   parse. A test now applies every quick fix offered for `tests/diagnostics` and builds again.
+* A method that calls an interface method taking `&mut self` takes `&mut self` too. It used to
+  stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
+  method being `&mut self` because another implementation changes its object), when it was a
+  default method of the interface, or when it called a default method its class inherits.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

@@ -60,12 +60,14 @@ The compiler is a library (`oxie-compiler`) with no dependencies. `oxie-build` c
 * classes (fields, constructor parameters, methods, generics), enums (variants and their
   shapes), traits (methods, associated types), free functions, module names, extension traits,
   and which enum owns each variant name (for bare variant names in patterns and calls);
-* **receiver inference**: a fixpoint over all methods. A method is `&mut self` if its body
-  assigns into `self` (directly or through implicit fields), calls a known mutating method on
-  a field, takes `&mut` of a field, or calls a `&mut self` method of the same type. Interface
-  methods without an explicit receiver take `&mut self` if any implementation needs it, and
-  then all implementations use it. The first use that changes `self` is kept as the reason
-  (`MethodInfo::recv_why`: "it assigns `hits`", with its span);
+* **receiver inference**: a fixpoint over all methods, default methods of interfaces included.
+  A method is `&mut self` if its body assigns into `self` (directly or through implicit
+  fields), calls a known mutating method on a field, takes `&mut` of a field, or calls a
+  `&mut self` method of the same type or of its interfaces. Interface methods without an
+  explicit receiver take `&mut self` if their default body or any implementation needs it, and
+  then all implementations use it, also one that changes nothing (and so the methods calling
+  it). The first use that changes `self` is kept as the reason (`MethodInfo::recv_why`: "it
+  assigns `hits`", with its span);
 * **automatic derives**: a fixpoint deciding `Copy` and `Eq + Hash` for data classes and enums
   from their field types.
 

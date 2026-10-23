@@ -236,8 +236,8 @@ interface Named : Display {
 }
 ```
 
-* `interface` (or `trait`) → `trait`. Methods take `&self` unless declared otherwise (or an
-  implementation needs `&mut self`).
+* `interface` (or `trait`) → `trait`. Methods take `&self` unless declared otherwise (or their
+  default body or an implementation needs `&mut self`).
 * A class lists interfaces after `:` and implements methods with `override fun`; the
   matching `impl Trait for Class` is generated. Methods named like the trait's (and `type`
   members) go to the right trait even without `override`.

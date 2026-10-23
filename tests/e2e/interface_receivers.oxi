@@ -1,0 +1,70 @@
+// An interface method without a receiver is `&mut self` in every implementation when one of
+// them changes its object, also where it changes nothing. A method that calls it on `this`
+// takes `&mut self` as well: another method of that class, a default method of the interface,
+// or a method calling a default method it inherits.
+
+interface Shape {
+    fun grow()
+    fun size(): i32
+    fun grow_twice() { grow(); grow() }
+}
+
+class Circle(var r: i32) : Shape {
+    override fun grow() { r += 1 }
+    override fun size(): i32 = r
+}
+
+class Dot() : Shape {
+    override fun grow() {}
+    override fun size(): i32 = 0
+    fun twice() { grow(); this.grow() }
+}
+
+class Point()
+impl Shape for Point {
+    fun grow() {}
+    fun size(): i32 = 0
+}
+impl Point {
+    fun twice() { grow() }
+}
+
+interface Counter {
+    mut fun bump()
+    fun count(): i32
+    fun bump_twice() { bump(); bump() }
+}
+
+class Clicks(var n: i32 = 0) : Counter {
+    override fun bump() { n += 1 }
+    override fun count(): i32 = n
+    fun bump_four_times() { bump_twice(); bump_twice() }
+}
+
+fun grow_each(shapes: &mut Vec<Box<Shape>>) {
+    for (s in shapes) {
+        s.grow_twice()
+    }
+}
+
+fun main() {
+    var d = Dot()
+    d.twice()
+    d.grow_twice()
+    var p = Point()
+    p.twice()
+    println("dot ${d.size()}, point ${p.size()}")
+
+    var c = Circle(1)
+    c.grow_twice()
+    println("circle ${c.size()}")
+
+    var shapes: Vec<Box<Shape>> = vec[Box.new(Circle(10)), Box.new(Dot())]
+    grow_each(&mut shapes)
+    println("sizes ${shapes.map { it.size() }:?}")
+
+    var k = Clicks()
+    k.bump_four_times()
+    k.bump_twice()
+    println("clicks ${k.count()}")
+}
