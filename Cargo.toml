@@ -16,3 +16,8 @@ oxie-from-rust = { path = "crates/oxie-from-rust", version = "0.1.0" }
 
 [profile.release]
 debug = false
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
