@@ -257,6 +257,10 @@ fun parse_point(s: &str): Point throws {
   them. The translation is compiled with the Oxie compiler before it is printed: receivers and
   derives Oxie would infer differently are written out, and items Oxie can't express are kept as
   Rust in `rust { }` blocks with a `// TODO(from-rust)` comment (also reported on stderr).
+* Attributes stay on their statements and `let`s: `#[cfg(test)] v.push(1);` becomes
+  `@cfg(test) v.push(1)`, and a doc comment on a statement, which documents nothing, becomes an
+  ordinary comment. Oxie has no attributes on expressions, so an expression with one (`#[cfg]`
+  on a block's value or on a `vec!` element) is kept as Rust with a TODO.
 * Comments are kept. A `Box<dyn Error>` becomes `AnyError` (`Box<dyn Error + Send + Sync>`), so a
   failing `main` prints `error: ...` instead of Rust's `Error: ...` debug output.
 

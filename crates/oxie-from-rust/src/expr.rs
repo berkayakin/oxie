@@ -235,6 +235,16 @@ impl Printer<'_> {
                 r
             }
             syn::Stmt::Expr(e, semi) => {
+                // attributes written before the statement go before it (Oxie has none for a block's
+                // value, which `ex` keeps as Rust). Oxie never takes a statement with attributes as
+                // the block's value, so it needs no `;`.
+                if !(last && semi.is_none() && !ctx.stmt) {
+                    if let Some((attrs, bare)) = split_stmt_attrs(e) {
+                        let (docs, prefix) = self.stmt_attrs(&attrs);
+                        let t = self.stmt(&syn::Stmt::Expr(bare, *semi), last, ctx, semi_rule && prefix.is_empty());
+                        return if t.is_empty() { t } else { format!("{}{}{}", docs, prefix, t) };
+                    }
+                }
                 if last && semi.is_none() {
                     let t = self.ex(e, ctx);
                     if ctx.throws_tail && t == "()" {
@@ -257,14 +267,39 @@ impl Printer<'_> {
                 t
             }
             syn::Stmt::Macro(m) => {
-                let e = syn::Expr::Macro(syn::ExprMacro { attrs: m.attrs.clone(), mac: m.mac.clone() });
+                let (docs, prefix) = self.stmt_attrs(&m.attrs);
+                let e = syn::Expr::Macro(syn::ExprMacro { attrs: Vec::new(), mac: m.mac.clone() });
                 let mut t = self.ex(&e, &Ctx::stmt());
-                if last && semi_rule && m.semi_token.is_some() && needs_semi(&e) {
+                if last && semi_rule && m.semi_token.is_some() && needs_semi(&e) && prefix.is_empty() {
                     t.push(';');
                 }
-                t
+                format!("{}{}{}", docs, prefix, t)
             }
         }
+    }
+
+    /// The attributes of a statement: comment lines to print above it, and the Oxie prefix
+    /// (`@cfg(test) `). A doc comment documents nothing on a statement (rustc warns about it), so
+    /// it becomes an ordinary comment.
+    fn stmt_attrs(&self, attrs: &[syn::Attribute]) -> (String, String) {
+        let mut docs = String::new();
+        let mut prefix = String::new();
+        for a in attrs {
+            for l in self.attr(a) {
+                match l.strip_prefix("///") {
+                    Some(doc) => {
+                        docs.push_str("//");
+                        docs.push_str(doc);
+                        docs.push('\n');
+                    }
+                    None => {
+                        prefix.push_str(&l);
+                        prefix.push(' ');
+                    }
+                }
+            }
+        }
+        (docs, prefix)
     }
 
     fn is_throwing_call(&self, e: &syn::Expr) -> bool {
@@ -279,13 +314,8 @@ impl Printer<'_> {
     }
 
     fn local(&mut self, l: &syn::Local) -> String {
-        let mut attrs = String::new();
-        for a in &l.attrs {
-            for x in self.attr(a) {
-                attrs.push_str(&x);
-                attrs.push(' ');
-            }
-        }
+        let (docs, attrs) = self.stmt_attrs(&l.attrs);
+        let attrs = docs + &attrs;
         let (pat, ty) = match &l.pat {
             syn::Pat::Type(pt) => (&*pt.pat, Some(&*pt.ty)),
             p => (p, None),
@@ -365,7 +395,7 @@ impl Printer<'_> {
 
     /// The single tail expression of a block without statements or comments.
     fn single_expr<'b>(&self, b: &'b syn::Block) -> Option<&'b syn::Expr> {
-        if b.stmts.len() != 1 || self.has_comments_in(line_of(b), end_line_of(b)) {
+        if b.stmts.len() != 1 || self.has_comments_in(line_of(b), end_line_of(b)) || has_stmt_attrs(&b.stmts[0]) {
             return None;
         }
         match &b.stmts[0] {
@@ -396,6 +426,9 @@ impl Printer<'_> {
     }
 
     pub fn ex(&mut self, e: &syn::Expr, ctx: &Ctx) -> String {
+        if has_expr_attrs(e) {
+            return self.attributed_expr(e);
+        }
         if ctx.throws_tail {
             if let Some(r) = self.throws_tail_expr(e, ctx) {
                 return r;
@@ -577,6 +610,13 @@ impl Printer<'_> {
     /// `rust { ... }` for expressions Oxie has no syntax for.
     pub fn raw_expr(&mut self, e: &syn::Expr) -> String {
         self.todo(line_of(e), "kept as Rust: no Oxie syntax for this expression");
+        format!("rust {{ {} }}", self.rust_expr_inline(e))
+    }
+
+    /// An expression with attributes (a block's value, an argument, a field of a struct literal),
+    /// kept as Rust with them: Oxie has attributes on statements, not on expressions.
+    fn attributed_expr(&mut self, e: &syn::Expr) -> String {
+        self.todo(line_of(e), "kept as Rust: Oxie has no attributes on expressions");
         format!("rust {{ {} }}", self.rust_expr_inline(e))
     }
 
@@ -928,6 +968,9 @@ impl Printer<'_> {
 
     /// A closure, as a Kotlin-style lambda when `kotlin` is set (argument and `val` positions).
     pub fn closure(&mut self, c: &syn::ExprClosure, kotlin: bool) -> String {
+        if !c.attrs.is_empty() {
+            return self.attributed_expr(&syn::Expr::Closure(c.clone()));
+        }
         // Oxie would give `|| f(it)` a parameter `it`, hiding the variable it captures
         if c.inputs.is_empty() && mentions(&c.body, "it") {
             return format!("rust {{ {} }}", self.rust_expr_inline(&syn::Expr::Closure(c.clone())));
@@ -1233,6 +1276,7 @@ impl Printer<'_> {
             && ctx.stmt
             && i.else_branch.is_none()
             && i.then_branch.stmts.len() == 1
+            && !has_stmt_attrs(&i.then_branch.stmts[0])
             && !self.has_comments_in(line_of(&i.then_branch), end_line_of(&i.then_branch))
         {
             let simple = match &i.then_branch.stmts[0] {
@@ -1321,12 +1365,9 @@ impl Printer<'_> {
                         }
                     } else if ctx.stmt
                         && b.block.stmts.len() == 1
+                        && !has_stmt_attrs(&b.block.stmts[0])
                         && !self.has_comments_in(line_of(&b.block), end_line_of(&b.block))
-                        && matches!(&b.block.stmts[0], syn::Stmt::Expr(e, Some(_)) if !is_blocky(e))
-                        || ctx.stmt
-                            && b.block.stmts.len() == 1
-                            && matches!(&b.block.stmts[0], syn::Stmt::Macro(_))
-                            && !self.has_comments_in(line_of(&b.block), end_line_of(&b.block))
+                        && (matches!(&b.block.stmts[0], syn::Stmt::Expr(e, Some(_)) if !is_blocky(e)) || matches!(&b.block.stmts[0], syn::Stmt::Macro(_)))
                     {
                         let marks = (self.todos.len(), self.pending.len());
                         let t = self.stmt(&b.block.stmts[0], false, &Ctx::stmt(), false);
@@ -1820,6 +1861,80 @@ fn strip_outer_elvis_parens(v: String) -> String {
         return inner.to_string();
     }
     v
+}
+
+/// A `match` on an expression that evaluates `$some` with `$x` bound to the node of every kind
+/// that has attributes (all but `Verbatim`).
+macro_rules! with_attrs {
+    ($e:expr, $x:ident => $some:expr, _ => $none:expr) => {
+        with_attrs!(@ $e, $x, $some, $none; Array Assign Async Await Binary Block Break Call Cast Closure Const Continue Field ForLoop
+            Group If Index Infer Let Lit Loop Macro Match MethodCall Paren Path Range RawAddr Reference Repeat Return Struct Try
+            TryBlock Tuple Unary Unsafe While Yield)
+    };
+    (@ $e:expr, $x:ident, $some:expr, $none:expr; $($kind:ident)*) => {
+        match $e {
+            $(syn::Expr::$kind($x) => $some,)*
+            _ => $none,
+        }
+    };
+}
+
+/// The attributes of an expression, inner ones (`{ #![allow(x)] .. }`) included.
+pub fn expr_attrs(e: &syn::Expr) -> &[syn::Attribute] {
+    with_attrs!(e, x => &x.attrs, _ => &[])
+}
+
+fn expr_attrs_mut(e: &mut syn::Expr) -> Option<&mut Vec<syn::Attribute>> {
+    with_attrs!(e, x => Some(&mut x.attrs), _ => None)
+}
+
+/// Attributes on an expression or on a field of a struct literal, which Oxie has no syntax for.
+fn has_expr_attrs(e: &syn::Expr) -> bool {
+    !expr_attrs(e).is_empty() || matches!(e, syn::Expr::Struct(s) if s.fields.iter().any(|f| !f.attrs.is_empty()))
+}
+
+/// Where `syn` keeps the attributes written before an expression statement: on the leftmost
+/// operand of an assignment, binary operation or cast, else on the expression.
+fn attr_target(e: &syn::Expr) -> &syn::Expr {
+    match e {
+        syn::Expr::Assign(a) => attr_target(&a.left),
+        syn::Expr::Binary(b) => attr_target(&b.left),
+        syn::Expr::Cast(c) => attr_target(&c.expr),
+        _ => e,
+    }
+}
+
+fn attr_target_mut(e: &mut syn::Expr) -> &mut syn::Expr {
+    match e {
+        syn::Expr::Assign(a) => attr_target_mut(&mut a.left),
+        syn::Expr::Binary(b) => attr_target_mut(&mut b.left),
+        syn::Expr::Cast(c) => attr_target_mut(&mut c.expr),
+        e => e,
+    }
+}
+
+/// Splits the attributes written before an expression statement off it. Inner attributes
+/// (`{ #![allow(x)] .. }`) stay with the expression.
+fn split_stmt_attrs(e: &syn::Expr) -> Option<(Vec<syn::Attribute>, syn::Expr)> {
+    if !expr_attrs(attr_target(e)).iter().any(|a| matches!(a.style, syn::AttrStyle::Outer)) {
+        return None;
+    }
+    let mut e = e.clone();
+    let attrs = expr_attrs_mut(attr_target_mut(&mut e))?;
+    let (outer, inner): (Vec<syn::Attribute>, Vec<syn::Attribute>) = std::mem::take(attrs).into_iter().partition(|a| matches!(a.style, syn::AttrStyle::Outer));
+    *attrs = inner;
+    Some((outer, e))
+}
+
+/// Attributes written before a statement. Oxie prints them before it, so such a statement isn't
+/// inlined into `if (c) ...` or a `when` arm.
+fn has_stmt_attrs(s: &syn::Stmt) -> bool {
+    match s {
+        syn::Stmt::Local(l) => !l.attrs.is_empty(),
+        syn::Stmt::Macro(m) => !m.attrs.is_empty(),
+        syn::Stmt::Expr(e, _) => has_expr_attrs(attr_target(e)),
+        syn::Stmt::Item(_) => false,
+    }
 }
 
 fn stmt_start_line(s: &syn::Stmt) -> usize {

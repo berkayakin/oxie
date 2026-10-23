@@ -384,6 +384,98 @@ fun main() {
 }
 
 #[test]
+fn statement_attributes_are_kept() {
+    check(
+        r#"
+fn main() {
+    let mut v: Vec<i32> = Vec::new();
+    #[cfg(test)]
+    v.push(1);
+    #[allow(unused_must_use)]
+    "5".parse::<i32>();
+    #[allow(unused_mut)]
+    let mut n = v.len();
+    /// not documentation
+    let m = n + 1;
+    if m > 0 {
+        #[cfg(test)]
+        println!("{}", m);
+    }
+    let mut add = |x: usize| {
+        /// still a statement
+        v.push(x as i32);
+    };
+    add(m);
+    println!("{:?} {} {}", v, n, m);
+}
+"#,
+        r#"fun main() {
+    var v: Vec<i32> = Vec()
+    @cfg(test) v.push(1)
+    @allow(unused_must_use) "5".parse::<i32>()
+    @allow(unused_mut) var n = v.len()
+    // not documentation
+    val m = n + 1
+    if (m > 0) {
+        @cfg(test) println(m)
+    }
+    var add = { x: usize ->
+        // still a statement
+        v.push(x as i32);
+    }
+    add(m)
+    println("${v:?} $n $m")
+}
+"#,
+    );
+}
+
+#[test]
+fn attributes_oxie_cannot_express_stay_rust_with_a_todo() {
+    check(
+        r#"
+struct P {
+    x: i32,
+}
+
+fn mode() -> &'static str {
+    #[cfg(test)]
+    return "test";
+    #[cfg(not(test))]
+    "normal"
+}
+
+fn main() {
+    let v = vec![1, #[cfg(test)] 2, 3];
+    let p = P { #[cfg(test)] x: 1, #[cfg(not(test))] x: 2 };
+    println!("{} {:?} {}", mode(), v, p.x);
+}
+"#,
+        r#"class P(x: i32)
+
+fun mode(): &'static str {
+    @cfg(test) return "test"
+    // TODO(from-rust): kept as Rust: Oxie has no attributes on expressions
+    rust { #[cfg(not(test))] "normal" }
+}
+
+fun main() {
+    // TODO(from-rust): kept as Rust: Oxie has no attributes on expressions
+    val v = vec[1, rust { #[cfg(test)] 2 }, 3]
+    // TODO(from-rust): kept as Rust: Oxie has no attributes on expressions
+    val p = rust { P {
+        #[cfg(test)]
+        x: 1,
+        #[cfg(not(test))]
+        x: 2,
+    } }
+    println("${mode()} ${v:?} ${p.x}")
+}
+"#,
+    );
+}
+
+#[test]
 fn untranslatable_expressions_stay_rust_with_a_todo() {
     check(
         r#"

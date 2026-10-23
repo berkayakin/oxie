@@ -381,9 +381,10 @@ impl Printer<'_> {
         if inner {
             return vec![format!("#![{}]", self.meta(&a.meta))];
         }
+        // `@name` and `@name(args)`; Oxie has no `@name = value` or `@name[args]`
         match &a.meta {
-            syn::Meta::NameValue(_) => vec![format!("#[{}]", self.meta(&a.meta))],
-            m => vec![format!("@{}", self.meta(m))],
+            syn::Meta::Path(_) | syn::Meta::List(syn::MetaList { delimiter: syn::MacroDelimiter::Paren(_), .. }) => vec![format!("@{}", self.meta(&a.meta))],
+            _ => vec![format!("#[{}]", self.meta(&a.meta))],
         }
     }
 

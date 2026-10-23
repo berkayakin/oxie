@@ -3,4 +3,12 @@ fun main() {
     val unused = 1
     @cfg(debug_assertions)
     println("debug build")
+    // `oxie run` doesn't build for tests, so the `@cfg(test)` statements are left out
+    var items = mutableListOf(1)
+    @cfg(test)
+    items.push(2)
+    @cfg(test)
+    var items = mutableListOf(3)
+    items.push(4)
+    println("${items:?}")
 }
