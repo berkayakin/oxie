@@ -78,6 +78,10 @@
   `String`), and their variants, constructors and impl blocks weren't recognized.
 * A class constructed through its module (`shapes.Circle(2.0)`, `a.Counter(1)`) calls its
   constructor; it used to be emitted as `shapes::Circle(2.0)`, which rustc rejects.
+* A cast on the left of `<` or `<<` keeps its parentheses: `(n as usize) < limit` used to
+  become `n as usize < limit`, which rustc rejects, since it reads the `<` as the start of
+  generic arguments of `usize`. The same goes for a cast at the end of a longer operand
+  (`i + (n as usize) < limit`).
 * A function called through its module (`util.total(v)` or `util::total(v)`) is treated like a
   direct call: arguments are lent to `&` and `&mut` parameters, defaults and named arguments
   work, and a `throws` function's error propagates. Before, arguments were passed as written

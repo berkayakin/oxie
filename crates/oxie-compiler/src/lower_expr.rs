@@ -1033,6 +1033,20 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Whether `expr(e, min)` writes `e` ending with a cast that isn't in parentheses.
+    fn ends_with_cast(&self, e: &Expr, min: u8) -> bool {
+        use ExprKind::*;
+        if self.prec_of(e) < min {
+            return false;
+        }
+        match &e.kind {
+            Cast(..) => true,
+            Paren(x) => self.ends_with_cast(x, P_LOWEST),
+            Binary(op, _, r) => !(*op == BinOp::Add && self.is_string_concat(e)) && self.ends_with_cast(r, op.prec() + 1),
+            _ => false,
+        }
+    }
+
     fn in_try_block(&self) -> bool {
         self.fns.last().is_some_and(|f| !f.tries.is_empty())
     }
@@ -1105,26 +1119,7 @@ impl<'a> Lowerer<'a> {
                     self.string_concat(e);
                     return;
                 }
-                let p = op.prec();
-                let cmp = p == 5;
-                let lp = if cmp { p + 1 } else { p };
-                let lcast = matches!(l.kind, ExprKind::Cast(..)) && matches!(op, BinOp::Lt | BinOp::Shl);
-                let by_value = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem);
-                if lcast {
-                    self.e.w("(");
-                    self.expr(l, P_LOWEST);
-                    self.e.w(")");
-                } else if by_value && is_scalar_literal(r) && self.is_ref_lambda_param(l) {
-                    self.read_value(l);
-                } else {
-                    self.expr(l, lp);
-                }
-                self.e.w(&format!(" {} ", op.as_str()));
-                if by_value && is_scalar_literal(l) && self.is_ref_lambda_param(r) {
-                    self.read_value(r);
-                } else {
-                    self.expr(r, p + 1);
-                }
+                self.binary(*op, l, r, false);
             }
             Assign(op, target, value) => {
                 let target_ty = self.assign_target_type(target);
@@ -1482,6 +1477,49 @@ impl<'a> Lowerer<'a> {
             Paren(x) => self.expr(x, P_LOWEST),
             Raw(s) => self.e.raw_lines(s),
             Error => self.e.w("()"),
+        }
+    }
+
+    /// `l op r`. With `before_lt` a `<` or `<<` follows, and a cast at the end of `r` needs parentheses.
+    fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, before_lt: bool) {
+        let p = op.prec();
+        let cmp = p == 5;
+        let lp = if cmp { p + 1 } else { p };
+        let by_value = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem);
+        if by_value && is_scalar_literal(r) && self.is_ref_lambda_param(l) {
+            self.read_value(l);
+        } else {
+            self.operand(l, lp, matches!(op, BinOp::Lt | BinOp::Shl));
+        }
+        self.e.w(&format!(" {} ", op.as_str()));
+        if by_value && is_scalar_literal(l) && self.is_ref_lambda_param(r) {
+            self.read_value(r);
+        } else {
+            self.operand(r, p + 1, before_lt);
+        }
+    }
+
+    /// `expr(e, min)`. With `before_lt` a `<` or `<<` follows, and a cast at the end of `e` gets
+    /// parentheses: Rust reads the `<` in `n as usize < 3` as the start of generic arguments.
+    fn operand(&mut self, e: &Expr, min: u8, before_lt: bool) {
+        if !before_lt || !self.ends_with_cast(e, min) {
+            self.expr(e, min);
+            return;
+        }
+        match &e.kind {
+            ExprKind::Paren(x) => {
+                self.e.mark(e.span);
+                self.operand(x, P_LOWEST, true);
+            }
+            ExprKind::Binary(op, l, r) => {
+                self.e.mark(e.span);
+                self.binary(*op, l, r, true);
+            }
+            _ => {
+                self.e.w("(");
+                self.expr(e, P_LOWEST);
+                self.e.w(")");
+            }
         }
     }
 
