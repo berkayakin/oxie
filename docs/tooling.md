@@ -2,14 +2,39 @@
 
 ## Installing
 
+Oxie needs Rust 1.82 or newer with Cargo ([rustup](https://rustup.rs)): Oxie programs are
+compiled by rustc, so a prebuilt `oxie` needs them too. Crates set their own minimum Rust
+version (the current `tokio` needs 1.85), and Rust features need the Rust version that
+introduced them.
+
+Each of these installs `oxie` into `~/.cargo/bin`:
+
 ```bash
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/berkayakin/oxie/releases/latest/download/oxie-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/berkayakin/oxie/releases/latest/download/oxie-installer.ps1 | iex"
+```
+
+```bash
+# with cargo-binstall, which downloads the prebuilt binary
+cargo binstall oxie
+
+# or build it from source
 cargo install oxie
 ```
 
-installs `oxie` into `~/.cargo/bin`. New projects and scripts depend on the `oxie-build` release
-from crates.io that matches the installed `oxie` (`oxie-build = "0.1.0"` for `oxie` 0.1.0).
-After updating `oxie` with `cargo install oxie`, `cargo update -p oxie-build` brings a project's
-build helper up to date.
+The installers and `cargo binstall` download a prebuilt binary from the
+[releases page](https://github.com/berkayakin/oxie/releases) (macOS on Apple silicon and Intel, Linux on x86-64 and ARM, Windows on
+x86-64), which also has checksums. `cargo install` compiles it, which takes a minute or two.
+Running the same command again updates `oxie`.
+
+New projects and scripts depend on the `oxie-build` release from crates.io that matches the
+installed `oxie` (`oxie-build = "0.1.0"` for `oxie` 0.1.0). After updating `oxie`,
+`cargo update -p oxie-build` brings a project's build helper up to date.
 
 ### Working on Oxie
 

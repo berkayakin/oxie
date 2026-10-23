@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+* The crates declare `rust-version = "1.82"`, the oldest Rust that builds Oxie and its
+  generated code, so an older Rust gets a clear error instead of a failed build.
+
 ## 0.1.0 - 2026-10-23
 
 The first release of Oxie, a programming language for the Rust ecosystem: a concise syntax that

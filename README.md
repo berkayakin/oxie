@@ -150,15 +150,34 @@ into `consume()` on line 5") and offers fixes your editor can apply.
 
 ## Install
 
-Requirements: Rust 1.80+ (`rustup`).
+Oxie needs Rust 1.82 or newer with Cargo (install them with [rustup](https://rustup.rs)), since
+Oxie programs are compiled by rustc. Crates you use can need a newer Rust: the current `tokio`
+needs 1.85.
+
+Then install the `oxie` command (compiler driver, formatter and language server), as a
+prebuilt binary or from source:
 
 ```bash
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/berkayakin/oxie/releases/latest/download/oxie-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/berkayakin/oxie/releases/latest/download/oxie-installer.ps1 | iex"
+```
+
+```bash
+# with cargo-binstall, which downloads the prebuilt binary
+cargo binstall oxie
+
+# or build it from source
 cargo install oxie
 ```
 
-This installs the `oxie` command (compiler driver, formatter and language server). Projects
-it creates get the `oxie-build` helper from crates.io. To work on Oxie itself,
-see [working on Oxie](docs/tooling.md#working-on-oxie).
+Binaries for macOS, Linux and Windows are also on the [releases page](https://github.com/berkayakin/oxie/releases). Projects `oxie`
+creates get the `oxie-build` helper from crates.io. To work on Oxie itself, see
+[working on Oxie](docs/tooling.md#working-on-oxie).
 
 ## Quick start
 
