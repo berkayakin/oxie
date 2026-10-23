@@ -471,6 +471,8 @@ What Oxie removes is the bookkeeping around it:
 
 * arguments for `&T` and `&mut T` parameters of Oxie functions are borrowed for you (writing
   `&v` yourself works too);
+* a `String` or `Vec<T>` parameter that a function only reads becomes `&str` or `&[T]`, so
+  `greet(name)` lends `name` instead of giving it away (for functions that aren't `pub`);
 * lifetimes are filled in when Rust can't infer them (a function returning a reference gets one
   lifetime tied to its reference parameters, and a class holding a `&str` gets a lifetime
   parameter);
@@ -481,21 +483,20 @@ What Oxie removes is the bookkeeping around it:
 * trait bounds on type parameters are inferred from the body: `fun show<T>(x: T) = "<$x>"`
   becomes `fn show<T>(x: T) -> String where T: Display`.
 
-When the borrow checker still says no, the error is explained in Oxie terms, with fixes:
+When the borrow checker still says no, the error is explained in Oxie terms, with fixes. Here
+`register` stores the name in a list, so it has to own it:
 
 ```
-error[E0382]: `nums` was moved, so it can't be used anymore
- --> main.oxi:6:19
+error[E0382]: `name` was moved, so it can't be used anymore
+ --> main.oxi:7:30
   |
-5 |     val n = consume(nums)
-  |                     ---- `nums` moved into `consume()` here
-6 |     println("$n ${nums.len()}")
-  |                   ^^^^ used here after the move
-  = help: giving a value to a function or another variable moves it: `consume` owns it now,
-    and `nums` can't be used afterwards. Pass a copy with `nums.clone()`, or let `consume`
-    borrow the value instead.
-  = fix: pass a copy of `nums`: `val n = consume(nums.clone())`
-  = fix: let `consume` borrow it (parameter type `&[i32]`): `fun consume(v: &[i32]): usize = v.len()`
+6 |     register(names, name)
+  |                     ---- `name` moved into `register()` here
+7 |     println("${names.len()} $name")
+  |                              ^^^^ used here after the move
+  = help: giving a value to a function moves it: `register` keeps it, and `name` can't be used
+    afterwards. Pass a copy with `name.clone()`.
+  = fix: pass a copy of `name`: `register(names, name.clone())`
 ```
 
 In the editor the fixes are quick fixes (code actions).

@@ -415,7 +415,7 @@ impl<'a> Lowerer<'a> {
             return;
         }
         match ty {
-            Type::Ref { mutable, .. } if pos == TyPos::Param && self.auto_borrow(e, *mutable) => {
+            Type::Ref { mutable, inner, .. } if pos == TyPos::Param && (self.auto_borrow(e, *mutable) || !mutable && self.lend_to_slice(e, inner)) => {
                 self.e.mark(e.span);
                 self.e.w(if *mutable { "&mut " } else { "&" });
                 self.expr(e, P_UNARY);
@@ -527,6 +527,22 @@ impl<'a> Lowerer<'a> {
             ExprKind::Call { .. } | ExprKind::StructLit { .. } | ExprKind::VecLit(_) | ExprKind::Array(_) | ExprKind::Template(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Tuple(_) => true,
             ExprKind::MethodCall { name, .. } => matches!(name.as_str(), "clone" | "to_string" | "to_owned" | "to_vec" | "collect" | "format"),
             _ => false,
+        }
+    }
+
+    /// An argument for a `&str` or `&[T]` parameter is lent unless it already is a reference:
+    /// lending a reference (`&s.trim()`) is harmless, since `&&str` coerces to `&str`.
+    fn lend_to_slice(&self, e: &Expr, inner: &Type) -> bool {
+        if !(matches!(inner, Type::Slice(_)) || inner.single_name() == Some("str")) {
+            return false;
+        }
+        match &e.kind {
+            ExprKind::Str(_) | ExprKind::RawStr(_) | ExprKind::Unary(UnOp::Ref | UnOp::RefMut, _) | ExprKind::Null | ExprKind::Lambda { .. } | ExprKind::SelfValue => false,
+            ExprKind::Paren(x) => self.lend_to_slice(x, inner),
+            _ => match e.ident().and_then(|n| self.local(n)) {
+                Some(Some(t)) => !matches!(t, Type::Ref { .. } | Type::Ptr { .. }) && t.last_name() != Some("str"),
+                _ => true,
+            },
         }
     }
 

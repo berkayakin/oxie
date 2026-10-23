@@ -89,6 +89,13 @@ fun short(x: i32) = x * 2
   Interface methods keep the interface's signature.
 * **Automatic borrowing**: an argument for a `&T` or `&mut T` parameter of a function or method
   declared in Oxie is borrowed: `total(v)` → `total(&v)`, `add_one(v)` → `add_one(&mut v)`.
+  For a `&str` or `&[T]` parameter any owned argument is lent (`greet(name.to_uppercase())`).
+* **Borrowed parameters**: a `String` or `Vec<T>` parameter of a top-level function that isn't
+  `pub` becomes `&str` or `&[T]` when the body only reads it (calls `len`, `contains`, `iter`,
+  `map`, ..., prints it, compares it, indexes it, or passes it on to another borrowed parameter),
+  so callers keep their value. A function that stores, returns or consumes the value keeps the
+  owned type, and so do functions that are `pub`, `async`, used as values (`xs.map(greet)`) or
+  called through a path (`util.greet(x)`).
   Arguments that already are references (`&v`, reference-typed variables, `self`, string
   literals) are passed as they are. Passing a field to a `&mut` parameter makes the method
   `&mut self`.

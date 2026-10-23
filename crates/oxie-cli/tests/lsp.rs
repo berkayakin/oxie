@@ -195,7 +195,8 @@ fn language_server_features() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-const MOVED: &str = r#"fun consume(v: Vec<i32>): usize = v.len()
+// `pub`, so Oxie keeps the owned parameter (it would lend a private function's)
+const MOVED: &str = r#"pub fun consume(v: Vec<i32>): usize = v.len()
 
 fun main() {
     val nums = vec[1, 2, 3]

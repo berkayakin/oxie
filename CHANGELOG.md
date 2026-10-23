@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
+  the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
+  Arguments for `&str` and `&[T]` parameters are lent whatever they are
+  (`greet(name.to_uppercase())` used to be a type error). When a function keeps the value, the
+  move error no longer suggests borrowing it.
 * Capture lists: `{ [counter, tx] -> ... }` gives a lambda its own clones of `counter` and `tx`
   (and `[n = expr]` a computed value) and makes it `move`, replacing Rust's
   `let tx = tx.clone(); move || ...` before every thread or callback.

@@ -99,10 +99,24 @@ fn moved_value(d: &mut MappedDiag, lines: &[&str], name: &str) {
     );
     d.notes.retain(|n| !n.starts_with("note: move occurs") && !n.contains("consider changing this parameter type") && !n.contains("consider cloning"));
     let callee_text = callee.as_ref().map(|(f, _)| format!("`{}`", f)).unwrap_or_else(|| "the new owner".into());
-    d.notes.push(help(&format!(
-        "giving a value to a function or another variable moves it: {} owns it now, and `{}` can't be used afterwards. Pass a copy with `{}.clone()`, or let {} borrow the value instead.",
-        callee_text, name, name, callee_text
-    )));
+    let param = callee.as_ref().and_then(|(f, index)| fun_param(lines, f, *index));
+    // Oxie already lends `String` and `Vec` parameters that a top-level function only reads; one
+    // that stayed owned is kept by the function (stored or returned), so `&` wouldn't compile
+    let kept = param.as_ref().is_some_and(|(pl, _, _, ty)| {
+        let decl = lines.get(*pl as usize).copied().unwrap_or("");
+        ["fun ", "private fun ", "internal fun "].iter().any(|p| decl.starts_with(p)) && (ty == "String" || ty.starts_with("Vec<"))
+    });
+    if kept {
+        d.notes.push(help(&format!(
+            "giving a value to a function moves it: {} keeps it, and `{}` can't be used afterwards. Pass a copy with `{}.clone()`.",
+            callee_text, name, name
+        )));
+    } else {
+        d.notes.push(help(&format!(
+            "giving a value to a function or another variable moves it: {} owns it now, and `{}` can't be used afterwards. Pass a copy with `{}.clone()`, or let {} borrow the value instead.",
+            callee_text, name, name, callee_text
+        )));
+    }
     if let Some((l, c)) = move_site {
         let line = lines.get(l as usize).copied().unwrap_or("");
         if word_at(line, c as usize) == Some(name) {
@@ -110,12 +124,10 @@ fn moved_value(d: &mut MappedDiag, lines: &[&str], name: &str) {
             d.fixes.push(Fix { title: format!("pass a copy of `{}`", name), edits: vec![edit(l, end, end, ".clone()")] });
         }
     }
-    if let Some((f, index)) = callee {
-        if let Some((pl, pc, pe, ty)) = fun_param(lines, &f, index) {
-            if !ty.starts_with('&') && !is_copy_type(&ty) {
-                let borrowed = borrowed_type(&ty);
-                d.fixes.push(Fix { title: format!("let `{}` borrow it (parameter type `{}`)", f, borrowed), edits: vec![edit(pl, pc, pe, &borrowed)] });
-            }
+    if let (Some((f, _)), Some((pl, pc, pe, ty))) = (callee, param) {
+        if !ty.starts_with('&') && !is_copy_type(&ty) && !kept {
+            let borrowed = borrowed_type(&ty);
+            d.fixes.push(Fix { title: format!("let `{}` borrow it (parameter type `{}`)", f, borrowed), edits: vec![edit(pl, pc, pe, &borrowed)] });
         }
     }
 }

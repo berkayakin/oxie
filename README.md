@@ -145,8 +145,8 @@ Kotlin and TypeScript developers already know:
 Method receivers are inferred: a method that changes a field takes `&mut self`, one that only
 reads takes `&self`, a function that returns `Self` without touching `self` is static.
 
-When the borrow checker objects, the error says what happened in Oxie terms ("`nums` was moved
-into `consume()` on line 5") and offers fixes your editor can apply.
+When the borrow checker objects, the error says what happened in Oxie terms ("`name` was moved
+into `register()` on line 6") and offers fixes your editor can apply.
 
 ## Install
 

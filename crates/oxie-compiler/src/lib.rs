@@ -13,6 +13,7 @@ pub mod infer;
 pub mod lexer;
 pub mod lower;
 pub mod lower_expr;
+pub mod params;
 pub mod parser;
 pub mod runtime;
 pub mod sema;

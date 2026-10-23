@@ -127,6 +127,7 @@ pub fn compile(inputs: Vec<Input>, opts: &Options) -> Output {
         parsed.push(Parsed { input, module, is_root, file, diags });
     }
     sema::auto_type_lifetimes(&mut parsed.iter_mut().map(|p| &mut p.file).collect::<Vec<_>>());
+    crate::params::borrow_params(&mut parsed.iter_mut().map(|p| &mut p.file).collect::<Vec<_>>());
     let has_lib = parsed.iter().any(|p| p.is_root && p.input.rel_path.file_stem().is_some_and(|s| s == "lib"));
     let units: Vec<SourceUnit> = parsed.iter().map(|p| SourceUnit { module: p.module.clone(), file: &p.file }).collect();
     let k = sema::collect(&units, &opts.crate_name, opts.extern_crates.clone(), has_lib);

@@ -1,0 +1,33 @@
+// A `String` or `Vec<T>` parameter that a function only reads becomes `&str` / `&[T]`, so callers
+// keep their values. Functions that keep the value, `pub` ones and ones used as values are unchanged.
+
+fun greet(name: String) = println("hi $name (${name.len()})")
+fun shout(name: String): String = name.to_uppercase()
+fun keep(name: String): String = name
+fun total(xs: Vec<i32>): i32 = xs.sum()
+fun describe(xs: Vec<String>) = println("${xs.len()} names: ${xs.join_to_string(", ")} ${xs.contains(&"ada".to_string())}")
+// passes it on to another borrowed parameter
+fun relay(name: String) = greet(name)
+// keeps it: stays owned
+fun store(name: String, into: &mut Vec<String>) = into.push(name)
+pub fun public_api(name: String) = println(name)
+// used as a value below: keeps its signature
+fun used_as_value(s: String) = println(s)
+fun main() {
+    val n = "ada".to_string()
+    greet(n)
+    greet("literal")
+    greet(n.to_uppercase())
+    relay(n)
+    println(shout(n))
+    val nums = vec[1, 2, 3]
+    println(total(nums))
+    println(total(vec[4]))
+    val names = vec["ada".to_string(), "bob".to_string()]
+    describe(names)
+    var all: Vec<String> = vec[]
+    store(n, all)
+    println("${nums:?} ${names:?} ${all:?} ${keep("k".to_string())}")
+    public_api("p".to_string())
+    vec["v".to_string()].into_iter().for_each(used_as_value)
+}

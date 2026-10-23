@@ -75,19 +75,17 @@ Arguments after `--` go to the program (`run`) or to cargo (`build`, `check`, `t
 rewrites rustc's messages so they point at `.oxi` lines, including warnings:
 
 ```
-error[E0382]: `v` was moved, so it can't be used anymore
- --> src/main.oxi:6:13
+error[E0382]: `name` was moved, so it can't be used anymore
+ --> src/main.oxi:7:30
   |
-5 |     consume(v)
-  |             - `v` moved into `consume()` here
-6 |     println(v.len())
-  |             ^ used here after the move
-  = help: giving a value to a function or another variable moves it: `consume` owns it now,
-    and `v` can't be used afterwards. Pass a copy with `v.clone()`, or let `consume` borrow
-    the value instead.
-  = fix: pass a copy of `v`: `consume(v.clone())`
-  = fix: let `consume` borrow it (parameter type `&[i32]`): `fun consume(v: &[i32]) {}`
-  = rustc: borrow of moved value: `v`
+6 |     register(names, name)
+  |                     ---- `name` moved into `register()` here
+7 |     println("${names.len()} $name")
+  |                              ^^^^ used here after the move
+  = help: giving a value to a function moves it: `register` keeps it, and `name` can't be used
+    afterwards. Pass a copy with `name.clone()`.
+  = fix: pass a copy of `name`: `register(names, name.clone())`
+  = rustc: borrow of moved value: `name`
 ```
 
 All labeled spans of a message are shown on their `.oxi` lines ("moved here", "borrowed
