@@ -98,6 +98,8 @@ fixes:
 | assign twice / borrow as mutable (E0384, E0596) | it's a `val`; declare it with `var` |
 | behind a `&` reference (E0596) | the parameter needs `&mut` (callers updated) |
 | borrow conflicts (E0499, E0502, E0505, E0506) | where it's borrowed and still used; copy instead of borrowing |
+| a loop over a field while the body changes `this` (E0502) | loop over a copy of the field |
+| not thread-safe (E0277 `Send`/`Sync`, a future held across `await`) | declare the `shared class` `@sync` |
 | lambda may outlive (E0373) | make it a `move` lambda |
 | `?` without `Result` (E0277) | add `throws` to the function |
 | no `Display` (E0277) | print with `:?`, or add `toString` |

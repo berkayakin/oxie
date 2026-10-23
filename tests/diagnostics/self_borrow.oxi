@@ -1,0 +1,12 @@
+class Cart(items: Vec<String>, var log: Vec<String> = vec[]) {
+    fun record(s: &str) { log.push(s.to_string()) }
+    fun check() {
+        for (item in items) record(item)
+        // error: 4: loop over a copy of `items`
+    }
+}
+
+fun main() {
+    var c = Cart(vec["a".to_string()])
+    c.check()
+}

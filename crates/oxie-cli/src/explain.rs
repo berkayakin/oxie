@@ -45,6 +45,8 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
         "E0277" => trait_missing(d, &lines, &names),
         "E0308" => mismatched(d),
         "E0615" => getter_call(d, &lines, &first),
+        // reported without a code
+        _ if d.message.starts_with("future cannot be sent between threads safely") => thread_safety(d, &lines, ""),
         _ => {}
     }
     match d.code.as_deref() {
@@ -198,6 +200,9 @@ fn make_var(d: &mut MappedDiag, lines: &[&str], name: &str) {
 
 fn borrow_conflict(d: &mut MappedDiag, lines: &[&str], name: &str, code: &str) {
     refine(d, lines, name);
+    // `*self` in a method is `this`
+    let is_this = name == "*self" || name == "self";
+    let name = if is_this { "this" } else { name };
     let relabel = |t: &str| -> String {
         let t = t.to_string();
         if t.contains("immutable borrow later used") || t.contains("borrow later used") || t.contains("first borrow later used") {
@@ -241,6 +246,25 @@ fn borrow_conflict(d: &mut MappedDiag, lines: &[&str], name: &str, code: &str) {
         _ => format!("`{}` can't be changed while it is borrowed", name),
     };
     rewrite(d, headline);
+    // one span borrowed and still used: one label
+    let used: Vec<(u32, u32)> = d.secondary.iter().filter(|s| s.text.contains("borrowed here...")).map(|s| (s.line, s.col)).collect();
+    d.secondary.retain(|s| !(s.text == "...and is still used here" && used.contains(&(s.line, s.col))));
+    for s in d.secondary.iter_mut().filter(|s| s.text.ends_with("borrowed here...") && used.contains(&(s.line, s.col))) {
+        s.text = format!("`{}` is borrowed here, and still used", name);
+    }
+    // a loop over a field of `this` whose body changes `this`: loop over a copy
+    if is_this {
+        let found = d.secondary.iter().filter(|s| s.text.contains("borrowed")).find_map(|s| loop_field(lines.get(s.line as usize).copied().unwrap_or("")).map(|f| (s.line, f)));
+        if let Some((l, (end, field))) = found {
+            d.notes.retain(|n| !n.contains("index-based loop"));
+            d.notes.push(help(&format!(
+                "the loop goes through `{}`, which belongs to `this`, while its body changes `this` (and so maybe `{}`). Loop over a copy, or collect the changes and make them after the loop.",
+                field, field
+            )));
+            d.fixes.push(Fix { title: format!("loop over a copy of `{}`", field), edits: vec![edit(l, end, end, ".clone()")] });
+            return;
+        }
+    }
     d.notes.push(help(&format!(
         "a reference to `{}` is still in use. Rust doesn't let a value change (or move) while references to it exist, because the change could invalidate them. Finish using the reference first, or copy the data out (`.clone()`) instead of borrowing it.",
         name
@@ -265,6 +289,58 @@ fn borrow_conflict(d: &mut MappedDiag, lines: &[&str], name: &str, code: &str) {
         d.fixes.push(Fix { title: "copy the value instead of borrowing it".into(), edits: vec![edit(s.line, amp, amp + 1, ""), edit(s.line, end, end, ".clone()")] });
         break;
     }
+}
+
+/// A value that isn't `Send`/`Sync` used from another thread: usually a `shared class` handle.
+fn thread_safety(d: &mut MappedDiag, lines: &[&str], ty: &str) {
+    let future = d.message.starts_with("future cannot be");
+    // for a future, the type is in a note: "the trait `Send` is not implemented for `Rc<..>`"
+    let noted = d.notes.iter().find_map(|n| n.split("is not implemented for `").nth(1).and_then(|t| t.rsplit_once('`')).map(|(t, _)| t.to_string()));
+    let ty = if ty.is_empty() { noted.as_deref().unwrap_or("") } else { ty };
+    d.notes.retain(|n| !n.contains("full name for the type") && !n.contains("--verbose") && !n.contains("{closure@") && !n.contains("required because it's used within"));
+    let class = ty.strip_prefix("Rc<RefCell<").and_then(|t| t.strip_suffix("Data>>"));
+    let decl = class.and_then(|c| {
+        let pat = format!("shared class {}", c);
+        lines.iter().enumerate().find_map(|(l, t)| t.find(&pat).filter(|i| t[i + pat.len()..].chars().next().is_none_or(|c| !is_ident_char(c))).map(|i| (l as u32, t[..i].chars().count() as u32)))
+    });
+    match (class, decl) {
+        (Some(c), Some((l, col))) => {
+            if future {
+                rewrite(d, format!("this task can't move between threads: it holds a `{}` across an `await`", c));
+                d.notes.retain(|n| !n.contains("is not implemented for"));
+            } else {
+                rewrite(d, format!("`{}` can't be used from another thread", c));
+                d.label = Some(format!("a `{}` handle goes to another thread here", c));
+            }
+            d.notes.push(help(&format!(
+                "a `shared class` handle (`Rc<RefCell<..>>`) belongs to one thread. Declare it `@sync shared class {}`, which uses `Arc<Mutex<..>>` so threads can share it.",
+                c
+            )));
+            d.fixes.push(Fix { title: format!("make `{}` usable from several threads (`@sync`)", c), edits: vec![edit(l, col, col, "@sync ")] });
+        }
+        _ if future => {
+            rewrite(d, "this task can't move between threads: it holds a value across an `await` that belongs to one thread".into());
+            d.notes.push(help("a value that belongs to one thread (an `Rc`, a `RefCell`, or a `shared class` without `@sync`) is still alive at an `await`, and the task may continue on another thread. End its use before the `await` (put it in a block), or use `Arc`, `Mutex` or a `@sync shared class`."));
+        }
+        _ if ty.starts_with("Rc<") => {
+            d.notes.push(help("`Rc` counts its references without synchronization, so it can't cross threads. Use `Arc` (with a `Mutex` to change the value), or a `@sync shared class`."));
+        }
+        _ => {}
+    }
+}
+
+/// `for (x in items)` / `for (x in this.items)`: the column after the iterable and its name.
+fn loop_field(line: &str) -> Option<(u32, String)> {
+    let start = line.find("for (")?;
+    let rest = &line[start..];
+    let in_at = start + rest.find(" in ")? + 4;
+    let iter = &line[in_at..];
+    let name_at = in_at + if iter.starts_with("this.") { 5 } else { 0 };
+    let name: String = line[name_at..].chars().take_while(|c| is_ident_char(*c)).collect();
+    if name.is_empty() || !line[name_at + name.len()..].starts_with(')') {
+        return None;
+    }
+    Some((line[..name_at + name.len()].chars().count() as u32, name))
 }
 
 fn lambda_outlives(d: &mut MappedDiag, lines: &[&str], names: &[String]) {
@@ -382,6 +458,10 @@ fn import_line(lines: &[&str]) -> u32 {
 
 fn trait_missing(d: &mut MappedDiag, lines: &[&str], names: &[String]) {
     let msg = d.message.clone();
+    if msg.contains("cannot be sent between threads safely") || msg.contains("cannot be shared between threads safely") {
+        thread_safety(d, lines, names.first().map(String::as_str).unwrap_or(""));
+        return;
+    }
     if msg.contains("the `?` operator can only be used") {
         rewrite(d, "`?` passes errors on, but this function doesn't declare `throws`".into());
         d.notes.retain(|n| !n.contains("FromResidual") && !n.contains("consider adding return type"));

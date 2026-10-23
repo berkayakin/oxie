@@ -1,0 +1,8 @@
+shared class Counter(var n: i32 = 0)
+
+fun main() {
+    val c = Counter()
+    val t = std.thread.spawn { [c] -> c.n += 1 }
+    // error: 5: `Counter` can't be used from another thread
+    t.join().unwrap()
+}

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* Clearer errors: a borrow conflict on `self` says `this`, and a loop over a field whose body
+  changes `this` offers to loop over a copy; a `shared class` handle sent to another thread (or
+  held across an `await` in a spawned task) offers to declare the class `@sync`.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are
