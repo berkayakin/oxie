@@ -77,7 +77,9 @@
   the module's own function or the one it imports. Before, calls to either lost the parameters
   (no lending, defaults or `throws`).
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
-  the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
+  the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`. A
+  `Vec<T>` is lent only when dropping a `T` just frees memory, so a function given mutex guards
+  or values with a `Drop` implementation still drops them when it returns.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are
   (`greet(name.to_uppercase())` used to be a type error). When a function keeps the value, the
   move error no longer suggests borrowing it.

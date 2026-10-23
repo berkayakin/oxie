@@ -472,7 +472,9 @@ What Oxie removes is the bookkeeping around it:
 * arguments for `&T` and `&mut T` parameters of Oxie functions are borrowed for you (writing
   `&v` yourself works too);
 * a `String` or `Vec<T>` parameter that a function only reads becomes `&str` or `&[T]`, so
-  `greet(name)` lends `name` instead of giving it away (for functions that aren't `pub`);
+  `greet(name)` lends `name` instead of giving it away (for functions that aren't `pub`, and for
+  a `Vec` only when dropping its elements just frees memory: a `Vec` of mutex guards is still
+  dropped, and unlocked, when the function returns);
 * lifetimes are filled in when Rust can't infer them (a function returning a reference gets one
   lifetime tied to its reference parameters, and a class holding a `&str` gets a lifetime
   parameter);

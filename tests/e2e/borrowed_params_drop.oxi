@@ -1,0 +1,64 @@
+// A `Vec<T>` parameter that a function only reads is lent as `&[T]` only when dropping a `T`
+// just frees memory. Otherwise the function keeps the `Vec` and drops it when it returns, as in
+// Rust: a value with `Drop` runs it there, and a `MutexGuard` unlocks there.
+import std::sync::{Mutex, MutexGuard}
+
+class Noisy(val name: String)
+
+impl Drop for Noisy {
+    mut fun drop() { println("drop $name") }
+}
+
+// holds a `Noisy`, so dropping it runs code too
+class Holder(val inner: Noisy)
+
+// `Drop` written in Rust
+class Logged(val id: i32)
+
+rust {
+    impl Drop for Logged {
+        fn drop(&mut self) {
+            println!("drop logged {}", self.id);
+        }
+    }
+}
+
+data class Point(val x: i32, val y: i32)
+
+fun count(xs: Vec<Noisy>) = println("count ${xs.len()}")
+fun count_held(xs: Vec<Holder>) = println("held ${xs.len()}: ${xs[0].inner.name}")
+fun count_logged(xs: Vec<Logged>) = println("logged ${xs.len()}")
+fun size<T>(xs: Vec<T>): usize = xs.len()
+fun release(guards: Vec<MutexGuard<i32>>) = println("releasing ${guards.len()}")
+
+// dropping these only frees memory, so they are lent and the caller keeps its list
+fun sum_x(ps: Vec<Point>): i32 = ps.iter().map { it.x }.sum()
+fun longest(names: Vec<String>): usize = names.iter().map { it.len() }.max().unwrap_or(0)
+
+fun main() {
+    val xs = vec[Noisy("a"), Noisy("b")]
+    count(xs)
+    println("after count")
+
+    val held = vec[Holder(Noisy("c"))]
+    count_held(held)
+    println("after held")
+
+    val logs = vec[Logged(1)]
+    count_logged(logs)
+    println("after logged")
+
+    val ds = vec[Noisy("d")]
+    val n = size(ds)
+    println("size $n")
+
+    val m = Mutex::new(0)
+    val gs = vec[m.lock().unwrap()]
+    release(gs)
+    println("unlocked: ${m.try_lock().is_ok()}")
+
+    val ps = vec[Point(1, 2), Point(3, 4)]
+    println("${sum_x(ps)} ${sum_x(ps)}")
+    val names = vec["ada".to_string(), "grace".to_string()]
+    println("${longest(names)} ${names:?}")
+}

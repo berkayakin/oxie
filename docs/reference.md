@@ -97,7 +97,11 @@ fun short(x: i32) = x * 2
   `map`, ..., prints it, compares it, indexes it, or passes it on to another borrowed parameter),
   so callers keep their value. A function that stores, returns or consumes the value keeps the
   owned type, and so do functions that are `pub`, `async`, used as values (`xs.map(greet)`) or
-  called through a path (`util.greet(x)`).
+  called through a path (`util.greet(x)`). A `Vec<T>` is lent only when dropping a `T` just
+  frees memory (numbers, strings, std collections of them, and Oxie types made of those that
+  don't implement `Drop`). A `Vec` of mutex guards, files, `Rc`s or a type parameter stays
+  owned, so the function drops it when it returns, as in Rust: a guard unlocks there, not at
+  the end of the caller.
   Arguments that already are references (`&v`, reference-typed variables, `self`, string
   literals) are passed as they are. Passing a field to a `&mut` parameter makes the method
   `&mut self`.

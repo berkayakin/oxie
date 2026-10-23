@@ -1,0 +1,16 @@
+count 2
+drop a
+drop b
+after count
+held 1: c
+drop c
+after held
+logged 1
+drop logged 1
+after logged
+drop d
+size 1
+releasing 1
+unlocked: true
+4 4
+5 ["ada", "grace"]

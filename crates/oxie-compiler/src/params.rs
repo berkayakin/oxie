@@ -1,11 +1,14 @@
 //! Borrowed parameters: a `String` or `Vec<T>` parameter that a function only reads becomes
 //! `&str` / `&[T]`, so callers keep their value (`greet(name)` lends `name` instead of giving it
-//! away). Applied to non-`pub` top-level functions, whose callers are all in the crate.
+//! away). Applied to non-`pub` top-level functions, whose callers are all in the crate. A `Vec<T>`
+//! is lent only when dropping a `T` just frees memory: lending moves the drop to the caller, and
+//! a `MutexGuard` would unlock later.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::Span;
+use crate::symbols::type_text;
 use crate::visit::{walk_block, walk_expr};
 
 /// Methods that only read a `String` and exist on `str` with the same meaning.
@@ -42,6 +45,145 @@ fn kind_of(t: &Type) -> Option<Kind> {
         ("String", None) => Some(Kind::Str),
         ("Vec", Some([GenericArg::Type(_)])) => Some(Kind::Vec),
         _ => None,
+    }
+}
+
+/// Std types whose drop only frees memory, once their type arguments' drops do too. Not `Rc` and
+/// `Arc`: dropping one changes a count that `Rc::strong_count` and `Rc::try_unwrap` see.
+const DROP_FREE: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char",
+    "str", "Int", "Long", "Short", "Byte", "UInt", "ULong", "UShort", "UByte", "Double", "Float", "Boolean", "Char", "Unit",
+    "String", "PathBuf", "OsString", "Duration", "Instant", "SystemTime", "Vec", "VecDeque", "LinkedList", "BinaryHeap",
+    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Option", "Result", "Box", "Cell", "RefCell", "Cow",
+];
+
+/// A class, enum or type alias declared in Oxie.
+struct Decl<'a> {
+    generics: &'a Generics,
+    /// The types of its fields (and of its variants' fields), or the aliased type.
+    holds: Vec<&'a Type>,
+    /// A field without a type whose default isn't a literal, so its type is unknown here.
+    untyped: bool,
+}
+
+/// The types declared in the crate, to tell whether dropping a value only frees memory.
+struct Types<'a> {
+    decls: HashMap<&'a str, Vec<Decl<'a>>>,
+    /// Types that implement `Drop`, in Oxie or in a `rust { }` block.
+    drops: HashSet<String>,
+}
+
+impl<'a> Types<'a> {
+    fn new(files: &[&'a File]) -> Types<'a> {
+        fn gather<'a>(items: &'a [Item], t: &mut Types<'a>) {
+            for it in items {
+                match &it.kind {
+                    ItemKind::Type(d) => {
+                        let named = d.variants.iter().flat_map(|v| if let VariantFields::Named(fs) = &v.fields { fs.as_slice() } else { &[] });
+                        let mut decl = Decl { generics: &d.generics, holds: d.tuple_fields.iter().map(|(_, ty)| ty).collect(), untyped: false };
+                        for f in d.fields.iter().chain(named) {
+                            match f.ty {
+                                Type::Infer => decl.untyped |= !f.default.as_ref().is_some_and(|e| matches!(e.kind, ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Str(_) | ExprKind::Template(_) | ExprKind::RawStr(_))),
+                                _ => decl.holds.push(&f.ty),
+                            }
+                        }
+                        for v in &d.variants {
+                            if let VariantFields::Tuple(ts) = &v.fields {
+                                decl.holds.extend(ts);
+                            }
+                        }
+                        if d.supertypes.iter().any(|s| s.last_name() == Some("Drop")) {
+                            t.drops.insert(d.name.clone());
+                        }
+                        t.decls.entry(d.name.as_str()).or_default().push(decl);
+                        gather(&d.members, t);
+                    }
+                    ItemKind::TypeAlias { name, generics, ty } => t.decls.entry(name.as_str()).or_default().push(Decl { generics, holds: vec![ty], untyped: false }),
+                    ItemKind::Impl(i) if i.trait_.as_ref().and_then(|tr| tr.last_name()) == Some("Drop") => {
+                        if let Some(n) = i.self_ty.last_name() {
+                            t.drops.insert(n.to_string());
+                        }
+                    }
+                    // `impl Drop for Name` (or `impl<T> std::ops::Drop for Name<T>`) written in Rust
+                    ItemKind::Raw(text) => {
+                        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        for (i, _) in flat.match_indices("Drop for ") {
+                            if flat[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+                                continue;
+                            }
+                            let path: String = flat[i + "Drop for ".len()..].chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':').collect();
+                            if let Some(n) = path.rsplit("::").next().filter(|n| !n.is_empty()) {
+                                t.drops.insert(n.to_string());
+                            }
+                        }
+                    }
+                    ItemKind::Mod { items, .. } | ItemKind::Object { items, .. } => gather(items, t),
+                    _ => {}
+                }
+            }
+        }
+        let mut t = Types { decls: HashMap::new(), drops: HashSet::new() };
+        for f in files {
+            gather(&f.items, &mut t);
+        }
+        t
+    }
+
+    /// Does dropping a `t` only free memory? `params` says it for the type parameters in scope.
+    /// Types Oxie can't see into (from crates, type parameters, `dyn`, lambdas) may do more.
+    /// `visiting` holds the declarations being checked, with their arguments' answers, so a
+    /// recursive type (a tree of nodes) is drop-free unless something else in it isn't.
+    fn drop_free(&self, t: &Type, params: &HashMap<&str, bool>, visiting: &mut Vec<(&'a str, Vec<bool>)>) -> bool {
+        match t {
+            Type::Path { segs, .. } => {
+                let Some(seg) = segs.last() else { return false };
+                if seg.fn_sugar.is_some() {
+                    return false;
+                }
+                if segs.len() == 1 && seg.generics.is_none() {
+                    if let Some(&ok) = params.get(seg.name.as_str()) {
+                        return ok;
+                    }
+                }
+                let args: Vec<bool> = seg.generics.iter().flatten().filter_map(|a| if let GenericArg::Type(t) = a { Some(self.drop_free(t, params, visiting)) } else { None }).collect();
+                let Some((&name, decls)) = self.decls.get_key_value(seg.name.as_str()) else {
+                    return DROP_FREE.contains(&seg.name.as_str()) && args.iter().all(|&a| a);
+                };
+                if self.drops.contains(name) {
+                    return false;
+                }
+                if visiting.iter().any(|(n, a)| *n == name && *a == args) {
+                    return true;
+                }
+                visiting.push((name, args.clone()));
+                // with several declarations of the name (in different modules), all of them
+                let ok = decls.iter().all(|d| {
+                    let names: Vec<&str> = d.generics.params.iter().filter_map(|g| if let GenericParam::Type { name, .. } = g { Some(name.as_str()) } else { None }).collect();
+                    let here: HashMap<&str, bool> = names.iter().copied().zip(args.iter().copied()).collect();
+                    !d.untyped && names.len() == args.len() && d.holds.iter().all(|h| self.drop_free(h, &here, visiting))
+                });
+                visiting.pop();
+                ok
+            }
+            Type::Ref { .. } | Type::Ptr { .. } | Type::Never => true,
+            Type::Tuple(ts) => ts.iter().all(|t| self.drop_free(t, params, visiting)),
+            Type::Array(t, _) | Type::Slice(t) | Type::Option(t) => self.drop_free(t, params, visiting),
+            _ => false,
+        }
+    }
+
+    /// For a `Vec<T>` parameter `name` of the function `f` whose elements may do more than free
+    /// memory when dropped: the element type, and why the parameter stays owned.
+    fn kept_for_drop(&self, ty: &Type, name: &str, f: &FunDecl) -> Option<(Span, String)> {
+        let Type::Path { segs, span, .. } = ty else { return None };
+        let Some([GenericArg::Type(elem)]) = segs.last()?.generics.as_deref() else { return None };
+        // the function's type parameters can be anything, even when one is named like a type
+        let params: HashMap<&str, bool> = f.generics.params.iter().filter_map(|g| if let GenericParam::Type { name, .. } = g { Some((name.as_str(), false)) } else { None }).collect();
+        if self.drop_free(elem, &params, &mut Vec::new()) {
+            return None;
+        }
+        let at = if let Type::Path { span, .. } = elem { *span } else { *span };
+        Some((at, format!("it drops `{}` when it returns, and dropping a `{}` can do more than free memory", name, type_text(elem))))
     }
 }
 
@@ -166,6 +308,9 @@ struct Cand<'a> {
     kind: Kind,
     name: &'a str,
     body: Block,
+    /// For a `Vec` whose elements may do more than free memory when dropped, which keeps it
+    /// owned whatever the body does: the element type and why.
+    drops: Option<(Span, String)>,
 }
 
 /// The (function, parameter index) pairs that can be borrowed, found as a greatest fixpoint.
@@ -210,6 +355,7 @@ impl<'a> Analysis<'a> {
             });
         }
 
+        let types = Types::new(files);
         let mut cands = Vec::new();
         let mut alive = HashSet::new();
         for &(file, it, f) in &funs {
@@ -231,8 +377,11 @@ impl<'a> Analysis<'a> {
                 if rebinds(&body, name) {
                     continue;
                 }
-                cands.push(Cand { file, fun: f, index: i, kind, name: name.as_str(), body: body.clone() });
-                alive.insert((f.name.clone(), i));
+                let drops = if kind == Kind::Vec { types.kept_for_drop(&p.ty, name, f) } else { None };
+                if drops.is_none() {
+                    alive.insert((f.name.clone(), i));
+                }
+                cands.push(Cand { file, fun: f, index: i, kind, name: name.as_str(), body: body.clone(), drops });
             }
         }
         let mut a = Analysis { decls, cands, alive };
@@ -346,10 +495,12 @@ impl<'a> Analysis<'a> {
     }
 
     /// Why a candidate stays owned: the first use that needs the owned value, and what that use
-    /// does ("it returns `v`"). None when it is borrowed.
+    /// does ("it returns `v`"), else the elements' drop. None when it is borrowed.
     fn kept_why(&self, c: &Cand) -> Option<(Span, String)> {
-        let at = self.first_owned_use(c)?;
-        Some(kept_use(c, at))
+        match self.first_owned_use(c) {
+            Some(at) => Some(kept_use(c, at)),
+            None => c.drops.clone(),
+        }
     }
 }
 
@@ -366,14 +517,14 @@ pub struct ParamNote {
     pub borrowed: bool,
     /// "it only reads `s`", "it returns `v`"
     pub why: String,
-    /// The use that keeps it owned.
+    /// The use that keeps it owned, or the element type of a `Vec` kept for its drop.
     pub cause: Option<Span>,
 }
 
 /// Why the top-level function `fun` keeps its `String` or `Vec` parameter number `index`
 /// instead of borrowing it: the index of the file declaring it, the first use that needs the
-/// owned value, and what that use does ("it returns `v`"). None when the parameter is borrowed
-/// or isn't a candidate.
+/// owned value (or the element type, for a `Vec` kept for its drop), and why ("it returns
+/// `v`"). None when the parameter is borrowed or isn't a candidate.
 pub fn kept_reason(files: &[&File], fun: &str, index: usize) -> Option<(usize, Span, String)> {
     let a = Analysis::new(files);
     let c = a.cands.iter().find(|c| c.fun.name == fun && c.index == index)?;
@@ -417,8 +568,9 @@ fn kept_use(c: &Cand, at: u32) -> (Span, String) {
     (Span { start: at, end: at + len }, what.unwrap_or_else(|| format!("it uses `{}` by value", name)))
 }
 
-/// Lends the `String` and `Vec<T>` parameters that functions only read, and says what happened
-/// to each one that could have been lent.
+/// Lends the `String` and `Vec<T>` parameters that functions only read (a `Vec` only when
+/// dropping its elements just frees memory), and says what happened to each one that could
+/// have been lent.
 pub fn borrow_params(files: &mut [&mut File]) -> Vec<ParamNote> {
     let notes: Vec<ParamNote> = {
         let views: Vec<&File> = files.iter().map(|f| &**f).collect();
@@ -514,5 +666,63 @@ data class Holder(name: String)
         assert_eq!(note("keeps"), Some((false, "it returns `v`".into(), Some("v"))));
         // `pub` signatures are never changed, so there's nothing to say
         assert_eq!(note("api"), None);
+    }
+
+    #[test]
+    fn vecs_whose_elements_drop_more_than_memory_stay_owned() {
+        let src = r#"
+import std::sync::MutexGuard
+fun guards(xs: Vec<MutexGuard<i32>>) = println(xs.len())
+fun generic<T>(xs: Vec<T>): usize = xs.len()
+fun shadows<Point>(xs: Vec<Point>): usize = xs.len()
+fun noisy(xs: Vec<Noisy>) = println(xs.len())
+fun holders(xs: Vec<Holder<Noisy>>) = println(xs.len())
+fun logged(xs: Vec<Logged>) = println(xs.len())
+fun counted(xs: Vec<Rc<String>>) = println(xs.len())
+fun lazies(xs: Vec<Lazy>) = println(xs.len())
+fun keeps(xs: Vec<Noisy>): Vec<Noisy> = xs
+fun points(xs: Vec<Point>) = println(xs.len())
+fun nested(xs: Vec<Vec<String?>>) = println(xs.len())
+fun trees(xs: Vec<Tree>) = println(xs.len())
+fun boxes(xs: Vec<Holder<Point>>) = println(xs.len())
+fun refs(xs: Vec<&Noisy>) = println(xs.len())
+class Noisy(val n: i32)
+impl Drop for Noisy { mut fun drop() {} }
+class Holder<T>(val inner: T)
+class Logged(val id: i32)
+rust {
+    impl Drop for Logged { fn drop(&mut self) {} }
+}
+class Lazy {
+    var items = vec[1]
+}
+data class Point(val x: i32, val y: i32)
+class Tree(val children: Vec<Tree>, val label: String?) {
+    var depth = 0
+}
+"#;
+        let (mut file, diags) = crate::parser::parse_file(src);
+        assert!(diags.is_empty(), "{:?}", diags);
+        let notes = borrow_params(&mut [&mut file]);
+        let note = |f: &str| notes.iter().find(|n| n.fun == f).map(|n| (n.borrowed, n.why.clone(), n.cause.map(|s| src[s.start as usize..s.end as usize].to_string())));
+        let dropped = |ty: &str| Some((false, format!("it drops `xs` when it returns, and dropping a `{}` can do more than free memory", ty), Some(ty.to_string())));
+        assert_eq!(note("guards"), dropped("MutexGuard<i32>"));
+        assert_eq!(note("generic"), dropped("T"));
+        // a type parameter, not the class
+        assert_eq!(note("shadows"), dropped("Point"));
+        assert_eq!(note("noisy"), dropped("Noisy"));
+        assert_eq!(note("holders"), dropped("Holder<Noisy>"));
+        // `impl Drop` in a `rust { }` block
+        assert_eq!(note("logged"), dropped("Logged"));
+        // dropping an `Rc` changes its count
+        assert_eq!(note("counted"), dropped("Rc<String>"));
+        // a field whose type Oxie infers from a call
+        assert_eq!(note("lazies"), dropped("Lazy"));
+        // what the body does comes first
+        assert_eq!(note("keeps"), Some((false, "it returns `xs`".into(), Some("xs".into()))));
+        let lent = Some((true, "it only reads `xs`".to_string(), None));
+        for f in ["points", "nested", "trees", "boxes", "refs"] {
+            assert_eq!(note(f), lent, "{}", f);
+        }
     }
 }

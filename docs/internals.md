@@ -129,7 +129,12 @@ Notable translations:
   non-`pub` top-level function becomes `&str`/`&[T]` when every use is a read (a method that
   exists on `str`/slices, printing, comparing, indexing, or passing it to a parameter that is
   itself borrowed). A greatest fixpoint over the crate handles forwarding and recursion; a
-  `move` lambda or async block capturing the parameter keeps it owned. `kept_reason` reports the
+  `move` lambda or async block capturing the parameter keeps it owned. A `Vec<T>` is lent only
+  when dropping a `T` just frees memory (`Types::drop_free`: primitives, `String`, std
+  containers of such types, and Oxie classes, enums and aliases made of them with no `Drop`
+  impl, in Oxie or in a `rust { }` block), since lending moves the drop to the caller. Types
+  Oxie can't see into, type parameters and `Rc`/`Arc` (whose counts can be observed) keep it
+  owned, and the note names the element type as the cause. `kept_reason` reports the
   first use that keeps a parameter owned ("it returns `v`"), for the explanation of E0382.
 * **Inferred bounds** (`bounds.rs`): before a function or method signature is emitted, its
   body is scanned for uses of values of a type parameter (parameters typed `T`/`&T`, elements of
