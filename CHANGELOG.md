@@ -13,6 +13,10 @@
   statements in it were skipped.
 * `oxie emit --annotate` puts a `// file.oxi:line` comment above each statement of the
   generated Rust. Golden tests in `tests/emit` keep the generated Rust from changing unnoticed.
+* Errors caused by what Oxie decided say why: a value moved into a function that keeps its
+  `String` or `Vec` parameter points at the line where the function keeps it ("it returns `v`"),
+  and a borrow that ends too early because Oxie tied a function's result to all its reference
+  parameters shows the signature with a narrower lifetime.
 * A VS Code extension in `editors/vscode-oxie`: highlighting, the language server, ▶ run and
   test buttons, the generated Rust beside the source, tasks and snippets.
 * Language server: files opened through a symlinked directory (on macOS, anything under `/tmp`)

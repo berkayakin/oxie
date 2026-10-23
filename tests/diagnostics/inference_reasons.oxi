@@ -1,0 +1,15 @@
+// Errors caused by what Oxie decided say why it decided that.
+
+fun keep(v: Vec<i32>): Vec<i32> = v
+fun first_word(text: &str, sep: &str): &str = text.split(sep).next().unwrap_or(text)
+
+fun main() {
+    val nums = vec[1, 2, 3]
+    val kept = keep(nums)
+    println("${kept.len()} ${nums.len()}")
+    // error: 9: `keep` keeps it (it returns `v`)
+    val line = "hello world".to_string()
+    val w = first_word(line, " ".to_string())
+    // error: 12: fun first_word<'a>(text: &'a str, sep: &str): &'a str
+    println(w)
+}

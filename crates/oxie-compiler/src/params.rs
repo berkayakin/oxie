@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
+use crate::diag::Span;
 use crate::visit::{walk_block, walk_expr};
 
 /// Methods that only read a `String` and exist on `str` with the same meaning.
@@ -156,12 +157,27 @@ fn rebinds(body: &Block, name: &str) -> bool {
     found
 }
 
-pub fn borrow_params(files: &mut [&mut File]) {
-    // (function, parameter index) pairs that can be borrowed, found as a greatest fixpoint
-    let mut alive: HashSet<(String, usize)> = HashSet::new();
-    {
+/// A `String` or `Vec<T>` parameter that may be borrowed: its function, position, kind and name,
+/// and the function's body.
+struct Cand<'a> {
+    fun: &'a FunDecl,
+    index: usize,
+    kind: Kind,
+    name: &'a str,
+    body: Block,
+}
+
+/// The (function, parameter index) pairs that can be borrowed, found as a greatest fixpoint.
+struct Analysis<'a> {
+    decls: HashMap<&'a str, &'a FunDecl>,
+    cands: Vec<Cand<'a>>,
+    alive: HashSet<(String, usize)>,
+}
+
+impl<'a> Analysis<'a> {
+    fn new(files: &[&'a File]) -> Analysis<'a> {
         let mut funs = Vec::new();
-        for f in files.iter() {
+        for f in files {
             top_level_funs(&f.items, &mut funs);
         }
         let mut count: HashMap<&str, usize> = HashMap::new();
@@ -173,7 +189,7 @@ pub fn borrow_params(files: &mut [&mut File]) {
         // functions used as values (`xs.map(greet)`) or called through a path (`util.greet(x)`,
         // whose arguments aren't matched to parameters) keep their signature
         let mut as_value: HashSet<String> = HashSet::new();
-        for f in files.iter() {
+        for f in files {
             each_body(&f.items, &mut |b| {
                 let mut callees = HashSet::new();
                 walk_block(b, &mut |e| {
@@ -190,8 +206,8 @@ pub fn borrow_params(files: &mut [&mut File]) {
             });
         }
 
-        let mut cands: Vec<(&FunDecl, usize, Kind, &str, &Block)> = Vec::new();
-        let mut blocks: HashMap<&str, Block> = HashMap::new();
+        let mut cands = Vec::new();
+        let mut alive = HashSet::new();
         for (it, f) in &funs {
             let eligible = it.vis != Vis::Public
                 && decls.contains_key(f.name.as_str())
@@ -200,131 +216,177 @@ pub fn borrow_params(files: &mut [&mut File]) {
                 && f.receiver.is_none()
                 && !f.mods.is_async
                 && !f.mods.is_const
-                && f.mods.abi.is_none()
-                && f.body.is_some();
-            if !eligible {
-                continue;
-            }
-            let b = match f.body.as_ref().unwrap() {
-                FunBody::Block(b) => b.clone(),
-                FunBody::Expr(e) => Block { stmts: vec![Stmt::Expr { expr: e.clone(), semi: false }], span: e.span },
+                && f.mods.abi.is_none();
+            let body = match &f.body {
+                Some(FunBody::Block(b)) if eligible => b.clone(),
+                Some(FunBody::Expr(e)) if eligible => Block { stmts: vec![Stmt::Expr { expr: e.clone(), semi: false }], span: e.span },
+                _ => continue,
             };
-            blocks.insert(f.name.as_str(), b);
-        }
-        for (_, f) in &funs {
-            let Some(b) = blocks.get(f.name.as_str()) else { continue };
             for (i, p) in f.params.iter().enumerate() {
                 let (Some(kind), Pat::Ident { name, mutable: false, by_ref: false, sub: None, .. }) = (kind_of(&p.ty), &p.pat) else { continue };
-                if rebinds(b, name) {
+                if rebinds(&body, name) {
                     continue;
                 }
-                cands.push((f, i, kind, name.as_str(), b));
+                cands.push(Cand { fun: f, index: i, kind, name: name.as_str(), body: body.clone() });
                 alive.insert((f.name.clone(), i));
             }
         }
-
-        // a call argument is a read when the parameter it goes to is a reference
-        let param_index = |callee: &str, pos: usize, arg: &Arg| -> Option<(usize, bool)> {
-            let d = decls.get(callee)?;
-            let i = match &arg.name {
-                Some(n) => d.params.iter().position(|p| p.name() == Some(n.as_str()))?,
-                None => pos,
-            };
-            Some((i, matches!(d.params.get(i)?.ty, Type::Ref { mutable: false, .. })))
-        };
+        let mut a = Analysis { decls, cands, alive };
         loop {
-            let mut removed = false;
-            for (f, i, kind, name, body) in &cands {
-                if !alive.contains(&(f.name.clone(), *i)) {
-                    continue;
-                }
-                let reads = if *kind == Kind::Str { STR_READS } else { VEC_READS };
-                let mut ok: HashSet<u32> = HashSet::new();
-                let mut uses: Vec<u32> = Vec::new();
-                let mut moved = false;
-                walk_block(body, &mut |e| {
-                    let is_p = |x: &Expr| x.ident() == Some(name);
-                    match &e.kind {
-                        ExprKind::Path { .. } if is_p(e) => uses.push(e.span.start),
-                        ExprKind::MethodCall { recv, name: m, .. } if is_p(recv) && reads.contains(&m.as_str()) => {
-                            ok.insert(recv.span.start);
-                        }
-                        ExprKind::Template(parts) => {
-                            for part in parts {
-                                if let TemplatePart::Expr(x, _) = part {
-                                    if is_p(x) {
-                                        ok.insert(x.span.start);
-                                    }
-                                }
-                            }
-                        }
-                        ExprKind::BuiltinMacro { name: m, args } if PRINTS.contains(&m.as_str()) => {
-                            args.iter().filter(|a| is_p(&a.value)).for_each(|a| {
-                                ok.insert(a.value.span.start);
-                            });
-                        }
-                        ExprKind::Binary(BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, a, b) => {
-                            for x in [a, b] {
-                                if is_p(x) {
-                                    ok.insert(x.span.start);
-                                }
-                            }
-                        }
-                        ExprKind::In { coll, .. } if is_p(coll) => {
-                            ok.insert(coll.span.start);
-                        }
-                        ExprKind::Index(a, _) if is_p(a) => {
-                            ok.insert(a.span.start);
-                        }
-                        ExprKind::Call { callee, args } => {
-                            if let Some(c) = callee.ident() {
-                                for (pos, a) in args.iter().enumerate() {
-                                    if !is_p(&a.value) {
-                                        continue;
-                                    }
-                                    match param_index(c, pos, a) {
-                                        Some((_, true)) => {
-                                            ok.insert(a.value.span.start);
-                                        }
-                                        Some((j, false)) if alive.contains(&(c.to_string(), j)) => {
-                                            ok.insert(a.value.span.start);
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                        // a `move` closure or async block would hold the borrow past the call
-                        ExprKind::Lambda { is_move: true, body, .. } => {
-                            walk_expr(body, &mut |x| {
-                                if is_p(x) {
-                                    moved = true;
-                                }
-                                true
-                            });
-                        }
-                        ExprKind::Async { block, .. } => {
-                            walk_block(block, &mut |x| {
-                                if is_p(x) {
-                                    moved = true;
-                                }
-                                true
-                            });
-                        }
-                        _ => {}
-                    }
-                    true
-                });
-                if moved || uses.iter().any(|u| !ok.contains(u)) {
-                    alive.remove(&(f.name.clone(), *i));
-                    removed = true;
-                }
-            }
-            if !removed {
+            let dead: Vec<(String, usize)> = a
+                .cands
+                .iter()
+                .filter(|c| a.alive.contains(&(c.fun.name.clone(), c.index)) && a.first_owned_use(c).is_some())
+                .map(|c| (c.fun.name.clone(), c.index))
+                .collect();
+            if dead.is_empty() {
                 break;
             }
+            for d in dead {
+                a.alive.remove(&d);
+            }
+        }
+        a
+    }
+
+    /// Does an argument of a call to `callee` only lend the value: its parameter is a `&`
+    /// reference, or one that is borrowed itself?
+    fn lends(&self, callee: &str, pos: usize, arg: &Arg) -> bool {
+        let Some(d) = self.decls.get(callee) else { return false };
+        let i = match &arg.name {
+            Some(n) => match d.params.iter().position(|p| p.name() == Some(n.as_str())) {
+                Some(i) => i,
+                None => return false,
+            },
+            None => pos,
+        };
+        match d.params.get(i) {
+            Some(p) if matches!(p.ty, Type::Ref { mutable: false, .. }) => true,
+            Some(_) => self.alive.contains(&(callee.to_string(), i)),
+            None => false,
         }
     }
+
+    /// The position of the first use of the parameter that needs the owned value: a use that
+    /// isn't a read, or a `move` lambda or async block capturing it (which would hold a borrow
+    /// past the call).
+    fn first_owned_use(&self, c: &Cand) -> Option<u32> {
+        let (name, reads) = (c.name, if c.kind == Kind::Str { STR_READS } else { VEC_READS });
+        let mut ok: HashSet<u32> = HashSet::new();
+        let mut uses: Vec<u32> = Vec::new();
+        let mut captured: Vec<u32> = Vec::new();
+        walk_block(&c.body, &mut |e| {
+            let is_p = |x: &Expr| x.ident() == Some(name);
+            match &e.kind {
+                ExprKind::Path { .. } if is_p(e) => uses.push(e.span.start),
+                ExprKind::MethodCall { recv, name: m, .. } if is_p(recv) && reads.contains(&m.as_str()) => {
+                    ok.insert(recv.span.start);
+                }
+                ExprKind::Template(parts) => {
+                    for part in parts {
+                        if let TemplatePart::Expr(x, _) = part {
+                            if is_p(x) {
+                                ok.insert(x.span.start);
+                            }
+                        }
+                    }
+                }
+                ExprKind::BuiltinMacro { name: m, args } if PRINTS.contains(&m.as_str()) => {
+                    args.iter().filter(|a| is_p(&a.value)).for_each(|a| {
+                        ok.insert(a.value.span.start);
+                    });
+                }
+                ExprKind::Binary(BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, a, b) => {
+                    for x in [a, b] {
+                        if is_p(x) {
+                            ok.insert(x.span.start);
+                        }
+                    }
+                }
+                ExprKind::In { coll, .. } if is_p(coll) => {
+                    ok.insert(coll.span.start);
+                }
+                ExprKind::Index(a, _) if is_p(a) => {
+                    ok.insert(a.span.start);
+                }
+                ExprKind::Call { callee, args } => {
+                    if let Some(f) = callee.ident() {
+                        for (pos, a) in args.iter().enumerate() {
+                            if is_p(&a.value) && self.lends(f, pos, a) {
+                                ok.insert(a.value.span.start);
+                            }
+                        }
+                    }
+                }
+                ExprKind::Lambda { is_move: true, body, .. } => {
+                    walk_expr(body, &mut |x| {
+                        if is_p(x) {
+                            captured.push(e.span.start);
+                        }
+                        true
+                    });
+                }
+                ExprKind::Async { block, .. } => {
+                    walk_block(block, &mut |x| {
+                        if is_p(x) {
+                            captured.push(e.span.start);
+                        }
+                        true
+                    });
+                }
+                _ => {}
+            }
+            true
+        });
+        uses.into_iter().filter(|u| !ok.contains(u)).chain(captured).min()
+    }
+}
+
+/// Why the top-level function `fun` keeps its `String` or `Vec` parameter number `index`
+/// instead of borrowing it: the first use that needs the owned value, and what that use does
+/// ("it returns `v`"). None when the parameter is borrowed or isn't a candidate.
+pub fn kept_reason(files: &[&File], fun: &str, index: usize) -> Option<(Span, String)> {
+    let a = Analysis::new(files);
+    let c = a.cands.iter().find(|c| c.fun.name == fun && c.index == index)?;
+    let at = a.first_owned_use(c)?;
+    let name = c.name;
+    let is_at = |x: &Expr| x.span.start == at && x.ident() == Some(name);
+    let mut what: Option<String> = None;
+    for (i, s) in c.body.stmts.iter().enumerate() {
+        match s {
+            Stmt::Expr { expr, semi: false } if i + 1 == c.body.stmts.len() && is_at(expr) => what = Some(format!("it returns `{}`", name)),
+            Stmt::Let { init: Some(x), .. } if is_at(x) => what = Some(format!("it stores `{}` in a variable", name)),
+            _ => {}
+        }
+    }
+    walk_block(&c.body, &mut |e| {
+        if what.is_some() {
+            return false;
+        }
+        what = match &e.kind {
+            ExprKind::Lambda { is_move: true, .. } | ExprKind::Async { .. } if e.span.start == at => Some(format!("a `move` lambda captures `{}`", name)),
+            ExprKind::Return(Some(x)) if is_at(x) => Some(format!("it returns `{}`", name)),
+            ExprKind::Call { callee, args } if args.iter().any(|a| is_at(&a.value)) => match callee.ident() {
+                Some(f) => Some(format!("it passes `{}` to `{}`, which takes it by value", name, f)),
+                None => Some(format!("it passes `{}` to a function that takes it by value", name)),
+            },
+            ExprKind::MethodCall { recv, name: m, .. } if is_at(recv) => Some(format!("it calls `.{}()` on `{}`, which needs the value itself", m, name)),
+            ExprKind::MethodCall { args, name: m, .. } if args.iter().any(|a| is_at(&a.value)) => Some(format!("it passes `{}` to `.{}()`", name, m)),
+            ExprKind::Assign(_, _, rhs) if is_at(rhs) => Some(format!("it stores `{}`", name)),
+            ExprKind::StructLit { fields, .. } if fields.iter().any(|(_, v)| v.as_ref().is_some_and(is_at)) => Some(format!("it stores `{}` in a struct", name)),
+            _ => None,
+        };
+        true
+    });
+    let len = if what.as_deref().is_some_and(|w| w.starts_with("a `move`")) { 1 } else { name.len() as u32 };
+    Some((Span { start: at, end: at + len }, what.unwrap_or_else(|| format!("it uses `{}` by value", name))))
+}
+
+pub fn borrow_params(files: &mut [&mut File]) {
+    let alive = {
+        let views: Vec<&File> = files.iter().map(|f| &**f).collect();
+        Analysis::new(&views).alive
+    };
     if alive.is_empty() {
         return;
     }
@@ -355,5 +417,39 @@ pub fn borrow_params(files: &mut [&mut File]) {
     }
     for f in files.iter_mut() {
         apply(&mut f.items, &alive);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reason(src: &str, fun: &str) -> Option<(String, String)> {
+        let (file, diags) = crate::parser::parse_file(src);
+        assert!(diags.is_empty(), "{:?}", diags);
+        kept_reason(&[&file], fun, 0).map(|(s, w)| (src[s.start as usize..s.end as usize].to_string(), w))
+    }
+
+    #[test]
+    fn kept_parameters_say_why() {
+        let src = r#"
+fun returns(v: Vec<i32>): Vec<i32> = v
+fun stores(s: String): Holder = Holder(name = s)
+fun passes(s: String) = consume(s)
+fun consume(s: String) { drop(s) }
+fun calls(s: String): Vec<u8> = s.into_bytes()
+fun captures(s: String) { std::thread::spawn(move { println(s) }) }
+fun reads(s: String): usize = s.len()
+fun forwards(s: String): usize = reads(s)
+data class Holder(name: String)
+"#;
+        assert_eq!(reason(src, "returns"), Some(("v".into(), "it returns `v`".into())));
+        assert_eq!(reason(src, "stores").map(|r| r.1), Some("it passes `s` to `Holder`, which takes it by value".into()));
+        assert_eq!(reason(src, "passes").map(|r| r.1), Some("it passes `s` to `consume`, which takes it by value".into()));
+        assert_eq!(reason(src, "calls").map(|r| r.1), Some("it calls `.into_bytes()` on `s`, which needs the value itself".into()));
+        assert_eq!(reason(src, "captures").map(|r| r.1), Some("a `move` lambda captures `s`".into()));
+        // borrowed, so nothing keeps them
+        assert_eq!(reason(src, "reads"), None);
+        assert_eq!(reason(src, "forwards"), None);
     }
 }

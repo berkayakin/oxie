@@ -14,7 +14,7 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
     let first = names.first().cloned().unwrap_or_default();
     let code = d.code.clone().unwrap_or_default();
     match code.as_str() {
-        "E0382" => moved_value(d, &lines, &first),
+        "E0382" => moved_value(d, src, &lines, &first),
         "E0384" => assign_twice(d, &lines, &first),
         "E0596" => borrow_mut(d, &lines, &first),
         "E0499" | "E0502" | "E0505" | "E0506" => borrow_conflict(d, &lines, &first, &code),
@@ -27,10 +27,13 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
         "E0597" => {
             rewrite(d, format!("`{}` is dropped while something still refers to it", first));
             d.notes.push(help(&format!("a reference to `{}` is used after `{}` goes out of scope (the end of its block). Declare `{}` in an outer block, or store a copy instead of a reference.", first, first, first)));
+            lifetime_hint(d, &lines);
         }
         "E0716" => {
             rewrite(d, "a temporary value is dropped while something still refers to it".to_string());
+            d.notes.retain(|n| !n.contains("`let` binding"));
             d.notes.push(help("store the value in a `val` first, then borrow from that variable."));
+            lifetime_hint(d, &lines);
         }
         "E0106" => {
             d.notes.push(help("Oxie fills in lifetimes for functions and for classes that hold references, but not here; write them yourself (`fun f<'a>(x: &'a str): &'a str`), or hold owned values (`String` instead of `&str`) to avoid lifetimes altogether."));
@@ -62,7 +65,7 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
 // ---------------------------------------------------------------------------------------------
 // individual errors
 
-fn moved_value(d: &mut MappedDiag, lines: &[&str], name: &str) {
+fn moved_value(d: &mut MappedDiag, src: &str, lines: &[&str], name: &str) {
     refine(d, lines, name);
     let in_loop = d.label.as_deref().is_some_and(|l| l.contains("previous iteration")) || d.secondary.iter().any(|s| s.text.contains("previous iteration"));
     let mut move_site: Option<(u32, u32)> = None;
@@ -109,9 +112,15 @@ fn moved_value(d: &mut MappedDiag, lines: &[&str], name: &str) {
         ["fun ", "private fun ", "internal fun "].iter().any(|p| decl.starts_with(p)) && (ty == "String" || ty.starts_with("Vec<"))
     });
     if kept {
+        // say where and why the function keeps it, from the same rules that decided it
+        let why = callee.as_ref().and_then(|(f, index)| kept_reason(src, f, *index));
+        if let Some((l, c, e, why)) = &why {
+            d.secondary.push(Label { line: *l, col: *c, end_col: *e, text: format!("{} keeps it: {}", callee_text, why), exact: true });
+        }
+        let because = why.map(|(.., w)| format!(" ({})", w)).unwrap_or_default();
         d.notes.push(help(&format!(
-            "giving a value to a function moves it: {} keeps it, and `{}` can't be used afterwards. Pass a copy with `{}.clone()`.",
-            callee_text, name, name
+            "giving a value to a function moves it: {} keeps it{}, and `{}` can't be used afterwards. Pass a copy with `{}.clone()`.",
+            callee_text, because, name, name
         )));
     } else {
         d.notes.push(help(&format!(
@@ -958,6 +967,60 @@ fn fun_param(lines: &[&str], name: &str, index: usize) -> Option<(u32, u32, u32,
     let ty_lead = ty.len() - ty.trim_start().len();
     let col = base + off + pname.chars().count() + 1 + ty[..ty_lead].chars().count();
     Some((l as u32, col as u32, (col + ty_text.chars().count()) as u32, ty_text.to_string()))
+}
+
+/// Where and why the function `f` declared in `src` keeps its parameter number `index` (zero-based
+/// line and columns, and a clause like "it returns `v`").
+fn kept_reason(src: &str, f: &str, index: usize) -> Option<(u32, u32, u32, String)> {
+    let (file, _) = oxie_compiler::parser::parse_file(src);
+    let (span, why) = oxie_compiler::params::kept_reason(&[&file], f, index)?;
+    let idx = oxie_compiler::LineIndex::new(src);
+    let (l, c) = idx.line_col(src, span.start as usize);
+    let (el, ec) = idx.line_col(src, span.end as usize);
+    Some((l as u32, c as u32, if el == l { ec as u32 } else { c as u32 + 1 }, why))
+}
+
+/// When the borrow that ends too early is an argument of a function declared in this file whose
+/// result Oxie tied to all its reference parameters, a hint with the signature that leaves this
+/// argument out. Only a hint: Oxie can't tell whether the result really doesn't borrow from it.
+fn lifetime_hint(d: &mut MappedDiag, lines: &[&str]) {
+    let Some((f, index)) = call_around(lines.get(d.line as usize).copied().unwrap_or(""), d.col as usize) else { return };
+    let Some(sig) = narrower_lifetime(lines, &f, index) else { return };
+    d.notes.push(help(&format!(
+        "`{}` returns a reference, and Oxie ties it to all of its reference parameters, so the result can't outlive this argument. If the result doesn't borrow from it, name the lifetime yourself: `{}`.",
+        f, sig
+    )));
+}
+
+/// The signature of the function `f` declared in this file, when it returns a reference and has
+/// no lifetimes written (so Oxie ties the result to all its reference parameters), with the
+/// lifetime on every reference parameter except number `index`.
+fn narrower_lifetime(lines: &[&str], f: &str, index: usize) -> Option<String> {
+    let pat = format!("fun {}(", f);
+    let text = lines.iter().find(|t| t.contains(&pat))?.trim();
+    if text.contains('\'') {
+        return None;
+    }
+    let open = text.find(&pat)? + pat.len();
+    let mut depth = 0;
+    let close = text[open..].char_indices().find_map(|(i, c)| {
+        match c {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' if depth == 0 => return Some(open + i),
+            ')' | ']' | '}' | '>' => depth -= 1,
+            _ => {}
+        }
+        None
+    })?;
+    let ret = text[close + 1..].trim_start().strip_prefix(':')?.split(" = ").next()?.split(" {").next()?.trim();
+    let params: Vec<(String, String)> = split_args(&text[open..]).into_iter().filter_map(|(_, p)| p.split_once(':').map(|(n, t)| (n.trim().to_string(), t.trim().to_string()))).collect();
+    let refs = params.iter().filter(|(_, t)| t.starts_with('&')).count();
+    if !ret.starts_with('&') || refs < 2 || !params.get(index)?.1.starts_with('&') {
+        return None;
+    }
+    let tie = |t: &str| t.replacen('&', "&'a ", 1);
+    let ps: Vec<String> = params.iter().enumerate().map(|(i, (n, t))| format!("{}: {}", n, if i != index && t.starts_with('&') { tie(t) } else { t.clone() })).collect();
+    Some(format!("fun {}<'a>({}): {}", f, ps.join(", "), tie(ret)))
 }
 
 fn is_copy_type(ty: &str) -> bool {
