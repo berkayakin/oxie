@@ -1,0 +1,83 @@
+// `for (x in xs)` borrows `xs` when it is used after the loop (or in the next round of an outer
+// loop); otherwise the loop consumes it, as in Rust.
+
+data class Point(x: i32, y: i32)
+
+class Inventory(items: Vec<String>, counts: Vec<i32>) {
+    fun show() {
+        for (item in items) print("$item ")
+        println()
+    }
+    fun total(): i32 {
+        var t = 0
+        for (c in this.counts) t += c
+        t
+    }
+    // `self` by value: the fields can be moved out
+    fun into_items(self): Vec<String> {
+        var out: Vec<String> = vec[]
+        for (item in items) out.push(item)
+        out
+    }
+}
+
+fun longest(words: Vec<String>): usize {
+    var best = 0
+    for (w in words) if (w.len() > best) best = w.len()
+    println("${words.len()} words")
+    best
+}
+
+fun main() {
+    val names = vec["Ada".to_string(), "Linus".to_string()]
+    for (n in names) println("hi $n")
+    println(names.len())
+
+    val nums = listOf(3, 1, 2)
+    var sum = 0
+    for (n in nums) if (n > 1) sum += n
+    println("$sum of ${nums:?}")
+
+    val points = vec[Point(1, 2), Point(3, 4)]
+    for (p in points) println(p.x + p.y)
+    for ((i, p) in points.iter().enumerate()) println("$i: ${p:?}")
+    println(points.len())
+
+    val ages = mapOf("ada" to 36)
+    for ((name, age) in ages) println("$name is $age")
+    println(ages.len())
+
+    // used by the next round of the outer loop
+    val words = vec["a".to_string(), "b".to_string()]
+    var count = 0
+    for (_ in 0 until 3) {
+        for (w in words) count += w.len()
+    }
+    println(count)
+
+    // declared inside the outer loop: still consumed
+    var all: Vec<String> = vec[]
+    for (line in vec["x y", "z"]) {
+        val parts = line.split(" ").map { it.to_string() }.collect::<Vec<_>>()
+        for (p in parts) all.push(p)
+    }
+    println("${all:?}")
+
+    // the loop variable of an outer loop is consumed by the inner one
+    val grid = vec[vec["1".to_string()], vec["2".to_string()]]
+    var cells: Vec<String> = vec[]
+    for (row in grid) for (c in row) cells.push(c)
+    println("${cells:?}")
+
+    // not used afterwards: consumed
+    val once = vec["only".to_string()]
+    var moved: Vec<String> = vec[]
+    for (o in once) moved.push(o)
+    println("${moved:?}")
+
+    val inv = Inventory(vec["apple".to_string(), "pear".to_string()], vec[2, 5])
+    inv.show()
+    println(inv.total())
+    println("${inv.into_items():?}")
+    println(longest(vec["tree".to_string(), "forest".to_string()]))
+}

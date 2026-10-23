@@ -461,6 +461,8 @@ What Oxie removes is the bookkeeping around it:
   parameter);
 * `&self`/`&mut self` are inferred, and closures that modify captured variables are declared
   `mut` for you;
+* `for (x in xs)` borrows `xs` when it is used after the loop, so iterating doesn't use up the
+  list;
 * trait bounds on type parameters are inferred from the body: `fun show<T>(x: T) = "<$x>"`
   becomes `fn show<T>(x: T) -> String where T: Display`.
 

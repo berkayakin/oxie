@@ -262,3 +262,160 @@ pub fn has_assignment(e: &Expr) -> bool {
     });
     found
 }
+
+/// `for` loops over a local variable that is used again after the loop: later in the scope that
+/// declares it, or by the next round of a loop that encloses the `for` but not the declaration.
+/// Such loops borrow the collection instead of consuming it. Returns the span starts of their
+/// iterables. `outer` are the names already in scope (parameters).
+pub fn reused_loop_iters(outer: Vec<String>, body: &Block) -> std::collections::HashSet<u32> {
+    struct Scope {
+        names: Vec<String>,
+        end: u32,
+        is_loop: bool,
+    }
+    struct Walk {
+        scopes: Vec<Scope>,
+        uses: Vec<(String, u32)>,
+        found: std::collections::HashSet<u32>,
+    }
+    impl Walk {
+        fn block(&mut self, b: &Block, is_loop: bool, names: Vec<String>) {
+            self.scopes.push(Scope { names, end: b.span.end, is_loop });
+            for s in &b.stmts {
+                self.stmt(s);
+            }
+            self.scopes.pop();
+        }
+        fn stmt(&mut self, s: &Stmt) {
+            match s {
+                Stmt::Let { pat, init, else_, .. } => {
+                    if let Some(e) = init {
+                        self.expr(e);
+                    }
+                    if let Some(b) = else_ {
+                        self.block(b, false, Vec::new());
+                    }
+                    let mut names = Vec::new();
+                    pat.bindings(&mut names);
+                    self.scopes.last_mut().unwrap().names.extend(names);
+                }
+                Stmt::Expr { expr, .. } => self.expr(expr),
+                Stmt::Attributed { stmt, .. } => self.stmt(stmt),
+                Stmt::Item(_) => {}
+            }
+        }
+        /// Walks a condition and returns the names its `val` patterns bind.
+        fn cond(&mut self, c: &Cond) -> Vec<String> {
+            let mut names = Vec::new();
+            match c {
+                Cond::Expr(e) => self.expr(e),
+                Cond::Let { pat, expr, .. } => {
+                    self.expr(expr);
+                    pat.bindings(&mut names);
+                }
+                Cond::Chain(parts) => parts.iter().for_each(|p| names.extend(self.cond(p))),
+            }
+            names
+        }
+        fn scoped(&mut self, names: Vec<String>, end: u32, f: impl FnOnce(&mut Self)) {
+            self.scopes.push(Scope { names, end, is_loop: false });
+            f(self);
+            self.scopes.pop();
+        }
+        fn expr(&mut self, e: &Expr) {
+            walk_expr(e, &mut |x| self.visit(x));
+        }
+        fn visit(&mut self, x: &Expr) -> bool {
+            use ExprKind::*;
+            match &x.kind {
+                Block(b) | Unsafe(b) | ConstBlock(b) | LabeledBlock { block: b, .. } | Async { block: b, .. } => self.block(b, false, Vec::new()),
+                Loop { body, .. } => self.block(body, true, Vec::new()),
+                While { cond, body, .. } => {
+                    let names = self.cond(cond);
+                    self.block(body, true, names);
+                }
+                DoWhile { body, cond, .. } => {
+                    self.block(body, true, Vec::new());
+                    self.expr(cond);
+                }
+                For { pat, iter, body, .. } => {
+                    self.expr(iter);
+                    if let Some(n) = iter.ident() {
+                        self.check(n, iter.span.start, x.span.end);
+                    }
+                    let mut names = Vec::new();
+                    pat.bindings(&mut names);
+                    self.block(body, true, names);
+                }
+                Lambda { params, body, .. } => {
+                    let mut names = Vec::new();
+                    params.iter().for_each(|p| p.pat.bindings(&mut names));
+                    self.scoped(names, x.span.end, |w| w.expr(body));
+                }
+                If { cond, then, else_ } => {
+                    let names = self.cond(cond);
+                    self.block(then, false, names);
+                    if let Some(e) = else_ {
+                        self.expr(e);
+                    }
+                }
+                When { subject, binding, arms, .. } => {
+                    if let Some(s) = subject {
+                        self.expr(s);
+                    }
+                    let mut outer = Vec::new();
+                    if let Some(p) = binding {
+                        p.bindings(&mut outer);
+                    }
+                    self.scoped(outer, x.span.end, |w| {
+                        for a in arms {
+                            let mut names = Vec::new();
+                            for c in &a.conds {
+                                match c {
+                                    WhenCond::Pat(p) => p.bindings(&mut names),
+                                    WhenCond::In { expr, .. } | WhenCond::Expr(expr) => w.expr(expr),
+                                    WhenCond::Else => {}
+                                }
+                            }
+                            w.scoped(names, a.span.end, |w| {
+                                if let Some(g) = &a.guard {
+                                    w.expr(g);
+                                }
+                                w.expr(&a.body);
+                            });
+                        }
+                    });
+                }
+                TryCatch { body, catch } => {
+                    self.block(body, false, Vec::new());
+                    if let Some(c) = catch {
+                        let mut names = Vec::new();
+                        c.binding.bindings(&mut names);
+                        self.block(&c.body, false, names);
+                    }
+                }
+                _ => return true,
+            }
+            false
+        }
+        /// A loop at `[_, end)` iterating over `name`: is the variable used again?
+        fn check(&mut self, name: &str, start: u32, end: u32) {
+            let Some(d) = self.scopes.iter().rposition(|s| s.names.iter().any(|n| n == name)) else { return };
+            let in_loop = self.scopes[d + 1..].iter().any(|s| s.is_loop);
+            let scope_end = self.scopes[d].end;
+            if in_loop || self.uses.iter().any(|(n, p)| n == name && *p >= end && *p < scope_end) {
+                self.found.insert(start);
+            }
+        }
+    }
+    let mut uses = Vec::new();
+    walk_block(body, &mut |x| {
+        if let Some(n) = x.ident() {
+            uses.push((n.to_string(), x.span.start));
+        }
+        true
+    });
+    let mut w = Walk { scopes: vec![Scope { names: outer, end: u32::MAX, is_loop: false }], uses, found: Default::default() };
+    w.block(body, false, Vec::new());
+    w.found
+}

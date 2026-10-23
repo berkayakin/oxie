@@ -252,6 +252,10 @@ pub struct Lowerer<'a> {
     pub(crate) lambda_params: Vec<(usize, String)>,
     /// The next lambda lowered is a predicate whose parameters are element references.
     pub(crate) next_lambda_refs: bool,
+    /// Span starts of `for` iterables that are used again after the loop (see `visit::reused_loop_iters`).
+    pub(crate) reused_iters: HashSet<u32>,
+    /// Lowering a method that takes `self` by value, so its fields can be moved out.
+    pub(crate) self_by_value: bool,
 }
 
 pub fn esc(name: &str) -> String {
@@ -318,6 +322,8 @@ impl<'a> Lowerer<'a> {
             root_lints: Vec::new(),
             lambda_params: Vec::new(),
             next_lambda_refs: false,
+            reused_iters: HashSet::new(),
+            self_by_value: false,
         }
     }
 
@@ -1321,6 +1327,7 @@ impl<'a> Lowerer<'a> {
         let throws = !matches!(f.throws, Throws::No);
         let ret = f.ret.clone().filter(|t| !t.is_unit());
         self.fns.push(FnCtx { throws, ret: ret.clone(), is_lambda: false, tries: Vec::new() });
+        let by_value = std::mem::replace(&mut self.self_by_value, matches!(f.self_param, Some(SelfParam::Value { .. })));
         match body {
             FunBody::Block(b) => self.fn_block(b, ret.as_ref(), throws),
             FunBody::Expr(e) => {
@@ -1328,11 +1335,14 @@ impl<'a> Lowerer<'a> {
                 self.fn_block(&b, ret.as_ref(), throws);
             }
         }
+        self.self_by_value = by_value;
         self.fns.pop();
     }
 
     /// Emits a function body block: tail value for non-unit functions, `Ok(())` for unit throwing ones.
     pub(crate) fn fn_block(&mut self, b: &Block, ret: Option<&Type>, throws: bool) {
+        let outer = self.scopes.iter().flat_map(|s| s.keys().cloned()).collect();
+        self.reused_iters.extend(visit::reused_loop_iters(outer, b));
         self.e.w("{");
         self.e.indent();
         self.push_scope();

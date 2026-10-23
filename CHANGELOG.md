@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* `for (x in xs)` no longer uses up `xs` when the list is used after the loop (or by the next
+  round of an outer loop): the loop borrows it (`for x in &xs`, or `for &n in &nums` for `Copy`
+  elements). Loops over a class's collection fields borrow them too. Before, both were errors.
+* A method reading through a new iterator (`input.chars().next()`) is no longer inferred to take
+  `&mut self`.
 * Classes, structs and enums whose fields hold references get their lifetime parameter
   automatically: `class Parser(input: &str)` used to produce Rust that didn't compile and now
   becomes `struct Parser<'a> { input: &'a str }`. Functions taking or returning such types get

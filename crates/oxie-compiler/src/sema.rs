@@ -157,6 +157,15 @@ pub const MUTATING_METHODS: &[&str] = &[
     "borrow_mut", "chunks_mut", "split_at_mut", "nth", "advance_by", "make_ascii_uppercase", "make_ascii_lowercase",
 ];
 
+/// Methods returning a new value (an iterator, a copy) rather than a reference into their receiver:
+/// changing that value doesn't change the receiver.
+const NEW_VALUE_METHODS: &[&str] = &[
+    "iter", "into_iter", "chars", "char_indices", "bytes", "lines", "split", "splitn", "rsplit", "rsplitn",
+    "split_whitespace", "split_terminator", "keys", "values", "windows", "chunks", "map", "filter", "filter_map",
+    "enumerate", "zip", "rev", "skip", "step_by", "peekable", "cloned", "copied", "clone", "to_vec", "to_string",
+    "to_owned", "collect",
+];
+
 impl Crate {
     pub fn class(&self, name: &str) -> Option<&ClassInfo> {
         if self.ambiguous.contains(name) {
@@ -922,6 +931,8 @@ impl<'a> Walker<'a> {
             match &cur.kind {
                 ExprKind::Field { recv, .. } => cur = recv,
                 ExprKind::Index(r, _) => cur = r,
+                // `chars().next()` advances a new iterator, not the field
+                ExprKind::MethodCall { name, .. } if NEW_VALUE_METHODS.contains(&name.as_str()) => return false,
                 ExprKind::MethodCall { recv, .. } => cur = recv,
                 ExprKind::Unary(UnOp::Deref, r) => cur = r,
                 ExprKind::Paren(r) => cur = r,

@@ -398,6 +398,11 @@ val n = const { SIZE * 2 }                      // evaluated at compile time
 * A statement `when` on literals doesn't need `else` (Oxie adds `_ => {}`); a `when` used as a
   value must be exhaustive, as in Rust.
 * `if`/`for`/`while` bodies can be a single statement without braces.
+* `for (x in xs)` consumes `xs`, as in Rust, unless `xs` is a local collection (`Vec`, `VecDeque`,
+  `HashMap`, `HashSet`, `BTreeMap`, ...) that is used after the loop or by the next round of an
+  enclosing loop: then the loop borrows it (`for x in &xs`), and `x` is a reference to the element
+  (`Copy` elements are bound by value: `for &n in &nums`). A loop over a collection field of the
+  class always borrows it, except in methods taking `self`.
 
 ## Lambdas
 

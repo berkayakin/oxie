@@ -41,6 +41,9 @@ fun main() {
     var p = Parser(&src)
     p.advance()
     println("${p.peek():?} ${p.rest()}")
+    // `peek` reads through a new iterator, so it doesn't need `var`
+    val fixed = Parser("xyz")
+    println("${fixed.peek():?}")
     val prefixes = vec["he", "el"]
     println(p.starts_any(prefixes))
 

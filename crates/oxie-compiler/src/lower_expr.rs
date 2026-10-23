@@ -181,6 +181,44 @@ impl<'a> Lowerer<'a> {
         self.bind_pat(pat, known);
     }
 
+    /// Should `for (x in iter)` borrow `iter`? Yes for an owned collection in a local variable that
+    /// is used after the loop, and for a collection field (moving it out of `&self` is an error).
+    /// `Some(true)` when the elements are `Copy`, so the loop can still bind them by value.
+    fn loop_borrow(&self, iter: &Expr) -> Option<bool> {
+        let ty = match &iter.kind {
+            ExprKind::Path { .. } => {
+                let n = iter.ident()?;
+                match self.local(n) {
+                    Some(t) if self.reused_iters.contains(&iter.span.start) => t.clone()?,
+                    Some(_) => return None,
+                    None => {
+                        self.implicit_field(n)?;
+                        self.class.as_ref()?.fields.get(n)?.clone()
+                    }
+                }
+            }
+            ExprKind::Field { recv, name, safe: false } if matches!(recv.kind, ExprKind::SelfValue) => self.class.as_ref()?.fields.get(name)?.clone(),
+            _ => return None,
+        };
+        if matches!(iter.kind, ExprKind::Field { .. }) || self.local(iter.ident()?).is_none() {
+            if self.self_by_value || self.class.as_ref()?.is_static {
+                return None;
+            }
+        }
+        let Type::Path { segs, .. } = &ty else { return None };
+        let [seg] = segs.as_slice() else { return None };
+        match seg.name.as_str() {
+            "Vec" | "VecDeque" | "LinkedList" | "HashSet" | "BTreeSet" | "BinaryHeap" => {}
+            "HashMap" | "BTreeMap" => return Some(false),
+            _ => return None,
+        }
+        let copy: std::collections::HashSet<String> = self.k.derives.iter().filter(|(_, d)| d.iter().any(|x| x == "Copy")).map(|(n, _)| n.clone()).collect();
+        Some(match seg.generics.as_deref() {
+            Some([GenericArg::Type(t)]) => crate::sema::is_copy_simple(t, &copy),
+            _ => false,
+        })
+    }
+
     /// `Box(5)` for a generic class `Box<T>`: `Box<_>`, so its methods are known on the variable.
     fn generic_ctor_type(&self, e: &Expr) -> Option<Type> {
         let ExprKind::Call { callee, .. } = &e.kind else { return None };
@@ -928,14 +966,29 @@ impl<'a> Lowerer<'a> {
                     self.e.w(&format!("'{}: ", l));
                 }
                 let p = self.pat(pat);
-                self.e.w(&format!("for {} in ", p));
-                let needs_parens = contains_struct_lit(iter);
-                if needs_parens {
-                    self.e.w("(");
-                }
-                self.expr(iter, P_LOWEST);
-                if needs_parens {
-                    self.e.w(")");
+                match self.loop_borrow(iter) {
+                    // a collection used again after the loop is borrowed, not consumed
+                    Some(copy) => {
+                        let plain = |p: &Pat| matches!(p, Pat::Ident { by_ref: false, mutable: false, sub: None, .. } | Pat::Wild);
+                        let by_value = copy && (plain(pat) || matches!(pat, Pat::Tuple(ps) if ps.iter().all(plain)));
+                        if by_value {
+                            self.e.w(&format!("for &{} in &", p));
+                        } else {
+                            self.e.w(&format!("for {} in &", p));
+                        }
+                        self.expr(iter, P_POSTFIX);
+                    }
+                    None => {
+                        self.e.w(&format!("for {} in ", p));
+                        let needs_parens = contains_struct_lit(iter);
+                        if needs_parens {
+                            self.e.w("(");
+                        }
+                        self.expr(iter, P_LOWEST);
+                        if needs_parens {
+                            self.e.w(")");
+                        }
+                    }
                 }
                 self.e.w(" ");
                 self.push_scope();

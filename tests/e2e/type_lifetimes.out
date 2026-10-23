@@ -1,4 +1,5 @@
 Some('e') ello world
+Some('x')
 true
 Token { text: "ello world", line: 1 } true
 1

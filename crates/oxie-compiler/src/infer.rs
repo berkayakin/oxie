@@ -13,6 +13,11 @@ fn static_str() -> Type {
     Type::Ref { lifetime: Some("static".into()), mutable: false, inner: Box::new(ty("str")) }
 }
 
+/// `Name<_, ..>` with `n` inferred arguments.
+fn generic(name: &str, n: usize) -> Type {
+    Type::Path { global: false, segs: vec![PathSeg { name: name.into(), generics: Some(vec![GenericArg::Type(Type::Infer); n]), fn_sugar: None }], span: Default::default() }
+}
+
 impl<'a> Lowerer<'a> {
     pub(crate) fn infer_type(&self, e: &Expr) -> Option<Type> {
         self.infer(e, false)
@@ -55,7 +60,7 @@ impl<'a> Lowerer<'a> {
             Cast(_, t) => Some(t.clone()),
             Paren(x) => self.infer_type(x),
             Elvis(_, r) => self.infer_type(r).map(|t| if t == static_str() { ty("String") } else { t }),
-            Call { callee, .. } => {
+            Call { callee, args } => {
                 let n = callee.ident()?;
                 if self.is_local(n) {
                     return None;
@@ -74,7 +79,17 @@ impl<'a> Lowerer<'a> {
                 if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
                     return Some(ty(&en.name));
                 }
-                None
+                match n {
+                    "listOf" | "mutableListOf" | "arrayListOf" | "vecOf" if !args.is_empty() => match self.infer_type(&args[0].value) {
+                        Some(t) => Some(Type::Path { global: false, segs: vec![PathSeg { name: "Vec".into(), generics: Some(vec![GenericArg::Type(t)]), fn_sugar: None }], span: Default::default() }),
+                        None => Some(generic("Vec", 1)),
+                    },
+                    "mapOf" | "mutableMapOf" | "hashMapOf" if !args.is_empty() => Some(generic("HashMap", 2)),
+                    "setOf" | "mutableSetOf" | "hashSetOf" if !args.is_empty() => Some(generic("HashSet", 1)),
+                    "Vec" | "VecDeque" | "HashSet" | "BTreeSet" if args.is_empty() && !self.k.is_user_type(n) => Some(generic(n, 1)),
+                    "HashMap" | "BTreeMap" if args.is_empty() && !self.k.is_user_type(n) => Some(generic(n, 2)),
+                    _ => None,
+                }
             }
             MethodCall { recv, name, .. } => {
                 if matches!(recv.kind, SelfValue) {
@@ -154,6 +169,9 @@ impl<'a> Lowerer<'a> {
                 let t = self.infer_type(&items[0])?;
                 Some(Type::Path { global: false, segs: vec![PathSeg { name: "Vec".into(), generics: Some(vec![GenericArg::Type(t)]), fn_sugar: None }], span: Default::default() })
             }
+            // only the collection is known (`for` loops over it borrow it when it's used afterwards)
+            MapLit(items) if !items.is_empty() => Some(generic("HashMap", 2)),
+            SetLit(items) if !items.is_empty() => Some(generic("HashSet", 1)),
             _ => None,
         }
     }
