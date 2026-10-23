@@ -11,3 +11,10 @@ fun main() {
     val n = add("one", 2)
     // error: 11: mismatched types
 }
+
+data class Address(city: String?)
+data class User(name: String, address: Address?)
+
+// `?.` reads `city` through the borrowed `u`, so `?: "unknown"` is a `&str`
+fun city(u: &User): String = u.address?.city ?: "unknown"
+// error: 19: fix: use a copy (`.clone()`): `fun city(u: &User): String = u.address?.city.clone() ?: "unknown"`

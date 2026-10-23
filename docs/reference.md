@@ -354,7 +354,10 @@ the declared type of a variable, field, parameter or return value:
   `Result` and navigates otherwise.
 * `a ?: b` — `a` if present (`Some`/`Ok`), else `b`, evaluated only when needed. `b` may be
   `return`, `throw`, `break`, `continue` or `panic(...)`. For a literal `b`, `Option<&T> ?: 0`
-  yields `T` and `Option<String> ?: "text"` yields `String`.
+  yields `T`, `Option<String> ?: "text"` yields `String` and `Option<&String> ?: "text"` yields
+  `&str`. So through a borrowed value (`u: &User`), `u.address?.city ?: "unknown"` is borrowed
+  text; where a `String` is needed, copy the field explicitly, as for any field read through a
+  reference: `u.address?.city.clone() ?: "unknown"`. The compiler error offers this fix.
 * `x!!` — unwrap.
 * `if (val v = opt) { }` / `while (val v = opt)` — `if let Some(v)` / `while let Some(v)`;
   with a pattern (`if (val Ok(v) = r)`) the pattern is used as written.

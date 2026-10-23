@@ -1,0 +1,32 @@
+// `?.` through a borrowed value reads fields by reference; `?:` with a text default then gives
+// `&str`. A `String` result needs an explicit copy (`.clone()`), like any field read through `&`.
+data class Address(city: String?, street: String)
+data class User(name: String, address: Address?)
+
+fun city(u: &User): String = u.address?.city.clone() ?: "unknown"
+
+fun city_ref(u: &User): &str = u.address?.city ?: "unknown"
+
+fun street(u: &User): String = u.address?.street.clone() ?: "no street"
+
+fun owned_city(u: User): String = u.address?.city.clone() ?: "unknown"
+
+fun main() {
+    val ada = User("Ada", Address("London", "Baker St"))
+    val bob = User("Bob", null)
+    val cy = User("Cy", Address(null, "High St"))
+    println(city(ada))
+    println(city(bob))
+    println(city(cy))
+    println(city_ref(&ada))
+    println(city_ref(&bob))
+    println(street(&ada))
+    println(street(&bob))
+    println(owned_city(ada))
+    println(ada_or_bob_city(&bob))
+}
+
+fun ada_or_bob_city(u: &User): String {
+    val c = u.address?.city.clone() ?: "unknown"
+    return c
+}
