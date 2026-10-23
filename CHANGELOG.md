@@ -56,6 +56,16 @@
 * The quick fix "make it a `move` lambda" for a trailing lambda (`thread::spawn { .. }`) writes
   `thread::spawn(move { .. })`; it used to write `thread::spawn move { .. }`, which doesn't
   parse. A test now applies every quick fix offered for `tests/diagnostics` and builds again.
+* Borrow errors suggest what costs nothing before a copy, and no copy that doesn't compile. A
+  moved value gets "pass a copy" (`.clone()`) only when its type implements `Clone`: a
+  `Vec<MutexGuard<i32>>`, or a class without `Clone`, used to get a `.clone()` that rustc
+  rejects, and is now told to use the value before the call, or to let the function borrow it.
+  `if (val v = cache.get(&id)) return v` before `cache.insert(id, ...)` suggests the entry API,
+  `cache.entry(id).or_insert_with { ... }`, and changing `v[i]` in a loop over
+  `v.iter().enumerate()` suggests `for (x in v.iter_mut()) { *x = ... }`, both with a quick fix
+  in the simple cases. A quick fix is no longer one part of a rustc suggestion that edits
+  several places (`value` without the `let value = name.clone()` it needs), and the quick fix
+  test checks the lines a fix changes too.
 * A method that calls an interface method taking `&mut self` takes `&mut self` too. It used to
   stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
   method being `&mut self` because another implementation changes its object), when it was a

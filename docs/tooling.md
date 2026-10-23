@@ -97,7 +97,7 @@ fixes:
 
 | rustc error | Oxie explanation and fix |
 |---|---|
-| use of moved value (E0382) | where it moved, and where and why the function keeps it; pass a copy, or let the function borrow |
+| use of moved value (E0382) | where it moved, and where and why the function keeps it; let the function borrow, or pass a copy when the type implements `Clone` (otherwise use the value before the call) |
 | dropped while borrowed (E0597, E0716) | keep the value in a `val`; for a function whose result Oxie tied to all its references, the signature that leaves this argument out |
 | borrowed text where a `String` is expected, from `?.` ... `?:` through a reference (E0308) | copy the field: `u.address?.city.clone() ?: "unknown"` |
 | `?:` or `?.` on a value that can't be null, such as a `String` (E0277, E0599, E0282) | which value isn't optional, and its type; remove the default, or use `.` |
@@ -106,6 +106,8 @@ fixes:
 | behind a `&` reference (E0596) | the parameter needs `&mut` (callers updated) |
 | borrow conflicts (E0499, E0502, E0505, E0506) | where it's borrowed and still used; copy instead of borrowing |
 | a loop over a field while the body changes `this` (E0502) | loop over a copy of the field |
+| a map lookup returned before an `insert` into the same map (E0502) | look the key up once: `cache.entry(id).or_insert_with { load(id) }` |
+| changing `v[i]` in a loop over `v.iter().enumerate()` (E0502) | loop over `v.iter_mut()` and change each element through it: `for (x in v.iter_mut()) { *x = *x * 2 }` |
 | not thread-safe (E0277 `Send`/`Sync`, a future held across `await`) | declare the `shared class` `@sync` |
 | lambda may outlive (E0373) | make it a `move` lambda |
 | `?` without `Result` (E0277) | add `throws` to the function |

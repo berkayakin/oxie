@@ -166,7 +166,8 @@ oxie-sourcemap 1
 message (following macro expansions back to the call site) to the `.oxi` file, and renders it
 in rustc's format. Secondary labels are mapped too; those that don't map exactly (the generated
 text between the nearest mark and the span differs from the source) are dropped unless an
-explanation places them. rustc suggestions whose spans map exactly are kept as edits.
+explanation places them. rustc suggestions whose spans map exactly are kept as edits, except
+the parts of a suggestion that edits several places, which only work together.
 
 `explain.rs` then rewrites the common errors (moves, `val` mutation, borrow conflicts, `&`
 parameters, closures outliving their scope, missing `throws`, `Display`, bounds and imports,
@@ -177,6 +178,12 @@ returns them from `textDocument/codeAction`. Errors caused by an Oxie decision s
 into a function that keeps its parameter points at the use `params::kept_reason` finds, and a
 borrow that ends too early because of the shared `'a` of automatic lifetimes shows the
 signature with a narrower one.
+
+A fix that costs nothing comes before a copy, and a copy is offered only when it compiles: a
+moved value gets `.clone()` only where rustc suggests it, which rustc does only for types that
+implement `Clone`. Two borrow conflicts are recognized in the parsed file and get a form without
+a copy: a map lookup returned before an `insert` into the same map (the entry API), and a loop
+over `v.iter().enumerate()` that changes `v[i]` (a loop over `v.iter_mut()`).
 
 An explanation sees every `.oxi` file of the crate (`sources.rs`: the project's `src/`, or the
 script): the function a value moved into, a type or a `shared class` may be declared in
@@ -231,7 +238,8 @@ scopes asserted in `editors/vscode-oxie/test/grammar/*.oxi`.
 * `crates/oxie-cli/tests/runtime.rs`: panics under `oxie run` and `oxie test` point at `.oxi` lines.
 * `crates/oxie-cli/tests/lsp.rs` drives the language server over stdio. One test applies every
   quick fix offered for `tests/diagnostics`, one at a time, to a copy of the program and builds
-  it again: the error the fix was offered for must be gone.
+  it again: the error the fix was offered for must be gone, and the lines the fix changed must
+  have no new errors.
 * `editors/vscode-oxie`: `npm test` runs the grammar tests, then integration tests in VS Code
   (`test/suite`) with the language server on a copy of `test/fixtures`.
 * `tests/run_e2e.sh` runs the e2e programs from the shell.
