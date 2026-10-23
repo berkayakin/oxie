@@ -42,6 +42,9 @@ pub struct MappedDiag {
     /// The generated Rust text under the primary span (single-line spans only).
     pub gen_text: Option<String>,
     pub fixes: Vec<Fix>,
+    /// The explanation names the mistake at this position, so rustc's later messages at the
+    /// same position are its consequences and aren't shown.
+    pub covers_position: bool,
 }
 
 /// A labeled span on one line (zero-based, character columns).
@@ -209,6 +212,7 @@ impl Mapper {
             rust_message: None,
             gen_text: None,
             fixes: Vec::new(),
+            covers_position: false,
         })
     }
 
@@ -322,6 +326,7 @@ impl Mapper {
             rust_message: None,
             gen_text,
             fixes: Vec::new(),
+            covers_position: false,
         };
         if d.from_oxie {
             let src = self.text_of(&d.file).to_string();
@@ -449,6 +454,7 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
     let stdout = child.stdout.take().unwrap();
     let mut mapper = Mapper::default();
     let mut seen = HashSet::new();
+    let mut covered = Covered::default();
     let mut result = BuildResult { success: false, executables: Vec::new(), errors: 0, warnings: 0 };
     for line in BufReader::new(stdout).lines() {
         let line = line?;
@@ -468,8 +474,14 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
                 if level == "failure-note" {
                     continue;
                 }
-                let rendered = match mapper.map_message(root, msg) {
-                    Some(d) if d.from_oxie => render(&d, root),
+                let mapped = mapper.map_message(root, msg);
+                if mapped.as_ref().is_some_and(|d| d.from_oxie && !covered.cover(d)) {
+                    continue;
+                }
+                // one explained error per position: rustc reports some twice (`?:` on a value
+                // that isn't optional), with different Rust wording
+                let (rendered, key) = match mapped {
+                    Some(d) if d.from_oxie => (render(&d, root), format!("{}:{}:{}:{}", d.file.display(), d.line, d.col, d.message)),
                     Some(_) | None => {
                         let r = msg.get("rendered").and_then(|r| r.as_str()).unwrap_or("").to_string();
                         // summary lines like "aborting due to ..." have no spans
@@ -479,10 +491,10 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
                                 continue;
                             }
                         }
-                        r
+                        (r.clone(), r)
                     }
                 };
-                if rendered.trim().is_empty() || !seen.insert(rendered.clone()) {
+                if rendered.trim().is_empty() || !seen.insert(key) {
                     continue;
                 }
                 match level {
@@ -519,6 +531,7 @@ pub fn check_collect(root: &Path, target_dir: Option<&Path>) -> std::io::Result<
     let mut mapper = Mapper::default();
     let mut diags = Vec::new();
     let mut seen = HashSet::new();
+    let mut covered = Covered::default();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         if v.get("reason").and_then(|r| r.as_str()) != Some("compiler-message") {
@@ -531,13 +544,31 @@ pub fn check_collect(root: &Path, target_dir: Option<&Path>) -> std::io::Result<
         if let Some(msg) = v.get("message") {
             if let Some(d) = mapper.map_message(root, msg) {
                 let key = format!("{}:{}:{}:{}", d.file.display(), d.line, d.col, d.message);
-                if seen.insert(key) {
+                if covered.cover(&d) && seen.insert(key) {
                     diags.push(d);
                 }
             }
         }
     }
     Ok(diags)
+}
+
+/// Positions whose mistake an earlier explanation already named (`covers_position`).
+#[derive(Default)]
+struct Covered(HashSet<(PathBuf, u32, u32)>);
+
+impl Covered {
+    /// Records the diagnostic's position if it covers it; false when an earlier one did.
+    fn cover(&mut self, d: &MappedDiag) -> bool {
+        let at = (d.file.clone(), d.line, d.col);
+        if self.0.contains(&at) {
+            return false;
+        }
+        if d.covers_position {
+            self.0.insert(at);
+        }
+        true
+    }
 }
 
 #[cfg(test)]

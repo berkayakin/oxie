@@ -1,0 +1,32 @@
+// `?:` and `?.` on values that can't be null are explained in Oxie terms, without the runtime
+// helpers (`ElvisOr`, `as_ref`) rustc names, and each is reported once.
+
+data class User(name: String, age: i32)
+
+fun pick(): i32 = 3
+
+fun size(s: &str): usize throws {
+    val text = s.to_string()
+    return text?.len()
+}
+// error: 10: `?.` needs an optional value, but `text` has type `String`
+// not: 10: incompatible types
+
+fun main() {
+    val name = "ada".to_string()
+    val u = User("bo".to_string(), 7)
+    val label: String? = null
+    val a = name ?: "nobody"
+    // error: 19: `?:` needs an optional value, but `name` has type `String`
+    // error: 19: fix: remove `?: "nobody"`: `val a = name`
+    val b = pick() ?: pick()
+    // error: 22: `pick()` always has a value, so the default is never used: remove it.
+    val c = u?.age
+    // error: 24: `?.` needs an optional value, but `u` has type `User`
+    // error: 24: fix: use `.` instead of `?.`: `val c = u.age`
+    val d = pick()?.abs()
+    // error: 27: `?.` needs an optional value, but `pick()` has type `i32`
+    val e = label ?: 0
+    // error: 29: the default after `?:` doesn't have the type of the value in `label`
+    println("$a $b $c $d $e")
+}

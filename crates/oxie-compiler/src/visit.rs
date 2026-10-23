@@ -147,6 +147,46 @@ pub fn walk_stmt(s: &Stmt, f: &mut dyn FnMut(&Expr) -> bool) {
     }
 }
 
+/// Calls `f` on every expression of the items: function and method bodies, default values,
+/// `init` blocks, tests and constants (pre-order, like `walk_expr`).
+pub fn walk_items(items: &[Item], f: &mut dyn FnMut(&Expr) -> bool) {
+    for it in items {
+        match &it.kind {
+            ItemKind::Fun(d) => {
+                for p in &d.params {
+                    if let Some(x) = &p.default {
+                        walk_expr(x, f);
+                    }
+                }
+                match &d.body {
+                    Some(FunBody::Block(b)) => walk_block(b, f),
+                    Some(FunBody::Expr(e)) => walk_expr(e, f),
+                    None => {}
+                }
+            }
+            ItemKind::Type(t) => {
+                for x in t.fields.iter().filter_map(|fd| fd.default.as_ref()).chain(t.message.as_ref()) {
+                    walk_expr(x, f);
+                }
+                if let Some(b) = &t.init {
+                    walk_block(b, f);
+                }
+                walk_items(&t.members, f);
+            }
+            ItemKind::Trait(t) => walk_items(&t.members, f),
+            ItemKind::Impl(i) => walk_items(&i.members, f),
+            ItemKind::Mod { items, .. } | ItemKind::Object { items, .. } => walk_items(items, f),
+            ItemKind::Test(t) => walk_block(&t.body, f),
+            ItemKind::Const(c) | ItemKind::Static(c) => {
+                if let Some(e) = &c.value {
+                    walk_expr(e, f);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Does `body` reference the implicit lambda parameter `it`?
 pub fn uses_it(body: &Expr) -> bool {
     let mut found = false;

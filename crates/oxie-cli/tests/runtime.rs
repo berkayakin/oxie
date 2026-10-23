@@ -34,6 +34,22 @@ fn panics_point_at_the_oxi_source() {
 }
 
 #[test]
+fn backtraces_name_main_and_point_at_the_oxi_source() {
+    let dir = script("trace.oxi", "fun main() throws {\n    val v: Vec<i32> = vec[]\n    println(v[3])\n}\n");
+    let out = oxie().args(["run", "trace.oxi"]).current_dir(&dir).env("RUST_BACKTRACE", "1").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("panicked at trace.oxi:3:"), "{stderr}");
+    // `main() throws` runs as a generated function called from Rust's `main`: both frames say
+    // `main`, the generated one at the `fun main` line
+    assert!(!stderr.contains("__oxie_main"), "{stderr}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    let frames: Vec<&str> = lines.windows(2).filter(|w| w[0].ends_with("::main")).map(|w| w[1].trim()).collect();
+    assert!(frames.iter().any(|at| at.starts_with("at trace.oxi:3:")), "{stderr}");
+    assert!(frames.iter().any(|at| at.starts_with("at trace.oxi:1:")), "{stderr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn failed_tests_point_at_the_oxi_source() {
     let dir = script("failing.oxi", "fun double(x: i32): i32 = x * 2\n\ntest \"doubles\" {\n    assert_eq(double(2), 5)\n}\n");
     let out = oxie().args(["test", "failing.oxi"]).current_dir(&dir).output().unwrap();

@@ -7,9 +7,15 @@
 //! source, and Oxie-specific edits found by looking at the source text.
 
 use crate::cargo::{Edit, Fix, Label, MappedDiag};
+use oxie_compiler::ast::ExprKind;
+use oxie_compiler::diag::Span;
 
 pub fn explain(d: &mut MappedDiag, src: &str) {
     let lines: Vec<&str> = src.lines().collect();
+    if not_optional(d, src) {
+        generated_names(d);
+        return;
+    }
     let names = ticks(&d.message);
     let first = names.first().cloned().unwrap_or_default();
     let code = d.code.clone().unwrap_or_default();
@@ -46,7 +52,7 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
             imports(d, &lines);
         }
         "E0277" => trait_missing(d, &lines, &names),
-        "E0308" => mismatched(d, &lines),
+        "E0308" => mismatched(d, src, &lines),
         "E0615" => getter_call(d, &lines, &first),
         // reported without a code
         _ if d.message.starts_with("future cannot be sent between threads safely") => thread_safety(d, &lines, ""),
@@ -60,6 +66,22 @@ pub fn explain(d: &mut MappedDiag, src: &str) {
     rustc_fixes(d, &lines);
     d.secondary.retain(|s| s.exact && !s.text.is_empty());
     d.notes.retain(|n| !n.contains("in format strings you may be able to use"));
+    generated_names(d);
+}
+
+/// `main() throws` is generated as `__oxie_main` (called from a plain `main`); messages call
+/// it by its Oxie name.
+fn generated_names(d: &mut MappedDiag) {
+    let fix = |s: &mut String| {
+        if s.contains("__oxie_main") {
+            *s = s.replace("__oxie_main", "main");
+        }
+    };
+    fix(&mut d.message);
+    d.label.iter_mut().for_each(fix);
+    d.notes.iter_mut().for_each(fix);
+    d.secondary.iter_mut().for_each(|s| fix(&mut s.text));
+    d.rust_message.iter_mut().for_each(fix);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -618,7 +640,7 @@ fn getter_call(d: &mut MappedDiag, lines: &[&str], name: &str) {
     }
 }
 
-fn mismatched(d: &mut MappedDiag, lines: &[&str]) {
+fn mismatched(d: &mut MappedDiag, src: &str, lines: &[&str]) {
     let borrowed_text = d.label.as_deref().is_some_and(|l| l.contains("expected `String`, found `&str`"));
     if let Some(l) = d.label.clone() {
         let l = l.replace("found `&str`", "found `&str` (borrowed text)").replace("found `String`", "found `String` (owned text)");
@@ -626,6 +648,14 @@ fn mismatched(d: &mut MappedDiag, lines: &[&str]) {
     }
     if borrowed_text {
         elvis_borrowed_text(d, lines);
+    }
+    // `n ?: "none"` with an `i32?`: the default goes to a runtime helper, which rustc mentions
+    if d.rust_message.is_none() {
+        if let Some((value, _)) = elvis_default_at(src, d.line, d.col) {
+            rewrite(d, format!("the default after `?:` doesn't have the type of the value in `{}`", value));
+            d.notes.retain(|n| !n.contains("the return type of this call") && !n.contains("method defined here") && !n.contains("arguments to this"));
+            d.notes.push(help(&format!("`{} ?: default` gives the value in `{}`, or the default when there is none, so both need the same type.", value, value)));
+        }
     }
 }
 
@@ -677,6 +707,125 @@ fn top_level_elvis(s: &[char]) -> Option<usize> {
         }
     }
     None
+}
+
+/// `name ?: "x"` or `name?.len()` where `name` can't be null (a `String`, not a `String?`).
+/// rustc complains about the runtime helpers they lower to (`ElvisOr`, `as_ref`, `map`), which
+/// the program never mentions; the error is replaced by one about the operand, with a fix.
+/// Both copies rustc reports for one `?:` end up the same, so only one is shown.
+fn not_optional(d: &mut MappedDiag, src: &str) -> bool {
+    let msg = d.message.clone();
+    // the type rustc names, and whether the error is about `?:` (else about `?.`)
+    let (ty, elvis) = match d.code.as_deref().unwrap_or("") {
+        "E0277" if msg.contains(": ElvisOr<") || msg.contains(": Elvis`") => (between(&msg, "the trait bound `", ": Elvis"), true),
+        "E0277" if msg.contains("the `?` operator can only be applied to values that implement `Try`") => (d.label.as_deref().and_then(|l| between(l, "cannot be applied to type `", "`")), false),
+        "E0599" if ["as_ref", "map", "and_then"].iter().any(|m| msg.starts_with(&format!("no method named `{}` found", m))) => (msg.split_once(" found for ").and_then(|(_, r)| ticks(r).first().cloned()), false),
+        "E0599" if msg.ends_with("is not an iterator") => (ticks(&msg).first().cloned(), false),
+        "E0282" | "E0283" if d.notes.iter().any(|n| n.contains(" as AsRef<")) => (d.notes.iter().find_map(|n| between(n, "<", " as AsRef<")), false),
+        _ => return false,
+    };
+    let (file, _) = oxie_compiler::parser::parse_file(src);
+    let at = byte_offset(src, d.line, d.col) as u32;
+    // (the value, the text the fix removes or replaces, its replacement)
+    let mut found: Option<(Span, Span, &str)> = None;
+    oxie_compiler::visit::walk_items(&file.items, &mut |e| {
+        match &e.kind {
+            ExprKind::Elvis(l, r) if elvis && l.span.start == at => found = Some((l.span, Span { start: l.span.end, end: r.span.end }, "")),
+            // in `a?.b?.c` every link starts at `a`; the first `?.` is the one after the value
+            ExprKind::Field { recv, safe: true, .. } | ExprKind::MethodCall { recv, safe: true, .. } if !elvis && recv.span.start == at && found.is_none_or(|(v, ..)| recv.span.end < v.end) => {
+                if let Some(q) = src.get(recv.span.end as usize..e.span.end as usize).and_then(|t| t.find("?.")) {
+                    let q = recv.span.end + q as u32;
+                    found = Some((recv.span, Span { start: q, end: q + 2 }, "."));
+                }
+            }
+            _ => {}
+        }
+        true
+    });
+    let Some((value, removed, replacement)) = found else { return false };
+    let shown = source_text(src, value).filter(|t| t.chars().count() <= 40).map(|t| format!("`{}`", t)).unwrap_or_else(|| "the value".into());
+    let ty = ty.filter(|t| t != "_");
+    // `opt ?: 0` with a `String?`: the default has another type than the value
+    if let Some(inner) = ty.as_deref().and_then(|t| t.trim_start_matches('&').strip_prefix("Option<").or_else(|| t.trim_start_matches('&').strip_prefix("Result<"))) {
+        let inner = inner.split(',').next().unwrap_or(inner).trim_end_matches('>').trim();
+        rewrite(d, format!("the default after `?:` doesn't have the type of the value in {}", shown));
+        d.label = Some(format!("holds a `{}`", inner));
+        d.notes = vec![help(&format!("`a ?: default` gives the value in `a`, or the default when there is none, so the default must be a `{}` too.", inner))];
+    } else {
+        let what = match ty.as_deref() {
+            Some("{integer}") => format!("{} is an integer", shown),
+            Some("{float}") => format!("{} is a number", shown),
+            Some(t) => format!("{} has type `{}`", shown, t),
+            None => format!("{} is never null", shown),
+        };
+        let (op, does) = if elvis { ("?:", "`a ?: b` gives `b` when `a` is null (a `T?`) or an error (a `Result`)") } else { ("?.", "`a?.b` reads `b` only when `a` isn't null (a `T?`), and passes an error on (a `Result`)") };
+        rewrite(d, format!("`{}` needs an optional value, but {}", op, what));
+        d.label = Some(match ty.as_deref() {
+            Some(t) if !t.starts_with('{') => format!("type `{}`, not `{}?`", t, t),
+            _ => "never null".into(),
+        });
+        let removed_text = source_text(src, removed).unwrap_or_default();
+        let (advice, title) = if elvis {
+            let title = if removed_text.trim().chars().count() <= 30 { format!("remove `{}`", removed_text.trim()) } else { "remove the default (`?: ...`)".to_string() };
+            // a variable or field can be declared optional; a call's result can't
+            let declared = source_text(src, value).filter(|t| t.chars().all(|c| is_ident_char(c) || c == '.')).zip(ty.as_deref().filter(|t| !t.starts_with('{')));
+            let or = declared.map(|(v, t)| format!(", or declare `{}` as `{}?` if it can be missing", v, t)).unwrap_or_default();
+            (format!("{} always has a value, so the default is never used: remove it{}.", shown, or), title)
+        } else {
+            (format!("{} always has a value: use `.` instead.", shown), "use `.` instead of `?.`".to_string())
+        };
+        d.notes = vec![help(&format!("{}. {}", does, advice))];
+        let idx = oxie_compiler::LineIndex::new(src);
+        let (l, c) = idx.line_col(src, removed.start as usize);
+        let (el, ec) = idx.line_col(src, removed.end as usize);
+        d.fixes = vec![Fix { title, edits: vec![Edit { line: l as u32, col: c as u32, end_line: el as u32, end_col: ec as u32, text: replacement.to_string() }] }];
+    }
+    let idx = oxie_compiler::LineIndex::new(src);
+    let (l, c) = idx.line_col(src, value.start as usize);
+    let (el, ec) = idx.line_col(src, value.end as usize);
+    (d.line, d.col, d.end_line, d.end_col) = (l as u32, c as u32, el as u32, ec as u32);
+    d.secondary.clear();
+    d.suggestions.clear();
+    d.raw_suggestions.clear();
+    // in a `throws` function `?.` passes errors on, and rustc's follow-up errors about that
+    // `?` come at the same position
+    d.covers_position = true;
+    true
+}
+
+/// The `?:` whose default starts at this position: (the value's text, the default's text).
+fn elvis_default_at(src: &str, line: u32, col: u32) -> Option<(String, String)> {
+    let (file, _) = oxie_compiler::parser::parse_file(src);
+    let at = byte_offset(src, line, col) as u32;
+    let mut found = None;
+    oxie_compiler::visit::walk_items(&file.items, &mut |e| {
+        if let ExprKind::Elvis(l, r) = &e.kind {
+            if r.span.start == at {
+                found = source_text(src, l.span).zip(source_text(src, r.span));
+            }
+        }
+        true
+    });
+    found
+}
+
+/// The byte offset of a zero-based line and character column.
+fn byte_offset(src: &str, line: u32, col: u32) -> usize {
+    let start: usize = src.split_inclusive('\n').take(line as usize).map(str::len).sum();
+    let rest = src.get(start..).unwrap_or("");
+    start + rest.char_indices().nth(col as usize).map_or(rest.len(), |(i, _)| i)
+}
+
+/// The source text of a span on one line.
+fn source_text(src: &str, span: Span) -> Option<String> {
+    let t = src.get(span.start as usize..span.end as usize)?;
+    (!t.contains('\n')).then(|| t.to_string())
+}
+
+/// The text between the first `start` and the next `end` after it.
+fn between(s: &str, start: &str, end: &str) -> Option<String> {
+    let (_, rest) = s.split_once(start)?;
+    rest.split_once(end).map(|(t, _)| t.to_string())
 }
 
 fn unused_mut(d: &mut MappedDiag, lines: &[&str]) {
@@ -1151,5 +1300,7 @@ mod tests {
         assert_eq!(elvis(r#"a?.b ?: "x""#), Some(5));
         assert_eq!(elvis(r#"f("?:", a ?: 1) ?: "x""#), Some(16));
         assert_eq!(elvis("a?.b"), None);
+        assert_eq!(byte_offset("ab\ncdé f", 1, 4), 8);
+        assert_eq!(between("the trait bound `String: ElvisOr<_>` is not satisfied", "the trait bound `", ": Elvis"), Some("String".into()));
     }
 }

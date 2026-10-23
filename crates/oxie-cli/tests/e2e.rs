@@ -1,6 +1,7 @@
 //! End-to-end tests: every `tests/e2e/*.oxi` program is built with `oxie run` and its stdout
 //! compared with the matching `.out` file. Programs in `tests/diagnostics` must fail to compile
-//! with the errors listed in their `// error: <line>: <text>` comments.
+//! with the errors listed in their `// error: <line>: <text>` comments, and without those in
+//! `// not: <line>: <text>` comments.
 
 mod common;
 
@@ -68,14 +69,16 @@ fn diagnostics_point_at_oxie_sources() {
     let results = parallel(&programs(&dir), |p, cache| {
         let mut failures = Vec::new();
         let src = std::fs::read_to_string(p).unwrap();
-        let expected: Vec<(String, String)> = src
-            .lines()
-            .filter_map(|l| l.trim().strip_prefix("// error:"))
-            .map(|rest| {
-                let (line, text) = rest.trim().split_once(':').unwrap();
-                (line.trim().to_string(), text.trim().to_string())
-            })
-            .collect();
+        let comments = |prefix: &str| -> Vec<(String, String)> {
+            src.lines()
+                .filter_map(|l| l.trim().strip_prefix(prefix))
+                .map(|rest| {
+                    let (line, text) = rest.trim().split_once(':').unwrap();
+                    (line.trim().to_string(), text.trim().to_string())
+                })
+                .collect()
+        };
+        let expected = comments("// error:");
         let out = oxie().arg("run").arg(p).current_dir(&dir).env("OXIE_CACHE", cache).output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if out.status.success() {
@@ -92,6 +95,22 @@ fn diagnostics_point_at_oxie_sources() {
             let found = stderr.split("\n\n").any(|block| block.contains(&loc) && block.contains(&text));
             if !found {
                 failures.push(format!("{}: missing error at line {} containing `{}`\nstderr:\n{}", p.display(), line, text, stderr));
+            }
+        }
+        for (line, text) in comments("// not:") {
+            let loc = format!("{}:{}:", name, line);
+            if stderr.split("\n\n").any(|block| block.contains(&loc) && block.contains(&text)) {
+                failures.push(format!("{}: unexpected error at line {} containing `{}`\nstderr:\n{}", p.display(), line, text, stderr));
+            }
+        }
+        // rustc reports some mistakes twice; each is shown once
+        let mut shown = std::collections::HashSet::new();
+        for block in stderr.split("\n\n") {
+            let mut lines = block.lines();
+            if let (Some(head), Some(loc)) = (lines.next(), lines.next()) {
+                if head.starts_with("error") && !shown.insert((head, loc)) {
+                    failures.push(format!("{}: shown twice: {} {}\nstderr:\n{}", p.display(), head, loc.trim(), stderr));
+                }
             }
         }
         failures

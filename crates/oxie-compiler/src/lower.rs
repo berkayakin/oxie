@@ -1312,6 +1312,8 @@ impl<'a> Lowerer<'a> {
         self.e.nl();
         if wrap_main {
             self.e.nl();
+            // the wrapper's frame in a backtrace points at `fun main`
+            self.e.mark(it.span);
             self.attrs(&main_attrs, &[]);
             let asyncs = if f.mods.is_async { "async " } else { "" };
             let aw = if f.mods.is_async { ".await" } else { "" };

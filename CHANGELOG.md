@@ -32,6 +32,11 @@
   "expected `String`, found `&str`". The chain reads `city` through a reference, so the result is
   borrowed text; Oxie still doesn't copy the field silently, but the error now explains this and
   offers the fix `u.address?.city.clone() ?: "unknown"`.
+* `?:` and `?.` on a value that can't be null (`name ?: "nobody"` with a `String`) used to fail
+  with rustc's errors about Oxie's runtime helpers (`ElvisOr`, `as_ref`), often twice. The error
+  now names the value and its type and offers to remove the default or to use `.`; a `?:`
+  default of another type than the optional value says so. Backtrace frames of `main() throws`
+  say `main` instead of the generated `__oxie_main`.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

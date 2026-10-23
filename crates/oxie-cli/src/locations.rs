@@ -6,10 +6,12 @@ use std::path::Path;
 
 use crate::cargo::Mapper;
 
-/// Rewrites every `path.rs:line:col` whose file has a source map; other text is unchanged.
+/// Rewrites every `path.rs:line:col` whose file has a source map; other text is unchanged,
+/// except that backtrace frames of `main() throws` (generated as `__oxie_main`) say `main`.
 pub fn rewrite(text: &str, mapper: &mut Mapper) -> String {
+    let text = text.replace("::__oxie_main", "::main");
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
+    let mut rest = text.as_str();
     while let Some(i) = rest.find(".rs:") {
         let (before, after) = rest.split_at(i + 3);
         // the path starts after the last space, quote or parenthesis
@@ -87,10 +89,11 @@ mod tests {
         std::fs::write(&gen, "pub(crate) fn nth(xs: &[i32], i: usize) -> i32 {\n    xs[i]\n}\n").unwrap();
         std::fs::write(dir.join("main.rs.map"), format!("oxie-sourcemap 1\n{}\n0 0 0 0\n1 4 0 37\n", src.display())).unwrap();
         let mut m = Mapper::default();
-        let text = format!("thread 'main' panicked at {}:2:5:\nindex out of bounds\n  at /rustc/library/core/src/slice/index.rs:12:3\n", gen.display());
+        let text = format!("thread 'main' panicked at {}:2:5:\nindex out of bounds\n  at /rustc/library/core/src/slice/index.rs:12:3\n   6: app::__oxie_main\n", gen.display());
         let out = rewrite(&text, &mut m);
         assert!(out.contains(&format!("panicked at {}:1:38:\n", src.display())), "{out}");
         assert!(out.contains("/rustc/library/core/src/slice/index.rs:12:3"), "{out}");
+        assert!(out.contains("   6: app::main\n"), "{out}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

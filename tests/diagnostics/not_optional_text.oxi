@@ -1,0 +1,9 @@
+// `?.` on a `String`: rustc reports this one only when nothing else is wrong.
+
+fun main() {
+    val name = "ada".to_string()
+    val n = name?.len()
+    // error: 5: `?.` needs an optional value, but `name` has type `String`
+    // error: 5: fix: use `.` instead of `?.`: `val n = name.len()`
+    println("$n")
+}
