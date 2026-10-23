@@ -218,7 +218,9 @@ scopes asserted in `editors/vscode-oxie/test/grammar/*.oxi`.
 * `crates/oxie-cli/tests/emit.rs`: the Rust generated for `tests/emit/*.oxi` must equal the
   `.rs` (and `.annotated.rs`) files next to them; `OXIE_BLESS=1` rewrites them.
 * `crates/oxie-cli/tests/runtime.rs`: panics under `oxie run` and `oxie test` point at `.oxi` lines.
-* `crates/oxie-cli/tests/lsp.rs` drives the language server over stdio.
+* `crates/oxie-cli/tests/lsp.rs` drives the language server over stdio. One test applies every
+  quick fix offered for `tests/diagnostics`, one at a time, to a copy of the program and builds
+  it again: the error the fix was offered for must be gone.
 * `editors/vscode-oxie`: `npm test` runs the grammar tests, then integration tests in VS Code
   (`test/suite`) with the language server on a copy of `test/fixtures`.
 * `tests/run_e2e.sh` runs the e2e programs from the shell.

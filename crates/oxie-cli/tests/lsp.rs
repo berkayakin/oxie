@@ -1,5 +1,7 @@
 //! Drives `oxie lsp` over stdio like an editor would.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -20,11 +22,23 @@ impl Client {
     }
 
     fn start_with(no_check: bool) -> Client {
+        Client::spawn(no_check, None)
+    }
+
+    /// A server that checks with cargo and builds scripts in `cache` (as `OXIE_CACHE`).
+    fn start_in(cache: &Path) -> Client {
+        Client::spawn(false, Some(cache))
+    }
+
+    fn spawn(no_check: bool, cache: Option<&Path>) -> Client {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxie"));
         // cargo check builds with this checkout's oxie-build, not the one on crates.io
         cmd.env("OXIE_HOME", PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
         if no_check {
             cmd.env("OXIE_LSP_NO_CHECK", "1");
+        }
+        if let Some(c) = cache {
+            cmd.env("OXIE_CACHE", c);
         }
         let mut child = cmd
             .arg("lsp")
@@ -388,4 +402,168 @@ fn scripts_opened_together_are_all_checked() {
     let _ = c.request("shutdown", Value::Null);
     c.notify("exit", Value::Null);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every quick fix offered for the programs (and projects) in `tests/diagnostics` makes the
+/// error it is offered for go away: each fix is applied on its own, as an editor would, to a
+/// copy of the program, which is then built again.
+#[test]
+fn quick_fixes_fix_their_errors() {
+    let dir = oxie_compiler::compile::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/diagnostics")).unwrap();
+    let mut items: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "oxi") || p.join("Cargo.toml").exists())
+        .collect();
+    items.sort();
+    let results = common::parallel(&items, |p, cache| check_fixes(p, cache));
+    let checked: usize = results.iter().map(|(n, _)| n).sum();
+    let failures: Vec<String> = results.into_iter().flat_map(|(_, f)| f).collect();
+    assert!(checked >= 20, "only {checked} fixes were checked");
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Applies each fix offered for `p` (a program, or a project directory) to a fresh copy of it and
+/// builds that: how many fixes there were, and the ones that left their error.
+fn check_fixes(p: &Path, cache: &Path) -> (usize, Vec<String>) {
+    let name = p.file_name().unwrap().to_string_lossy().to_string();
+    let project = p.is_dir();
+    let fixes_dir = cache.join("fixes");
+    let copy_to = |to: &Path| {
+        let _ = std::fs::remove_dir_all(to);
+        if project {
+            copy_project(p, to);
+        } else {
+            std::fs::create_dir_all(to).unwrap();
+            std::fs::copy(p, to.join(&name)).unwrap();
+        }
+        oxie_compiler::compile::canonicalize(to).unwrap()
+    };
+    // the errors and their fixes, as an editor gets them
+    let work = copy_to(&fixes_dir.join(&name));
+    let main = if project { work.join("src/main.oxi") } else { work.join(&name) };
+    let main_name = main.file_name().unwrap().to_string_lossy().to_string();
+    let uri = file_uri(&main);
+    let mut c = Client::start_in(cache);
+    c.request("initialize", json!({"rootUri": file_uri(&work), "capabilities": {}}));
+    c.notify("initialized", json!({}));
+    c.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "oxie", "version": 1, "text": std::fs::read_to_string(&main).unwrap()}}));
+    // Oxie's own errors come first; without them, cargo check runs and its errors follow
+    let own = c.wait_diagnostics(&uri);
+    if own.as_array().unwrap().iter().any(|d| d["severity"] == 1) {
+        return (0, Vec::new());
+    }
+    loop {
+        let m = c.read();
+        let end = m["method"] == "$/progress" && m["params"]["value"]["kind"] == "end";
+        c.notifications.push(m);
+        if end {
+            break;
+        }
+    }
+    let diags = c.notifications.iter().rev().find(|n| n["method"] == "textDocument/publishDiagnostics" && n["params"]["uri"] == uri).map(|n| n["params"]["diagnostics"].clone()).unwrap_or_default();
+    let _ = c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+
+    let (mut checked, mut failures) = (0, Vec::new());
+    for d in diags.as_array().into_iter().flatten().filter(|d| d["source"] == "rustc") {
+        let code = d["code"].as_str().unwrap_or("").to_string();
+        let line = d["range"]["start"]["line"].as_i64().unwrap();
+        for (i, fix) in d["data"]["fixes"].as_array().into_iter().flatten().enumerate() {
+            checked += 1;
+            let fixed = copy_to(&fixes_dir.join(format!("{}-{}-{}", name, line + 1, i)));
+            // the error's line after the fix, which may add or remove lines above it
+            let mut moved = 0;
+            let mut edits: Vec<&Value> = fix["edits"].as_array().unwrap().iter().collect();
+            edits.sort_by_key(|e| std::cmp::Reverse((e["range"]["start"]["line"].as_u64(), e["range"]["start"]["character"].as_u64())));
+            for e in edits {
+                let file = uri_path(e["uri"].as_str().unwrap_or(&uri));
+                let target = fixed.join(file.strip_prefix(&work).unwrap_or_else(|_| panic!("{} isn't in {}", file.display(), work.display())));
+                let mut text = std::fs::read_to_string(&target).unwrap();
+                let (start, end) = (offset(&text, &e["range"]["start"]), offset(&text, &e["range"]["end"]));
+                let new = e["newText"].as_str().unwrap();
+                if target.ends_with(&main_name) && e["range"]["end"]["line"].as_i64().unwrap() < line {
+                    moved += new.matches('\n').count() as i64 - text[start..end].matches('\n').count() as i64;
+                }
+                text.replace_range(start..end, new);
+                std::fs::write(&target, text).unwrap();
+            }
+            let out = if project {
+                oxie().arg("build").current_dir(&fixed).env("OXIE_CACHE", cache).env("CARGO_TARGET_DIR", cache.join("fixes-target").join(&name)).output().unwrap()
+            } else {
+                oxie().arg("run").arg(fixed.join(&name)).current_dir(&fixed).env("OXIE_CACHE", cache).output().unwrap()
+            };
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let at = format!("{}:{}:", main_name, line + 1 + moved);
+            let head = format!("[{}]", code);
+            if stderr.split("\n\n").any(|b| b.lines().next().is_some_and(|h| h.contains(&head)) && b.contains(&at)) {
+                failures.push(format!("{}:{}: the fix `{}` for {} leaves the error\n{}", p.display(), line + 1, fix["title"].as_str().unwrap_or(""), code, stderr));
+            }
+            let _ = std::fs::remove_dir_all(&fixed);
+        }
+    }
+    (checked, failures)
+}
+
+fn oxie() -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_oxie"));
+    c.env("NO_COLOR", "1").env("OXIE_HOME", PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    c
+}
+
+/// A copy of a test project, without its build output, that builds with this checkout's
+/// oxie-build wherever it is.
+fn copy_project(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().filter_map(|e| e.ok()) {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if src.is_dir() {
+            if e.file_name() != "target" {
+                copy_project(&src, &dst);
+            }
+        } else if e.file_name() == "Cargo.toml" {
+            let build = oxie_compiler::compile::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../oxie-build")).unwrap();
+            let manifest = std::fs::read_to_string(&src).unwrap().replace("\"../../../crates/oxie-build\"", &format!("\"{}\"", build.display().to_string().replace('\\', "/")));
+            std::fs::write(dst, manifest).unwrap();
+        } else if e.file_name() != "Cargo.lock" {
+            std::fs::copy(&src, &dst).unwrap();
+        }
+    }
+}
+
+/// The path of a `file://` URI (`file:///C:/...` on Windows), percent-decoded.
+fn uri_path(uri: &str) -> PathBuf {
+    let p = uri.strip_prefix("file://").unwrap_or(uri);
+    let p = if p.as_bytes().get(2) == Some(&b':') { &p[1..] } else { p };
+    let mut bytes = Vec::new();
+    let mut i = 0;
+    while i < p.len() {
+        match p.get(i + 1..i + 3).filter(|_| p.as_bytes()[i] == b'%').and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            Some(b) => {
+                bytes.push(b);
+                i += 3;
+            }
+            None => {
+                bytes.push(p.as_bytes()[i]);
+                i += 1;
+            }
+        }
+    }
+    PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The byte offset of an LSP position (line, UTF-16 column).
+fn offset(text: &str, pos: &Value) -> usize {
+    let line = pos["line"].as_u64().unwrap() as usize;
+    let col = pos["character"].as_u64().unwrap() as usize;
+    let start: usize = text.split_inclusive('\n').take(line).map(str::len).sum();
+    let mut units = 0;
+    for (i, c) in text[start..].char_indices() {
+        if units >= col || c == '\n' {
+            return start + i;
+        }
+        units += c.len_utf16();
+    }
+    text.len()
 }
