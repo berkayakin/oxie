@@ -28,6 +28,38 @@ impl<'a> Lowerer<'a> {
         self.infer(e, false)
     }
 
+    /// The class or enum a type names, as a path for `class_at`: its name, or for a name several
+    /// modules declare, its whole path (`a::Counter`).
+    pub(crate) fn type_owner(&self, t: &Type) -> Option<Vec<String>> {
+        match t {
+            Type::Ref { inner, .. } => self.type_owner(inner),
+            Type::Path { segs, .. } if segs.len() == 1 => Some(vec![segs[0].name.clone()]),
+            Type::Path { segs, .. } if segs.last().is_some_and(|s| self.k.same_named.contains(&s.name)) => Some(segs.iter().map(|s| s.name.clone()).collect()),
+            _ => None,
+        }
+    }
+
+    /// The type a path names: its last name, or for a name several modules declare, the whole
+    /// path, so it isn't taken for another module's type of that name.
+    fn named_ty(&self, path: &[String]) -> Type {
+        let name = path.last().map(|s| s.as_str()).unwrap_or_default();
+        if path.len() > 1 && self.k.same_named.contains(name) {
+            path_ty(path)
+        } else {
+            ty(name)
+        }
+    }
+
+    /// The type of a call through a module path: a function's result (`util.total(v)`) or a
+    /// constructed class (`a.Counter(1)`).
+    fn path_call_type(&self, path: &[String], through_try: bool) -> Option<Type> {
+        if let Some(f) = self.fun_at(path) {
+            return if f.throws && !through_try { None } else { f.ret.clone() };
+        }
+        let c = self.k.classes.get(&self.k.type_key_at(path, &self.module)?)?;
+        (!c.has_generics).then(|| self.named_ty(path))
+    }
+
     /// `through_try`: the expression is the operand of `?`, so a throwing call yields its value type.
     fn infer(&self, e: &Expr, through_try: bool) -> Option<Type> {
         use ExprKind::*;
@@ -66,6 +98,12 @@ impl<'a> Lowerer<'a> {
             Paren(x) => self.infer_type(x),
             Elvis(_, r) => self.infer_type(r).map(|t| if t == static_str() { ty("String") } else { t }),
             Call { callee, args } => {
+                // `util::total(v)`, `a::Counter(1)`
+                if let ExprKind::Path { segs, .. } = &callee.kind {
+                    if segs.len() > 1 {
+                        return self.path_call_type(segs, through_try);
+                    }
+                }
                 let n = callee.ident()?;
                 if self.is_local(n) {
                     return None;
@@ -78,7 +116,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(c) = self.class_info(n) {
                     return if c.has_generics { None } else { Some(ty(n)) };
                 }
-                if let Some(f) = self.k.funs.get(n) {
+                if let Some(f) = self.fun_info(n) {
                     return if f.throws && !through_try { None } else { f.ret.clone() };
                 }
                 if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
@@ -105,9 +143,7 @@ impl<'a> Lowerer<'a> {
                 if let Some((p, _)) = self.as_path(recv) {
                     // the type the call goes through: `Self`, `Counter` or `a.Counter`
                     let owner = if p.last()? == "Self" { vec![self.class.as_ref()?.name.clone()] } else { p };
-                    let name_ty = owner.last()?;
-                    // a name several modules declare keeps its path (`a::Counter`)
-                    let owner_ty = || if owner.len() > 1 && self.k.same_named.contains(name_ty) { path_ty(&owner) } else { ty(name_ty) };
+                    let owner_ty = || self.named_ty(&owner);
                     if let Some(c) = self.class_at(&owner) {
                         if name == "new" && !c.user_new {
                             return if c.has_generics { None } else { Some(owner_ty()) };
@@ -120,7 +156,9 @@ impl<'a> Lowerer<'a> {
                         }
                         return en.methods.get(name).and_then(|m| m.ret.clone());
                     }
-                    return None;
+                    // `util.total(v)` and `a.Counter(1)`, through the module that declares them
+                    let path: Vec<String> = owner.iter().cloned().chain([name.clone()]).collect();
+                    return self.path_call_type(&path, through_try);
                 }
                 match name.as_str() {
                     "len" | "count" | "capacity" => Some(ty("usize")),

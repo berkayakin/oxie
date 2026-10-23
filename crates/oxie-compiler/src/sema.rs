@@ -135,6 +135,8 @@ pub struct Crate {
     pub ambiguous: HashSet<String>,
     /// Class and enum names declared in several modules (`a::Counter` and `b::Counter`).
     pub same_named: HashSet<String>,
+    /// Function names declared in several modules; `funs` keys these like `classes` does.
+    pub same_named_funs: HashSet<String>,
     /// What a name imported into a module stands for: (module, name) -> path (`a::Counter`).
     pub imports: HashMap<(Vec<String>, String), Vec<String>>,
     /// The paths each module imports with `*`.
@@ -155,8 +157,16 @@ pub struct Crate {
     pub nested: HashMap<String, Vec<String>>,
 }
 
-/// The key of a class or enum whose name is declared in several modules (`a::Counter`, and
-/// `crate::Counter` for the crate root).
+/// What `Crate` keys by module when several modules declare a name.
+#[derive(Clone, Copy)]
+enum Space {
+    /// classes and enums
+    Types,
+    Funs,
+}
+
+/// The key of a class, enum or function whose name is declared in several modules (`a::Counter`,
+/// and `crate::Counter` for the crate root).
 pub fn scoped_key(module: &[String], name: &str) -> String {
     if module.is_empty() {
         format!("crate::{}", name)
@@ -241,36 +251,71 @@ impl Crate {
     /// The key of the class or enum `name` means when written in `module`. A name declared in several
     /// modules means the one declared in `module` or imported into it (by name or with `*`).
     pub fn type_key_in(&self, name: &str, module: &[String]) -> Option<String> {
-        if !self.same_named.contains(name) {
-            return Some(name.to_string());
-        }
-        let key = scoped_key(module, name);
-        if self.classes.contains_key(&key) || self.enums.contains_key(&key) {
-            return Some(key);
-        }
-        if let Some(path) = self.imports.get(&(module.to_vec(), name.to_string())).filter(|p| p.len() > 1) {
-            return self.type_key_at(path, module);
-        }
-        self.globs.get(module).into_iter().flatten().filter(|g| !g.is_empty()).find_map(|glob| {
-            let path: Vec<String> = glob.iter().cloned().chain([name.to_string()]).collect();
-            self.type_key_at(&path, module)
-        })
+        self.key_in(Space::Types, name, module)
     }
     /// The key of the class or enum a path written in `module` names (`a::Counter`, `crate::Counter`,
     /// `super::b::Counter`), if the module the path leads to declares it.
     pub fn type_key_at(&self, path: &[String], module: &[String]) -> Option<String> {
+        self.key_at(Space::Types, path, module)
+    }
+    /// The function `name` means when written in `module` (as for types, see `type_key_in`).
+    pub fn fun_in(&self, name: &str, module: &[String]) -> Option<&FunInfo> {
+        if !self.same_named_funs.contains(name) && self.ambiguous.contains(name) {
+            return None;
+        }
+        self.funs.get(&self.key_in(Space::Funs, name, module)?)
+    }
+    /// The function a path written in `module` names (`util.total`), if the module the path
+    /// leads to declares it.
+    pub fn fun_at(&self, path: &[String], module: &[String]) -> Option<&FunInfo> {
+        if !self.same_named_funs.contains(path.last()?) && self.ambiguous.contains(path.last()?) {
+            return None;
+        }
+        self.funs.get(&self.key_at(Space::Funs, path, module)?)
+    }
+    /// Whether some module declares a function `name`.
+    pub fn is_fun_name(&self, name: &str) -> bool {
+        self.funs.contains_key(name) || self.same_named_funs.contains(name)
+    }
+    /// The module declaring the type (or function) under `key`.
+    fn module_of(&self, space: Space, key: &str) -> Option<&Vec<String>> {
+        match space {
+            Space::Types => self.classes.get(key).map(|c| &c.module).or_else(|| self.enums.get(key).map(|e| &e.module)),
+            Space::Funs => self.funs.get(key).map(|f| &f.module),
+        }
+    }
+    fn key_in(&self, space: Space, name: &str, module: &[String]) -> Option<String> {
+        let same = match space {
+            Space::Types => &self.same_named,
+            Space::Funs => &self.same_named_funs,
+        };
+        if !same.contains(name) {
+            return Some(name.to_string());
+        }
+        let key = scoped_key(module, name);
+        if self.module_of(space, &key).is_some() {
+            return Some(key);
+        }
+        if let Some(path) = self.imports.get(&(module.to_vec(), name.to_string())).filter(|p| p.len() > 1) {
+            return self.key_at(space, path, module);
+        }
+        self.globs.get(module).into_iter().flatten().filter(|g| !g.is_empty()).find_map(|glob| {
+            let path: Vec<String> = glob.iter().cloned().chain([name.to_string()]).collect();
+            self.key_at(space, &path, module)
+        })
+    }
+    fn key_at(&self, space: Space, path: &[String], module: &[String]) -> Option<String> {
         let (name, qual) = path.split_last()?;
         if qual.is_empty() {
-            return self.type_key_in(name, module);
+            return self.key_in(space, name, module);
         }
         let target = self.module_path(qual, module, true)?;
-        if self.same_named.contains(name) {
-            let key = scoped_key(&target, name);
-            (self.classes.contains_key(&key) || self.enums.contains_key(&key)).then_some(key)
-        } else {
-            let found = self.classes.get(name).map(|c| &c.module).or_else(|| self.enums.get(name).map(|e| &e.module));
-            found.is_some_and(|m| *m == target).then(|| name.clone())
-        }
+        let same = match space {
+            Space::Types => &self.same_named,
+            Space::Funs => &self.same_named_funs,
+        };
+        let key = if same.contains(name) { scoped_key(&target, name) } else { name.clone() };
+        (*self.module_of(space, &key)? == target).then_some(key)
     }
     /// The module a path written in `module` leads to, as the generated Rust resolves it: from
     /// `crate`, `self` or `super`, from the crate root for a top-level module (`join_path` adds
@@ -669,6 +714,27 @@ fn type_key_for(k: &mut Crate, name: &str, module: &[String], is_class: bool) ->
     (!taken).then_some(key)
 }
 
+/// The key for a new function `name` declared in `module`, as `type_key_for` does for types.
+fn fun_key_for(k: &mut Crate, name: &str, module: &[String]) -> Option<String> {
+    if !k.same_named_funs.contains(name) {
+        match k.funs.get(name).map(|f| f.module == module) {
+            None => return Some(name.to_string()),
+            Some(true) => {
+                k.ambiguous.insert(name.to_string());
+                return None;
+            }
+            Some(false) => {
+                k.same_named_funs.insert(name.to_string());
+                if let Some(f) = k.funs.remove(name) {
+                    k.funs.insert(scoped_key(&f.module, name), f);
+                }
+            }
+        }
+    }
+    let key = scoped_key(module, name);
+    (!k.funs.contains_key(&key)).then_some(key)
+}
+
 /// Records what `module` imports: `import a::Counter` (or `a::{b::Counter, Point as P}`) by name,
 /// `import a::*` as a glob.
 fn collect_import(k: &mut Crate, module: &[String], prefix: &[String], tree: &UseTree) {
@@ -754,7 +820,9 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
         match &it.kind {
             ItemKind::Fun(f) if f.receiver.is_none() => {
                 let info = FunInfo { module: module.to_vec(), params: params_info(f), throws: !matches!(f.throws, Throws::No), ret: f.ret.clone() };
-                insert_unique(&mut k.funs, &mut k.ambiguous, f.name.clone(), info);
+                if let Some(key) = fun_key_for(k, &f.name, module) {
+                    k.funs.insert(key, info);
+                }
             }
             ItemKind::Fun(f) => {
                 k.ext_traits.push((module.to_vec(), ext_trait_name(module, &f.name)));
@@ -920,6 +988,8 @@ struct MethodRef<'a> {
     /// Is or implements a method of this Oxie interface whose receiver is inferred (from its
     /// default body and its implementations).
     implements: Option<String>,
+    /// The module declaring it, where the functions it calls are looked up.
+    module: Vec<String>,
 }
 
 fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
@@ -950,7 +1020,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                                     }
                                 }
                             }
-                            out.push(MethodRef { owner: owner.clone(), fun: f, trait_recv: trecv, implements });
+                            out.push(MethodRef { owner: owner.clone(), fun: f, trait_recv: trecv, implements, module: module.to_vec() });
                         }
                     }
                 }
@@ -961,7 +1031,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                     for m in &t.members {
                         if let ItemKind::Fun(f) = &m.kind {
                             let implements = k.traits.get(&t.name).and_then(|ti| ti.methods.get(&f.name)).filter(|mi| !mi.explicit).map(|_| t.name.clone());
-                            out.push(MethodRef { owner: t.name.clone(), fun: f, trait_recv: None, implements });
+                            out.push(MethodRef { owner: t.name.clone(), fun: f, trait_recv: None, implements, module: module.to_vec() });
                         }
                     }
                 }
@@ -976,7 +1046,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                             let mi = tinfo.and_then(|t| t.methods.get(&f.name));
                             let trecv = mi.filter(|m| m.explicit).map(|m| m.recv);
                             let implements = mi.filter(|m| !m.explicit).and(tinfo.map(|t| t.name.clone()));
-                            out.push(MethodRef { owner: owner.clone(), fun: f, trait_recv: trecv, implements });
+                            out.push(MethodRef { owner: owner.clone(), fun: f, trait_recv: trecv, implements, module: module.to_vec() });
                         }
                     }
                 }
@@ -1007,8 +1077,10 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
     // `&mut` parameters of crate functions and methods
     let mut mut_params: HashMap<String, Vec<usize>> = HashMap::new();
     let is_mut_ref = |t: &Type| matches!(t, Type::Ref { mutable: true, .. });
-    for (name, f) in &k.funs {
-        let idx: Vec<usize> = f.params.iter().enumerate().filter(|(_, p)| is_mut_ref(&p.ty)).map(|(i, _)| i).collect();
+    let mut_idx = |params: &[ParamInfo]| -> Vec<usize> { params.iter().enumerate().filter(|(_, p)| is_mut_ref(&p.ty)).map(|(i, _)| i).collect() };
+    // a function name several modules declare (keyed `a::fill`) is added per module below
+    for (name, f) in k.funs.iter().filter(|(key, _)| !key.contains("::")) {
+        let idx = mut_idx(&f.params);
         if !idx.is_empty() {
             mut_params.insert(name.clone(), idx);
         }
@@ -1019,6 +1091,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             mut_params.entry(m.fun.name.clone()).or_insert(idx);
         }
     }
+    let mut mut_params_in: HashMap<Vec<String>, HashMap<String, Vec<usize>>> = HashMap::new();
     // why an inferred receiver is `&mut self`, from the last round
     let mut whys: HashMap<(String, String), (String, Option<Span>)> = HashMap::new();
     // An interface method is `&mut self` if its default body or any implementation needs it; then all
@@ -1046,7 +1119,22 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             let m = &methods[i];
             let fields: HashSet<String> = k.classes.get(&m.owner).map(|c| c.fields.iter().map(|f| f.name.clone()).collect()).unwrap_or_default();
             let recvs = callable_recvs(&m.owner, &decided, &supers);
-            let facts = analyze_fun_with(m.fun, &fields, &recvs, &mut_params);
+            let mut_params = if k.same_named_funs.is_empty() {
+                &mut_params
+            } else {
+                // the same-named functions this method's module sees
+                mut_params_in.entry(m.module.clone()).or_insert_with(|| {
+                    let mut here = mut_params.clone();
+                    for name in &k.same_named_funs {
+                        match k.fun_in(name, &m.module).map(|f| mut_idx(&f.params)) {
+                            Some(idx) if !idx.is_empty() => here.insert(name.clone(), idx),
+                            _ => here.remove(name),
+                        };
+                    }
+                    here
+                })
+            };
+            let facts = analyze_fun_with(m.fun, &fields, &recvs, mut_params);
             let name = m.owner.rsplit("::").next().unwrap_or(&m.owner);
             let returns_self = m.fun.ret.as_ref().is_some_and(|t| t.single_name() == Some("Self") || t.single_name() == Some(name));
             // implementations of an interface method that is `&mut self` stay `&mut self`
@@ -1752,5 +1840,43 @@ mod d {
         // derives are decided per declaration
         assert!(k.derives["a::Point"].iter().any(|d| d == "Copy"));
         assert!(!k.derives["b::Point"].iter().any(|d| d == "Copy"));
+    }
+
+    #[test]
+    fn same_named_functions_resolve_by_module() {
+        let src = r#"
+fun max(a: i32, b: i32): i32 = a
+mod a {
+    fun fill(xs: &mut Vec<i32>) { xs.push(0) }
+    class Bag(var items: Vec<i32>) {
+        fun refill() { fill(items) }
+    }
+}
+mod b {
+    fun fill(xs: &Vec<i32>): usize = xs.len()
+    class Bag(var items: Vec<i32>) {
+        fun count(): usize = fill(items)
+    }
+}
+mod c {
+    import super::b::fill
+}
+"#;
+        let (file, diags) = crate::parser::parse_file(src);
+        assert!(diags.is_empty(), "{:?}", diags);
+        let k = collect(&[SourceUnit { module: Vec::new(), file: &file }], "main", HashSet::new(), false);
+        let path = |s: &str| s.split("::").filter(|x| !x.is_empty()).map(String::from).collect::<Vec<_>>();
+        let fills_mut = |module: &str| k.fun_in("fill", &path(module)).map(|f| matches!(f.params[0].ty, Type::Ref { mutable: true, .. }));
+        assert_eq!(fills_mut("a"), Some(true));
+        assert_eq!(fills_mut("b"), Some(false));
+        assert_eq!(fills_mut("c"), Some(false), "imported");
+        assert_eq!(fills_mut(""), None);
+        assert!(k.fun_at(&path("a::fill"), &[]).is_some());
+        // a path names a function only through the module that declares it
+        assert!(k.fun_at(&path("max"), &[]).is_some());
+        assert!(k.fun_at(&path("std::cmp::max"), &[]).is_none());
+        // each method passes `items` to its own module's `fill`
+        assert_eq!(k.classes["a::Bag"].methods["refill"].recv, Recv::RefMut);
+        assert_eq!(k.classes["b::Bag"].methods["count"].recv, Recv::Ref);
     }
 }

@@ -519,7 +519,7 @@ impl<'a> Lowerer<'a> {
             self.e.nl();
             let base = slug(&t.name);
             let mut name = if base.starts_with("test") { base } else { format!("test_{}", base) };
-            while self.k.funs.contains_key(&name) || !used.insert(name.clone()) {
+            while self.k.is_fun_name(&name) || !used.insert(name.clone()) {
                 name.push('_');
             }
             self.e.w(&format!("/// {}", t.name.replace('\n', " ")));
@@ -650,6 +650,17 @@ impl<'a> Lowerer<'a> {
 
     pub(crate) fn enum_at(&self, path: &[String]) -> Option<&'a sema::EnumInfo> {
         self.k.enum_at(path, &self.module)
+    }
+
+    /// The function `name` means in this module (of a name several modules declare, the module's
+    /// own one or the one it imports).
+    pub(crate) fn fun_info(&self, name: &str) -> Option<&'a sema::FunInfo> {
+        self.k.fun_in(name, &self.module)
+    }
+
+    /// The function a path names (`util.total`), if the module it leads to declares it.
+    pub(crate) fn fun_at(&self, path: &[String]) -> Option<&'a sema::FunInfo> {
+        self.k.fun_at(path, &self.module)
     }
 
     /// Automatic derives of the data class or enum `name` declared in this module.

@@ -68,6 +68,14 @@
   `String`), and their variants, constructors and impl blocks weren't recognized.
 * A class constructed through its module (`shapes.Circle(2.0)`, `a.Counter(1)`) calls its
   constructor; it used to be emitted as `shapes::Circle(2.0)`, which rustc rejects.
+* A function called through its module (`util.total(v)` or `util::total(v)`) is treated like a
+  direct call: arguments are lent to `&` and `&mut` parameters, defaults and named arguments
+  work, and a `throws` function's error propagates. Before, arguments were passed as written
+  (`util.total(v)` with a `Vec` was a type error), named arguments were rejected, and a failing
+  `util.load(x)` statement dropped its error.
+* Functions with the same name in different modules keep their own parameters; a call means
+  the module's own function or the one it imports. Before, calls to either lost the parameters
+  (no lending, defaults or `throws`).
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

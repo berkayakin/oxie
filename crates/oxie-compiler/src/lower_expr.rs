@@ -575,25 +575,31 @@ impl<'a> Lowerer<'a> {
                     if let Some(m) = self.class.as_ref().and_then(|c| c.methods.get(n)) {
                         return m.throws;
                     }
-                    return self.k.funs.get(n).is_some_and(|f| f.throws) && !self.k.ambiguous.contains(n);
+                    return self.fun_info(n).is_some_and(|f| f.throws);
                 }
-                false
+                // `util::load(x)`
+                match &callee.kind {
+                    ExprKind::Path { segs, .. } if segs.len() > 1 => self.fun_at(segs).is_some_and(|f| f.throws),
+                    _ => false,
+                }
             }
             ExprKind::MethodCall { recv, name, safe: false, .. } => {
                 if matches!(recv.kind, ExprKind::SelfValue) {
                     return self.class.as_ref().and_then(|c| c.methods.get(name)).is_some_and(|m| m.throws);
                 }
-                if let Some((p, _)) = self.as_path(recv) {
-                    let owner = p.last().cloned().unwrap_or_default();
-                    let owner = if owner == "Self" { self.class.as_ref().map(|c| c.name.clone()).unwrap_or_default() } else { owner };
-                    return self.class_info(&owner).and_then(|c| c.methods.get(name)).is_some_and(|m| m.throws);
+                if let Some((mut p, _)) = self.as_path(recv) {
+                    if p.last().is_some_and(|o| o == "Self") {
+                        p = vec![self.class.as_ref().map(|c| c.name.clone()).unwrap_or_default()];
+                    }
+                    if let Some(c) = self.class_at(&p) {
+                        return c.methods.get(name).is_some_and(|m| m.throws);
+                    }
+                    // `util.load(x)`
+                    p.push(name.clone());
+                    return self.fun_at(&p).is_some_and(|f| f.throws);
                 }
-                let owner = match self.infer_type(recv) {
-                    Some(Type::Ref { inner, .. }) => inner.single_name().map(|s| s.to_string()),
-                    Some(t) => t.single_name().map(|s| s.to_string()),
-                    None => None,
-                };
-                owner.and_then(|o| self.class_info(&o).and_then(|c| c.methods.get(name)).cloned()).is_some_and(|m| m.throws)
+                let owner = self.infer_type(recv).and_then(|t| self.type_owner(&t));
+                owner.and_then(|o| self.class_at(&o).and_then(|c| c.methods.get(name)).cloned()).is_some_and(|m| m.throws)
             }
             ExprKind::Await(x) => self.is_throwing_call(x),
             _ => false,
@@ -637,7 +643,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn is_place(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Path { segs, generics: None, .. } => {
-                segs.len() == 1 && !is_type_like(&segs[0]) && !self.k.funs.contains_key(&segs[0]) || is_const_like(segs.last().unwrap())
+                segs.len() == 1 && !is_type_like(&segs[0]) && !self.k.is_fun_name(&segs[0]) || is_const_like(segs.last().unwrap())
             }
             ExprKind::SelfValue => true,
             ExprKind::Field { recv, safe: false, .. } => self.as_path(e).is_none() && self.is_place(recv),
@@ -1385,7 +1391,7 @@ impl<'a> Lowerer<'a> {
                 self.e.w(&f);
                 return;
             }
-            if !self.is_local(n) && !self.k.is_class_name(n) && !self.k.funs.contains_key(n) {
+            if !self.is_local(n) && !self.k.is_class_name(n) && !self.k.is_fun_name(n) {
                 if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
                     s.push_str(&format!("{}::{}", en.name, n));
                     self.e.w(&s);
@@ -1517,7 +1523,7 @@ impl<'a> Lowerer<'a> {
     // ------------------------------------------------------------------ calls
 
     pub(crate) fn is_builtin_call(&self, name: &str) -> bool {
-        !self.is_local(name) && !self.k.funs.contains_key(name) && self.class.as_ref().is_none_or(|c| !c.methods.contains_key(name))
+        !self.is_local(name) && !self.k.is_fun_name(name) && self.class.as_ref().is_none_or(|c| !c.methods.contains_key(name))
     }
 
     fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) {
@@ -1594,16 +1600,14 @@ impl<'a> Lowerer<'a> {
                         return;
                     }
                 }
-                if let Some(fi) = self.k.funs.get(&name).cloned() {
-                    if !self.k.ambiguous.contains(&name) {
-                        self.e.w(&esc(&name));
-                        if let Some(g) = generics {
-                            let gt = self.generic_args_text(g);
-                            self.e.w(&format!("::{}", gt));
-                        }
-                        self.arg_list(args, Some(&fi.params), TyPos::Param, span);
-                        return;
+                if let Some(fi) = self.fun_info(&name).cloned() {
+                    self.e.w(&esc(&name));
+                    if let Some(g) = generics {
+                        let gt = self.generic_args_text(g);
+                        self.e.w(&format!("::{}", gt));
                     }
+                    self.arg_list(args, Some(&fi.params), TyPos::Param, span);
+                    return;
                 }
                 if !self.k.is_user_type(&name) {
                     if let Some(en) = self.k.variant_enum_in(&name, Some(&self.module)).cloned() {
@@ -1687,6 +1691,13 @@ impl<'a> Lowerer<'a> {
                     self.arg_list(args, Some(&params), pos, span);
                     return;
                 }
+            }
+            // `util.total(v)`: a function called through the module that declares it
+            if let Some(fi) = self.fun_at(segs).cloned() {
+                let g = generics.map(|g| format!("::{}", self.generic_args_text(g))).unwrap_or_default();
+                self.e.w(&format!("{}{}", path, g));
+                self.arg_list(args, Some(&fi.params), TyPos::Param, span);
+                return;
             }
         }
         let mut path = self.join_path(segs);
@@ -2068,12 +2079,8 @@ impl<'a> Lowerer<'a> {
         }
         // method of an Oxie class when the receiver's type is known
         if !matches!(recv.kind, ExprKind::SelfValue) {
-            let owner = match self.infer_type(recv) {
-                Some(Type::Ref { inner, .. }) => inner.single_name().map(|s| s.to_string()),
-                Some(t) => t.single_name().map(|s| s.to_string()),
-                None => None,
-            };
-            let m = owner.as_ref().and_then(|o| self.class_info(o).and_then(|c| c.methods.get(name)).or_else(|| self.enum_info(o).and_then(|e| e.methods.get(name)))).cloned();
+            let owner = self.infer_type(recv).and_then(|t| self.type_owner(&t));
+            let m = owner.as_ref().and_then(|o| self.class_at(o).and_then(|c| c.methods.get(name)).or_else(|| self.enum_at(o).and_then(|e| e.methods.get(name)))).cloned();
             if let Some(m) = m {
                 self.expr(recv, P_POSTFIX);
                 self.e.w(&format!(".{}", esc(name)));
@@ -2194,7 +2201,7 @@ impl<'a> Lowerer<'a> {
     fn yields_borrowed_option(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Call { callee, .. } => {
-                let ret = callee.ident().and_then(|n| self.k.funs.get(n)).and_then(|f| f.ret.clone());
+                let ret = callee.ident().and_then(|n| self.fun_info(n)).and_then(|f| f.ret.clone());
                 matches!(ret, Some(Type::Option(inner)) if matches!(*inner, Type::Ref { .. }))
             }
             ExprKind::MethodCall { name, .. } => matches!(

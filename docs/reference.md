@@ -68,7 +68,9 @@ fun short(x: i32) = x * 2
 * **Block value**: the last expression of a block is its value. In a function returning `()`
   the last expression is a statement.
 * **Default arguments** and **named arguments** (`f(x = 1)`) work for functions, methods and
-  constructors declared in Oxie; defaults are filled in at the call site.
+  constructors declared in Oxie; defaults are filled in at the call site. A function called
+  through its module (`util.total(v)`) is treated like a direct call: arguments are lent,
+  defaults and names apply, and a `throws` function's error propagates.
 * **Generics and bounds** are Rust's: `<T: Display + Clone>`, `where T: Into<String>`,
   `<'a>`, `<const N: usize>`. Kotlin's `fun <T> name()` order is accepted too.
 * **Inferred bounds**: bounds a function body needs are added to the generated signature
@@ -504,9 +506,9 @@ methods are always available: `xs.iter().filter { .. }.map { .. }.collect()`.
 * Paths may use `.` instead of `::` when the left side is a type, module or crate name:
   `std.mem.swap(a, b)`, `Duration.from_secs(1)`, `Color.Red`, `math.double(2)` (inline
   module), `shapes.Circle(2.0)` (a class through its module), `Stack::<i32>.new()`.
-* Classes and enums in different modules may share a name. Each keeps its own constructor,
-  inferred receivers and derives; a bare name means the module's own one or the one it
-  imports, and a path (`a.Counter(1)`) names the others.
+* Classes, enums and functions in different modules may share a name. Each keeps its own
+  constructor or parameters, inferred receivers and derives; a bare name means the module's
+  own one or the one it imports, and a path (`a.Counter(1)`, `b.describe(x)`) names the others.
 
 ## Visibility
 

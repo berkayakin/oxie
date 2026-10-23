@@ -1,0 +1,65 @@
+// A function called through its module (`util.total(v)`) gets what a direct call gets: arguments
+// lent to `&` and `&mut` parameters, defaults and named arguments, and the error of a `throws`
+// function propagated. Functions in different modules may share a name.
+
+mod util {
+    fun total(xs: &[i32]): i32 = xs.iter().sum()
+    fun add(xs: &mut Vec<i32>, n: i32 = 1, times: i32 = 1) {
+        for (_ in 0 until times) {
+            xs.push(n)
+        }
+    }
+    fun age(s: &str): i32 throws {
+        val n: i32 = s.parse()?
+        if (n < 0) throw "negative age: $n"
+        n
+    }
+}
+
+mod a {
+    fun describe(xs: &Vec<i32>): String = "${xs.len()} numbers"
+    fun fill(xs: &mut Vec<i32>) { xs.push(0) }
+    class Bag(var items: Vec<i32> = vec[]) {
+        fun refill() { fill(items) }
+        fun add_all(xs: &[i32]) { items.extend_from_slice(xs) }
+    }
+    fun own(): String {
+        val v = vec[1, 2]
+        describe(v)
+    }
+}
+
+mod b {
+    fun describe(name: String, times: i32 = 2): String = name.repeat(times as usize)
+    fun fill(xs: &Vec<i32>): usize = xs.len()
+    class Bag(val items: Vec<i32>) {
+        fun count(): usize = fill(items)
+    }
+    fun own(): String = describe("b")
+}
+
+import b::describe
+
+fun ages(): i32 throws {
+    util.age("30")
+    util::age("-1")
+    0
+}
+
+fun main() {
+    var v = vec[1, 2]
+    util.add(v)
+    util.add(v, n = 5, times = 2)
+    println("${util.total(v)} ${util::total(v)} ${v:?}")
+    println("${ages():?}")
+
+    println("${a.describe(v)} ${b.describe("x", times = 3)} ${describe("y")}")
+    println("${a.own()} ${b.own()}")
+
+    // `a.fill` changes `items`, so `refill` takes `&mut self`; `b.fill` only reads them
+    var bag = a.Bag()
+    bag.refill()
+    bag.add_all(v)
+    val other = b.Bag(vec[4, 5])
+    println("${bag.items:?} ${other.count()}")
+}

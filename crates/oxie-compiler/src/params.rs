@@ -190,8 +190,8 @@ impl<'a> Analysis<'a> {
         }
         let decls: HashMap<&str, &FunDecl> = funs.iter().filter(|(_, _, f)| count[f.name.as_str()] == 1).map(|(_, _, f)| (f.name.as_str(), *f)).collect();
 
-        // functions used as values (`xs.map(greet)`) or called through a path (`util.greet(x)`,
-        // whose arguments aren't matched to parameters) keep their signature
+        // functions used as values (`xs.map(greet)`) or called through a path (`util.greet(x)`, whose
+        // arguments this analysis doesn't follow) keep their signature
         let mut as_value: HashSet<String> = HashSet::new();
         for f in files {
             each_body(&f.items, &mut |b| {
