@@ -10,7 +10,7 @@ rust-version.workspace = true
 readme = "README.md"
 keywords = ["oxie", "language", "compiler", "transpiler", "lsp"]
 categories = ["compilers", "command-line-utilities", "development-tools"]
-documentation = "https://github.com/oxie-lang/oxie/tree/main/docs"
+documentation = "https://oxie.bkymz.net"
 
 [[bin]]
 name = "oxie"

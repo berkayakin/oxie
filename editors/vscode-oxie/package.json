@@ -11,7 +11,7 @@
     "url": "https://github.com/oxie-lang/oxie",
     "directory": "editors/vscode-oxie"
   },
-  "homepage": "https://github.com/oxie-lang/oxie",
+  "homepage": "https://oxie.bkymz.net",
   "bugs": "https://github.com/oxie-lang/oxie/issues",
   "engines": {
     "vscode": "^1.91.0"

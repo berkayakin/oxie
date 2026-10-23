@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* A documentation site at [oxie.bkymz.net](https://oxie.bkymz.net), generated from `docs/`: every
+  example shows the Rust that `oxie emit` produces for it and its output, kept current by the tests.
 * A VS Code extension in `editors/vscode-oxie`: highlighting, the language server, ▶ run and
   test buttons, the generated Rust beside the source, tasks and snippets.
 * Language server: files opened through a symlinked directory (on macOS, anything under `/tmp`)

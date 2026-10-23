@@ -13,6 +13,8 @@ Every crate works, programs run exactly as fast as hand-written Rust, and you ne
 `let mut`, `impl` blocks, `Ok(...)`, `.to_string()` on literals or `#[derive(...)]` boilerplate
 unless you want to.
 
+Documentation: **[oxie.bkymz.net](https://oxie.bkymz.net)**
+
 ```oxie
 error enum BankError {
     Insufficient(needed: u64, available: u64) = "need $needed, have $available"
@@ -260,6 +262,9 @@ Differences are within timing noise. See [docs/performance.md](docs/performance.
   in [`editors/vscode-oxie/syntaxes`](editors/vscode-oxie/syntaxes).
 
 ## Documentation
+
+The documentation is published at [oxie.bkymz.net](https://oxie.bkymz.net), where every example
+also shows the Rust it compiles to and its output. The same pages are in `docs/`:
 
 * [A tour of Oxie](docs/guide.md) — start here
 * [Language reference](docs/reference.md) — every construct and the Rust it becomes

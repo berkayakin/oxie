@@ -6,7 +6,7 @@ dependencies.
 
 Most users want the [`oxie`](https://crates.io/crates/oxie) command instead; Oxie projects
 compile through [`oxie-build`](https://crates.io/crates/oxie-build). How the compiler works is
-described in [compiler internals](https://github.com/oxie-lang/oxie/blob/main/docs/internals.md).
+described in [compiler internals](https://oxie.bkymz.net/internals/).
 
 Licensed under either of [Apache License, Version 2.0](https://github.com/oxie-lang/oxie/blob/main/LICENSE-APACHE) or
 [MIT license](https://github.com/oxie-lang/oxie/blob/main/LICENSE-MIT) at your option.

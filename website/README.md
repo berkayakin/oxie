@@ -1,8 +1,8 @@
 # Oxie documentation site
 
-A [Starlight](https://starlight.astro.build) site built from the Markdown in this repository.
-There is nothing to keep in sync by hand: edit `docs/*.md`, `README.md` or `CHANGELOG.md`, and
-the site follows.
+[oxie.bkymz.net](https://oxie.bkymz.net) is a [Starlight](https://starlight.astro.build) site built
+from the Markdown in this repository. There is nothing to keep in sync by hand: edit `docs/*.md`,
+`README.md` or `CHANGELOG.md`, and the site follows.
 
 - `scripts/sync-docs.mjs` generates the pages in `src/content/docs/` (ignored by git) from
   `docs/*.md` and `CHANGELOG.md`, and the home page's "Why" and "Install" sections from the
