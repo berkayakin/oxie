@@ -356,7 +356,7 @@ fn cmd_fmt(args: &[String]) -> R {
 }
 
 fn cmd_emit(args: &[String]) -> R {
-    let file = args.iter().find(|a| !a.starts_with("--")).ok_or("usage: oxie emit <file.oxi>")?;
+    let file = args.iter().find(|a| !a.starts_with("--")).ok_or("usage: oxie emit <file.oxi> [--annotate]")?;
     let abs = oxie_compiler::compile::canonicalize(file).map_err(|e| format!("{}: {}", file, e))?;
     let project = Project::find(abs.parent().unwrap()).filter(|p| abs.starts_with(p.src_dir()));
     let (out, root) = match &project {
