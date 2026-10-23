@@ -1736,6 +1736,16 @@ impl<'a> Parser<'a> {
             }
         }
         self.no_struct = saved;
+        // `{ ... }` as a statement is a lambda (as in Kotlin), and one that isn't the block's value never runs
+        for (i, s) in stmts.iter().enumerate() {
+            if let Stmt::Expr { expr, semi } = s {
+                let unused = i + 1 < stmts.len() || *semi;
+                let bare = matches!(&expr.kind, ExprKind::Lambda { params, .. } if params.is_empty());
+                if unused && bare && self.src.as_bytes().get(expr.span.start as usize) == Some(&b'{') {
+                    self.diags.push(Diag::error(expr.span, "this `{ }` is a lambda, and it is never called, so its statements never run").with_help("to run the statements as a block, write `run { ... }`"));
+                }
+            }
+        }
         Ok(stmts)
     }
 

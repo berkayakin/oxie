@@ -1,0 +1,17 @@
+// Errors Oxie reports itself, before rustc runs.
+
+fun make(): () -> i32 {
+    { 42 }
+}
+
+fun main() {
+    var n = 0
+    {
+        n += 1
+    }
+    // error: 9: this `{ }` is a lambda, and it is never called
+    run {
+        n += 1
+    }
+    println("$n ${make()()}")
+}

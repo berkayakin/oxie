@@ -444,6 +444,9 @@ f(x) { trailing lambda }        // last argument outside the parentheses
   computing it with a number, `char` or `bool` literal reads the value through the
   references: `filter { it > 2 }`, `filter { it % 2 == 0 }`.
 * `run { ... }` is a block expression; `repeat(n) { ... }` loops `n` times with `it`.
+* `{ ... }` on its own as a statement is a lambda too, so it would never run: Oxie reports it
+  as an error and suggests `run { ... }`. As the last expression of a block it is the block's
+  value (a function returning a lambda can end with `{ 42 }`).
 
 ## Collections
 
