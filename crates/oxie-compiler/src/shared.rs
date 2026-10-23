@@ -175,7 +175,7 @@ impl<'a> Lowerer<'a> {
     /// `fn name(&self, a: A) -> R { self.0.borrow_mut().name(a) }`
     fn forwarder(&mut self, it: &Item, f: &FunDecl, recv: Recv, vis: &str, read: &str, write: &str) {
         let trait_ret = self.pending_trait_ret.take();
-        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), true, &|n| self.k.type_lifetimes(n));
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), true, &|n| self.k.type_lifetimes_in(n, &self.module));
         let f = &match self.class.as_ref() {
             Some(c) if !f.mods.is_override => {
                 let fields: Vec<(String, Type)> = c.fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
@@ -225,8 +225,8 @@ impl<'a> Lowerer<'a> {
                         | "Int" | "Long" | "Double" | "Float" | "Boolean" | "Char" | "Byte" | "Short" | "Vec" | "List" | "MutableList" | "HashMap" | "HashSet"
                         | "BTreeMap" | "BTreeSet" | "VecDeque" | "Option" | "Result" | "Box" | "Rc" | "Arc" | "PathBuf" | "Duration" | "Instant"
                 ) || tparams.iter().any(|p| p == n)
-                    || self.k.class(n).is_some_and(|c| c.is_shared)
-                    || self.k.derives.get(n).is_some_and(|d| d.iter().any(|x| x == "Clone" || x == "Copy"));
+                    || self.class_info(n).is_some_and(|c| c.is_shared)
+                    || self.k.type_key_in(n, &self.module).and_then(|key| self.k.derives.get(&key)).is_some_and(|d| d.iter().any(|x| x == "Clone" || x == "Copy"));
                 known && args_ok
             }
             _ => false,
@@ -246,7 +246,7 @@ impl<'a> Lowerer<'a> {
             Type::Ref { inner, .. } => inner.single_name()?.to_string(),
             _ => t.single_name()?.to_string(),
         };
-        let c = self.k.class(&name)?;
+        let c = self.class_info(&name)?;
         if !c.is_shared || !c.fields.iter().any(|f| f.name == field) {
             return None;
         }
@@ -257,7 +257,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn shared_class_of(&self, e: &Expr) -> Option<String> {
         let t = self.infer_type(e)?;
         let n = t.single_name()?;
-        self.k.class(n).filter(|c| c.is_shared).map(|_| n.to_string())
+        self.class_info(n).filter(|c| c.is_shared).map(|_| n.to_string())
     }
 
     /// A variable or field holding a shared handle: using it by value copies the handle, so the
@@ -446,6 +446,6 @@ impl<'a> Lowerer<'a> {
             Type::Ref { inner, .. } => inner.single_name()?.to_string(),
             _ => t.single_name()?.to_string(),
         };
-        self.k.class(&name)?.fields.iter().find(|f| f.name == field).map(|f| f.ty.clone())
+        self.class_info(&name)?.fields.iter().find(|f| f.name == field).map(|f| f.ty.clone())
     }
 }

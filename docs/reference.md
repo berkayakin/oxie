@@ -503,7 +503,10 @@ methods are always available: `xs.iter().filter { .. }.map { .. }.collect()`.
   hand-written Rust module file next to the source.
 * Paths may use `.` instead of `::` when the left side is a type, module or crate name:
   `std.mem.swap(a, b)`, `Duration.from_secs(1)`, `Color.Red`, `math.double(2)` (inline
-  module), `Stack::<i32>.new()`.
+  module), `shapes.Circle(2.0)` (a class through its module), `Stack::<i32>.new()`.
+* Classes and enums in different modules may share a name. Each keeps its own constructor,
+  inferred receivers and derives; a bare name means the module's own one or the one it
+  imports, and a path (`a.Counter(1)`) names the others.
 
 ## Visibility
 

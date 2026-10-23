@@ -59,7 +59,10 @@ The compiler is a library (`oxie-compiler`) with no dependencies. `oxie-build` c
 
 * classes (fields, constructor parameters, methods, generics), enums (variants and their
   shapes), traits (methods, associated types), free functions, module names, extension traits,
-  and which enum owns each variant name (for bare variant names in patterns and calls);
+  and which enum owns each variant name (for bare variant names in patterns and calls). A class
+  or enum name that several modules declare is keyed by module (`a::Counter`, see
+  `scoped_key`), and lookups take the module they are written in: `class_in` finds the
+  module's own declaration or the one it imports (by name or `*`), `class_at` follows a path;
 * **receiver inference**: a fixpoint over all methods, default methods of interfaces included.
   A method is `&mut self` if its body assigns into `self` (directly or through implicit
   fields), calls a known mutating method on a field, takes `&mut` of a field, or calls a

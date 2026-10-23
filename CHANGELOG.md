@@ -62,6 +62,12 @@
   default method of the interface, or when it called a default method its class inherits.
 * Receiver inference no longer stops after 8 rounds: in a chain of 9 or more methods calling
   each other on `this`, declared before the methods they call, the first ones stayed `&self`.
+* Classes and enums with the same name in different modules work. Before, Oxie lost track of
+  both: their methods were all `&self` (a `Counter` whose `bump` assigns a field didn't
+  compile), one's derives were used for the other (a `Copy` derive on a type holding a
+  `String`), and their variants, constructors and impl blocks weren't recognized.
+* A class constructed through its module (`shapes.Circle(2.0)`, `a.Counter(1)`) calls its
+  constructor; it used to be emitted as `shapes::Circle(2.0)`, which rustc rejects.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

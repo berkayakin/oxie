@@ -630,7 +630,31 @@ impl<'a> Lowerer<'a> {
     // ------------------------------------------------------------------ types
 
     pub(crate) fn is_trait_name(&self, n: &str) -> bool {
-        self.k.is_trait(n) || (STD_AUTO_DYN.contains(&n) && !self.k.is_user_type(n) && !self.k.classes.contains_key(n))
+        self.k.is_trait(n) || (STD_AUTO_DYN.contains(&n) && !self.k.is_user_type(n))
+    }
+
+    /// The class `name` means in this module (of a name several modules declare, the module's
+    /// own one or the one it imports).
+    pub(crate) fn class_info(&self, name: &str) -> Option<&'a sema::ClassInfo> {
+        self.k.class_in(name, &self.module)
+    }
+
+    pub(crate) fn enum_info(&self, name: &str) -> Option<&'a sema::EnumInfo> {
+        self.k.enum_in(name, &self.module)
+    }
+
+    /// The class a path goes through (`Counter`, `a.Counter`).
+    pub(crate) fn class_at(&self, path: &[String]) -> Option<&'a sema::ClassInfo> {
+        self.k.class_at(path, &self.module)
+    }
+
+    pub(crate) fn enum_at(&self, path: &[String]) -> Option<&'a sema::EnumInfo> {
+        self.k.enum_at(path, &self.module)
+    }
+
+    /// Automatic derives of the data class or enum `name` declared in this module.
+    fn auto_derives(&self, name: &str) -> Vec<String> {
+        self.k.derives.get(&self.k.decl_key(&self.module, name)).cloned().unwrap_or_default()
     }
 
     pub fn ty(&self, t: &Type, pos: TyPos) -> String {
@@ -736,7 +760,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 // `Token` for `data class Token<'a>`: spell the elided lifetime in signatures
-                let n = self.k.type_lifetimes(&seg.name);
+                let n = self.k.type_lifetimes_in(&seg.name, &self.module);
                 if self.in_signature.get() && n > 0 {
                     s.push_str(&esc(&seg.name));
                     s.push_str(&format!("<{}>", vec!["'_"; n].join(", ")));
@@ -976,7 +1000,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn resolve_variant_path(&self, segs: &[String]) -> (String, Option<VariantShape>) {
         if segs.len() == 1 {
             let n = &segs[0];
-            if !self.k.classes.contains_key(n) && !self.is_local(n) {
+            if !self.k.is_class_name(n) && !self.is_local(n) {
                 if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
                     let shape = en.variant(n).cloned();
                     return (format!("{}::{}", en.name, n), shape);
@@ -988,9 +1012,9 @@ impl<'a> Lowerer<'a> {
         let en_name = &segs[segs.len() - 2];
         let vname = &segs[segs.len() - 1];
         let shape = if en_name == "Self" {
-            self.class.as_ref().and_then(|c| self.k.enum_(&c.name)).and_then(|e| e.variant(vname).cloned())
+            self.class.as_ref().and_then(|c| self.enum_info(&c.name)).and_then(|e| e.variant(vname).cloned())
         } else {
-            self.k.enum_(en_name).and_then(|e| e.variant(vname).cloned())
+            self.enum_at(&segs[..segs.len() - 1]).and_then(|e| e.variant(vname).cloned())
         };
         if path.is_empty() {
             path = segs.join("::");
@@ -1329,7 +1353,7 @@ impl<'a> Lowerer<'a> {
 
     fn free_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
         let lifetimes = f.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count();
-        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), false, &|n| self.k.type_lifetimes(n));
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), false, &|n| self.k.type_lifetimes_in(n, &self.module));
         let f = &crate::bounds::with_inferred_bounds(f, &[], &[]);
         let is_main = f.name == "main" && ctx == ItemCtx::Top && self.is_root && self.module.is_empty();
         let wrap_main = is_main && !matches!(f.throws, Throws::No);
@@ -1427,7 +1451,7 @@ impl<'a> Lowerer<'a> {
 
     fn ext_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {
         let by_ref = !matches!(f.self_param, Some(SelfParam::Value { .. }) | Some(SelfParam::Typed(_)));
-        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), by_ref, &|n| self.k.type_lifetimes(n));
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, None), by_ref, &|n| self.k.type_lifetimes_in(n, &self.module));
         let f = &crate::bounds::with_inferred_bounds(f, &[], &[]);
         let recv_ty = f.receiver.as_ref().unwrap();
         let tname = sema::ext_trait_name(&self.module, &f.name);
@@ -1466,7 +1490,7 @@ impl<'a> Lowerer<'a> {
         // inside an extension of an Oxie type, its fields and methods are in scope (like Kotlin)
         let saved_class = self.class.take();
         if let Some(owner) = recv_ty.single_name() {
-            if self.k.class(owner).is_some() || self.k.enum_(owner).is_some() {
+            if self.class_info(owner).is_some() || self.enum_info(owner).is_some() {
                 let mut ctx = self.class_ctx_for(owner, &[], &[]);
                 ctx.is_static = matches!(f.self_param, Some(SelfParam::Typed(_)));
                 self.class = Some(ctx);
@@ -1497,7 +1521,7 @@ impl<'a> Lowerer<'a> {
             Some(_) => false,
             None => matches!(recv, Recv::Ref | Recv::RefMut),
         };
-        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), by_ref, &|n| self.k.type_lifetimes(n));
+        let f = &auto_lifetimes(&self.with_inferred_ret(f, trait_ret), by_ref, &|n| self.k.type_lifetimes_in(n, &self.module));
         let f = &match self.class.as_ref() {
             Some(c) if !f.mods.is_override && c.trait_methods.as_ref().is_some_and(|t| !t.contains(&f.name)) => {
                 let fields: Vec<(String, Type)> = c.fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
@@ -1556,7 +1580,7 @@ impl<'a> Lowerer<'a> {
     // ------------------------------------------------------------------ classes
 
     fn class_ctx_for(&self, name: &str, decl_fields: &[Field], supertypes: &[Type]) -> ClassCtx {
-        let info = self.k.class(name);
+        let info = self.class_info(name);
         let mut fields: HashMap<String, Type> = decl_fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect();
         if let Some(c) = info {
             for f in &c.fields {
@@ -1565,7 +1589,7 @@ impl<'a> Lowerer<'a> {
         }
         let mut methods = info
             .map(|c| c.methods.clone())
-            .or_else(|| self.k.enum_(name).map(|e| e.methods.clone()))
+            .or_else(|| self.enum_info(name).map(|e| e.methods.clone()))
             .unwrap_or_default();
         // methods inherited from interfaces (default methods) are callable without `this.`
         let mut stack: Vec<String> = supertypes.iter().filter_map(|t| t.last_name().map(|s| s.to_string())).collect();
@@ -1612,7 +1636,7 @@ impl<'a> Lowerer<'a> {
         // which supertypes become derives
         let (derived, impl_traits, members_by_trait, inherent) = self.split_members(t);
         let (nested, inherent): (Vec<&Item>, Vec<&Item>) = inherent.into_iter().partition(|m| matches!(m.kind, ItemKind::Type(_) | ItemKind::Trait(_)));
-        let mut derives: Vec<String> = self.k.derives.get(&t.name).cloned().unwrap_or_default();
+        let mut derives: Vec<String> = self.auto_derives(&t.name);
         for d in derived {
             if !derives.contains(&d) {
                 derives.push(d);
@@ -1668,7 +1692,7 @@ impl<'a> Lowerer<'a> {
         if let Some(c) = self.class.as_mut() {
             c.generics = t.generics.params.clone();
         }
-        let info = self.k.class(&t.name).cloned();
+        let info = self.class_info(&t.name).cloned();
 
         // inherent impl: constructor + methods
         let needs_new = !matches!(t.kind, TypeKind::TupleStruct | TypeKind::Union) && !info.as_ref().is_some_and(|c| c.user_new);
@@ -1741,12 +1765,12 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn recv_of(&self, owner: &str, f: &FunDecl) -> Recv {
-        if let Some(c) = self.k.class(owner) {
+        if let Some(c) = self.class_info(owner) {
             if let Some(m) = c.methods.get(&f.name) {
                 return m.recv;
             }
         }
-        if let Some(e) = self.k.enum_(owner) {
+        if let Some(e) = self.enum_info(owner) {
             if let Some(m) = e.methods.get(&f.name) {
                 return m.recv;
             }
@@ -2125,7 +2149,7 @@ impl<'a> Lowerer<'a> {
         let wc = self.where_clause(&t.generics);
         let self_ty = format!("{}{}", t.name, gn);
         let (derived, impl_traits, members_by_trait, inherent) = self.split_members(t);
-        let mut derives: Vec<String> = self.k.derives.get(&t.name).cloned().unwrap_or_default();
+        let mut derives: Vec<String> = self.auto_derives(&t.name);
         for d in derived {
             if !derives.contains(&d) {
                 derives.push(d);

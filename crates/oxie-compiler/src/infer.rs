@@ -9,6 +9,11 @@ fn ty(name: &str) -> Type {
     Type::simple(name)
 }
 
+/// `a::Counter`
+fn path_ty(path: &[String]) -> Type {
+    Type::Path { global: false, segs: path.iter().map(|s| PathSeg { name: s.clone(), generics: None, fn_sugar: None }).collect(), span: Default::default() }
+}
+
 fn static_str() -> Type {
     Type::Ref { lifetime: Some("static".into()), mutable: false, inner: Box::new(ty("str")) }
 }
@@ -70,7 +75,7 @@ impl<'a> Lowerer<'a> {
                         return if m.throws && !through_try { None } else { m.ret.clone() };
                     }
                 }
-                if let Some(c) = self.k.class(n) {
+                if let Some(c) = self.class_info(n) {
                     return if c.has_generics { None } else { Some(ty(n)) };
                 }
                 if let Some(f) = self.k.funs.get(n) {
@@ -98,17 +103,20 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 if let Some((p, _)) = self.as_path(recv) {
-                    let owner = p.last()?;
-                    let owner = if owner == "Self" { self.class.as_ref()?.name.clone() } else { owner.clone() };
-                    if let Some(c) = self.k.class(&owner) {
+                    // the type the call goes through: `Self`, `Counter` or `a.Counter`
+                    let owner = if p.last()? == "Self" { vec![self.class.as_ref()?.name.clone()] } else { p };
+                    let name_ty = owner.last()?;
+                    // a name several modules declare keeps its path (`a::Counter`)
+                    let owner_ty = || if owner.len() > 1 && self.k.same_named.contains(name_ty) { path_ty(&owner) } else { ty(name_ty) };
+                    if let Some(c) = self.class_at(&owner) {
                         if name == "new" && !c.user_new {
-                            return if c.has_generics { None } else { Some(ty(&owner)) };
+                            return if c.has_generics { None } else { Some(owner_ty()) };
                         }
                         return c.methods.get(name).and_then(|m| if m.throws && !through_try { None } else { m.ret.clone() });
                     }
-                    if let Some(en) = self.k.enum_(&owner) {
+                    if let Some(en) = self.enum_at(&owner) {
                         if en.variant(name).is_some() {
-                            return Some(ty(&owner));
+                            return Some(owner_ty());
                         }
                         return en.methods.get(name).and_then(|m| m.ret.clone());
                     }
@@ -135,7 +143,7 @@ impl<'a> Lowerer<'a> {
                     Type::Ref { inner, .. } => inner.single_name()?.to_string(),
                     t => t.single_name()?.to_string(),
                 };
-                let c = self.k.class(&tn)?;
+                let c = self.class_info(&tn)?;
                 c.fields.iter().find(|f| f.name == *name).map(|f| f.ty.clone())
             }
             If { then, else_, .. } => self.infer_block(then).or_else(|| else_.as_ref().and_then(|e| self.infer_type(e))),
@@ -143,7 +151,7 @@ impl<'a> Lowerer<'a> {
             Block(b) => self.infer_block(b),
             StructLit { path, generics: None, .. } => {
                 let n = path.last()?;
-                if path.len() == 1 && is_type_like(n) && self.k.class(n).is_some_and(|c| !c.has_generics) {
+                if path.len() == 1 && is_type_like(n) && self.class_info(n).is_some_and(|c| !c.has_generics) {
                     Some(ty(n))
                 } else {
                     None

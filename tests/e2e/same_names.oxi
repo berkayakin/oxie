@@ -1,0 +1,67 @@
+// Classes and enums with the same name in different modules each keep their own fields,
+// constructor, receivers and derives. A path (`a.Counter(1)`) or an import picks one.
+
+class Counter(var total: i32 = 0) {
+    fun add(n: i32) { total += n }
+}
+
+mod a {
+    class Counter(var n: i32) {
+        fun bump() { n += 1 }
+        static fun starting_at(n: i32): Counter = Counter(n)
+    }
+    data class Point(x: i32, y: i32)
+    enum Color { Red, Blue }
+    fun is_red(c: Color): Boolean = when (c) {
+        Red -> true
+        Blue -> false
+    }
+}
+
+mod b {
+    class Counter(val name: String) {
+        fun bump() { println("$name doesn't count") }
+    }
+    impl Counter {
+        fun shout(): String = name.to_uppercase()
+    }
+    data class Point(label: String)
+    enum Color { Red, Named(name: String) }
+    fun describe(c: &Color): String = when (c) {
+        Red -> "red".to_string()
+        Named(name) -> name.clone()
+    }
+}
+
+mod c {
+    import super::a::*
+    fun made(): Counter = Counter(7)
+}
+
+import b::Point
+
+fun main() {
+    var total = Counter()
+    total.add(3)
+    var x = a.Counter(1)
+    x.bump()
+    var y = a.Counter.starting_at(10)
+    y.bump()
+    var z = c.made()
+    z.bump()
+    println("${total.total} ${x.n} ${y.n} ${z.n}")
+
+    // `b.Counter.bump` changes nothing, so a `val` can call it
+    val quiet = b.Counter("b")
+    quiet.bump()
+    println(quiet.shout())
+
+    // `a.Point` is `Copy`, `b.Point` (holding a `String`) isn't
+    val p = a.Point(1, 2)
+    val q = p
+    val here = Point("here")
+    println("${p.x + q.y} ${here.label}")
+
+    println("${a.is_red(a.Color.Red)} ${a.is_red(a.Color.Blue)}")
+    println("${b.describe(&b.Color.Red)} ${b.describe(&b.Color.Named("teal"))}")
+}

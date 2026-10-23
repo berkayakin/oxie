@@ -126,24 +126,43 @@ pub struct FunInfo {
 #[derive(Clone, Debug, Default)]
 pub struct Crate {
     pub crate_name: String,
+    /// Classes and enums by name; a name declared in several modules is keyed by `scoped_key`
+    /// for each declaration (see `same_named`), so look types up with `class_in`/`enum_in`.
     pub classes: HashMap<String, ClassInfo>,
     pub enums: HashMap<String, EnumInfo>,
     pub traits: HashMap<String, TraitInfo>,
     pub funs: HashMap<String, FunInfo>,
     pub ambiguous: HashSet<String>,
+    /// Class and enum names declared in several modules (`a::Counter` and `b::Counter`).
+    pub same_named: HashSet<String>,
+    /// What a name imported into a module stands for: (module, name) -> path (`a::Counter`).
+    pub imports: HashMap<(Vec<String>, String), Vec<String>>,
+    /// The paths each module imports with `*`.
+    pub globs: HashMap<Vec<String>, Vec<Vec<String>>>,
     /// Top-level module names (children of the crate root).
     pub modules: HashSet<String>,
     /// External crate names from Cargo.toml.
     pub extern_crates: HashSet<String>,
     /// (module path, trait name) for every extension-function trait.
     pub ext_traits: Vec<(Vec<String>, String)>,
-    pub variant_owner: HashMap<String, Vec<String>>,
+    /// Variant name -> the (module, name) of each enum that has it.
+    pub variant_owner: HashMap<String, Vec<(Vec<String>, String)>>,
     /// Whether a `lib.oxi` exists (main.oxi then imports modules through the crate name).
     pub has_lib: bool,
-    /// Automatic derives per type (data classes and enums).
+    /// Automatic derives per type (data classes and enums), keyed like `classes`.
     pub derives: HashMap<String, Vec<String>>,
     /// Types declared inside a class body (hoisted to the module): outer name -> inner names.
     pub nested: HashMap<String, Vec<String>>,
+}
+
+/// The key of a class or enum whose name is declared in several modules (`a::Counter`, and
+/// `crate::Counter` for the crate root).
+pub fn scoped_key(module: &[String], name: &str) -> String {
+    if module.is_empty() {
+        format!("crate::{}", name)
+    } else {
+        format!("{}::{}", module.join("::"), name)
+    }
 }
 
 pub const STATIC_METHOD_NAMES: &[&str] = &["new", "default", "from", "from_str", "try_from", "from_iter"];
@@ -182,13 +201,111 @@ impl Crate {
         }
         self.enums.get(name)
     }
+    /// The class `name` means when written in `module` (see `type_key_in`).
+    pub fn class_in(&self, name: &str, module: &[String]) -> Option<&ClassInfo> {
+        if !self.same_named.contains(name) {
+            return self.class(name);
+        }
+        self.classes.get(&self.type_key_in(name, module)?)
+    }
+    pub fn enum_in(&self, name: &str, module: &[String]) -> Option<&EnumInfo> {
+        if !self.same_named.contains(name) {
+            return self.enum_(name);
+        }
+        self.enums.get(&self.type_key_in(name, module)?)
+    }
+    /// The class a path written in `module` goes through (`Counter`, `a.Counter`): by its last
+    /// name, or for a name declared in several modules, the one the path leads to.
+    pub fn class_at(&self, path: &[String], module: &[String]) -> Option<&ClassInfo> {
+        let name = path.last()?;
+        if !self.same_named.contains(name) {
+            return self.class(name);
+        }
+        self.classes.get(&self.type_key_at(path, module)?)
+    }
+    pub fn enum_at(&self, path: &[String], module: &[String]) -> Option<&EnumInfo> {
+        let name = path.last()?;
+        if !self.same_named.contains(name) {
+            return self.enum_(name);
+        }
+        self.enums.get(&self.type_key_at(path, module)?)
+    }
+    /// The key of the class or enum `name` declared in `module`.
+    pub fn decl_key(&self, module: &[String], name: &str) -> String {
+        if self.same_named.contains(name) {
+            scoped_key(module, name)
+        } else {
+            name.to_string()
+        }
+    }
+    /// The key of the class or enum `name` means when written in `module`. A name declared in several
+    /// modules means the one declared in `module` or imported into it (by name or with `*`).
+    pub fn type_key_in(&self, name: &str, module: &[String]) -> Option<String> {
+        if !self.same_named.contains(name) {
+            return Some(name.to_string());
+        }
+        let key = scoped_key(module, name);
+        if self.classes.contains_key(&key) || self.enums.contains_key(&key) {
+            return Some(key);
+        }
+        if let Some(path) = self.imports.get(&(module.to_vec(), name.to_string())).filter(|p| p.len() > 1) {
+            return self.type_key_at(path, module);
+        }
+        self.globs.get(module).into_iter().flatten().filter(|g| !g.is_empty()).find_map(|glob| {
+            let path: Vec<String> = glob.iter().cloned().chain([name.to_string()]).collect();
+            self.type_key_at(&path, module)
+        })
+    }
+    /// The key of the class or enum a path written in `module` names (`a::Counter`, `crate::Counter`,
+    /// `super::b::Counter`), if the module the path leads to declares it.
+    pub fn type_key_at(&self, path: &[String], module: &[String]) -> Option<String> {
+        let (name, qual) = path.split_last()?;
+        if qual.is_empty() {
+            return self.type_key_in(name, module);
+        }
+        let target = self.module_path(qual, module, true)?;
+        if self.same_named.contains(name) {
+            let key = scoped_key(&target, name);
+            (self.classes.contains_key(&key) || self.enums.contains_key(&key)).then_some(key)
+        } else {
+            let found = self.classes.get(name).map(|c| &c.module).or_else(|| self.enums.get(name).map(|e| &e.module));
+            found.is_some_and(|m| *m == target).then(|| name.clone())
+        }
+    }
+    /// The module a path written in `module` leads to, as the generated Rust resolves it: from
+    /// `crate`, `self` or `super`, from the crate root for a top-level module (`join_path` adds
+    /// `crate::`), through a module imported by name (`import super::a`), else a child of `module`.
+    fn module_path(&self, qual: &[String], module: &[String], follow_imports: bool) -> Option<Vec<String>> {
+        let first = qual.first()?.as_str();
+        let (mut m, mut rest) = match first {
+            "crate" => (Vec::new(), &qual[1..]),
+            _ if first == self.crate_name => (Vec::new(), &qual[1..]),
+            "self" => (module.to_vec(), &qual[1..]),
+            "super" => (module.to_vec(), qual),
+            _ if self.modules.contains(first) => (Vec::new(), qual),
+            _ => match self.imports.get(&(module.to_vec(), first.to_string())).filter(|_| follow_imports) {
+                Some(p) => (self.module_path(p, module, false)?, &qual[1..]),
+                None => (module.to_vec(), qual),
+            },
+        };
+        while rest.first().is_some_and(|s| s == "super") {
+            m.pop()?;
+            rest = &rest[1..];
+        }
+        m.extend(rest.iter().cloned());
+        Some(m)
+    }
     /// Lifetime parameters of an Oxie class or enum whose only generics are lifetimes (`Token<'a>`),
     /// so that a bare `Token` in a signature can be completed.
     pub fn type_lifetimes(&self, name: &str) -> usize {
-        if let Some(c) = self.class(name) {
+        self.type_lifetimes_in(name, &[])
+    }
+    /// Like `type_lifetimes`, for `name` written in `module`.
+    pub fn type_lifetimes_in(&self, name: &str, module: &[String]) -> usize {
+        if let Some(c) = self.class_in(name, module) {
             return if c.type_params == 0 { c.lifetimes } else { 0 };
         }
-        match self.enum_(name) {
+        match self.enum_in(name, module) {
             Some(e) if !e.has_type_params => e.lifetimes,
             _ => 0,
         }
@@ -203,25 +320,28 @@ impl Crate {
         if matches!(variant, "Some" | "None" | "Ok" | "Err") {
             return None;
         }
-        match self.variant_owner.get(variant) {
-            Some(v) if v.len() == 1 => self.enum_(&v[0]),
-            Some(v) => {
-                let m = module?;
-                let local: Vec<&EnumInfo> = v.iter().filter_map(|n| self.enum_(n)).filter(|e| e.module == m).collect();
-                if local.len() == 1 {
-                    Some(local[0])
-                } else {
-                    None
-                }
-            }
-            _ => None,
+        let owners = self.variant_owner.get(variant)?;
+        let enum_of = |(m, n): &(Vec<String>, String)| if self.same_named.contains(n) { self.enums.get(&scoped_key(m, n)) } else { self.enum_(n) };
+        if owners.len() == 1 {
+            return enum_of(&owners[0]);
+        }
+        let m = module?;
+        let local: Vec<&EnumInfo> = owners.iter().filter(|(om, _)| om == m).filter_map(enum_of).collect();
+        if local.len() == 1 {
+            Some(local[0])
+        } else {
+            None
         }
     }
     pub fn is_trait(&self, name: &str) -> bool {
         self.traits.contains_key(name)
     }
     pub fn is_user_type(&self, name: &str) -> bool {
-        self.classes.contains_key(name) || self.enums.contains_key(name) || self.traits.contains_key(name)
+        self.classes.contains_key(name) || self.enums.contains_key(name) || self.traits.contains_key(name) || self.same_named.contains(name)
+    }
+    /// Whether some module declares a class `name`.
+    pub fn is_class_name(&self, name: &str) -> bool {
+        self.classes.contains_key(name) || self.same_named.contains(name) && self.classes.values().any(|c| c.name == name)
     }
 }
 
@@ -250,7 +370,7 @@ pub fn collect(units: &[SourceUnit], crate_name: &str, extern_crates: HashSet<St
     }
     // pass 3: inherent impl blocks add methods to classes
     for u in units {
-        collect_impls(&mut k, &u.file.items);
+        collect_impls(&mut k, &u.module, &u.file.items);
     }
     // pass 4: receiver inference (fixpoint over mutating methods)
     infer_receivers(&mut k, units);
@@ -409,21 +529,27 @@ fn has_attr(attrs: &[Attr], name: &str) -> bool {
 /// Kotlin-like value semantics: data classes and enums get Debug/Clone/PartialEq,
 /// plus Copy/Eq/Hash when every field type is known to support them.
 fn compute_derives(k: &mut Crate, units: &[SourceUnit]) {
-    fn gather<'a>(items: &'a [Item], out: &mut Vec<(&'a TypeDecl, &'a [Attr])>) {
+    fn gather<'a>(k: &Crate, module: &[String], items: &'a [Item], out: &mut Vec<(String, &'a TypeDecl, &'a [Attr])>) {
         for it in items {
             match &it.kind {
                 ItemKind::Type(t) => {
-                    out.push((t, &it.attrs));
-                    gather(&t.members, out);
+                    out.push((k.decl_key(module, &t.name), t, &it.attrs));
+                    gather(k, module, &t.members, out);
                 }
-                ItemKind::Mod { items, .. } => gather(items, out),
+                ItemKind::Mod { name, items } => {
+                    let mut m = module.to_vec();
+                    m.push(name.clone());
+                    gather(k, &m, items, out);
+                }
                 _ => {}
             }
         }
     }
+    // keyed like `classes`: a type whose name several modules declare doesn't count as `Copy` or
+    // `Hash` in field types, which only name it
     let mut decls = Vec::new();
     for u in units {
-        gather(&u.file.items, &mut decls);
+        gather(k, &u.module, &u.file.items, &mut decls);
     }
     let mut copy: HashSet<String> = HashSet::new();
     let mut hash: HashSet<String> = HashSet::new();
@@ -443,17 +569,17 @@ fn compute_derives(k: &mut Crate, units: &[SourceUnit]) {
     };
     for _ in 0..6 {
         let mut changed = false;
-        for (t, attrs) in &decls {
+        for (key, t, attrs) in &decls {
             if !eligible(t, attrs) {
                 continue;
             }
             let fts = field_types(t);
-            if !copy.contains(&t.name) && fts.iter().all(|ft| is_copy_simple(ft, &copy)) {
-                copy.insert(t.name.clone());
+            if !copy.contains(key) && fts.iter().all(|ft| is_copy_simple(ft, &copy)) {
+                copy.insert(key.clone());
                 changed = true;
             }
-            if !hash.contains(&t.name) && fts.iter().all(|ft| is_hash_simple(ft, &hash)) {
-                hash.insert(t.name.clone());
+            if !hash.contains(key) && fts.iter().all(|ft| is_hash_simple(ft, &hash)) {
+                hash.insert(key.clone());
                 changed = true;
             }
         }
@@ -461,23 +587,23 @@ fn compute_derives(k: &mut Crate, units: &[SourceUnit]) {
             break;
         }
     }
-    for (t, attrs) in &decls {
+    for (key, t, attrs) in &decls {
         let mut d: Vec<String> = Vec::new();
         if t.is_error {
             d.push("Debug".into());
         } else if has_attr(attrs, "no_auto_derive") {
         } else if matches!(t.kind, TypeKind::Data | TypeKind::Enum) {
             d.extend(["Debug", "Clone"].iter().map(|s| s.to_string()));
-            if only_lifetimes(&t.generics) && copy.contains(&t.name) {
+            if only_lifetimes(&t.generics) && copy.contains(key) {
                 d.push("Copy".into());
             }
             d.push("PartialEq".into());
-            if only_lifetimes(&t.generics) && hash.contains(&t.name) {
+            if only_lifetimes(&t.generics) && hash.contains(key) {
                 d.push("Eq".into());
                 d.push("Hash".into());
             }
         }
-        k.derives.insert(t.name.clone(), d);
+        k.derives.insert(key.clone(), d);
     }
 }
 
@@ -513,6 +639,57 @@ fn insert_unique<V>(map: &mut HashMap<String, V>, amb: &mut HashSet<String>, key
         amb.insert(key);
     } else {
         map.insert(key, v);
+    }
+}
+
+/// The key for a new class (`is_class`) or enum `name` declared in `module`: its name, or once
+/// another module declares the name too, `scoped_key` for every declaration of it. `None` for a
+/// second one in the same module, which is left out (the name is ambiguous there).
+fn type_key_for(k: &mut Crate, name: &str, module: &[String], is_class: bool) -> Option<String> {
+    if !k.same_named.contains(name) {
+        let class_mod = k.classes.get(name).map(|c| c.module.clone());
+        let enum_mod = k.enums.get(name).map(|e| e.module.clone());
+        if class_mod.iter().chain(&enum_mod).all(|m| m == module) {
+            if if is_class { class_mod.is_some() } else { enum_mod.is_some() } {
+                k.ambiguous.insert(name.to_string());
+                return None;
+            }
+            return Some(name.to_string());
+        }
+        k.same_named.insert(name.to_string());
+        if let Some(c) = k.classes.remove(name) {
+            k.classes.insert(scoped_key(&c.module, name), c);
+        }
+        if let Some(e) = k.enums.remove(name) {
+            k.enums.insert(scoped_key(&e.module, name), e);
+        }
+    }
+    let key = scoped_key(module, name);
+    let taken = if is_class { k.classes.contains_key(&key) } else { k.enums.contains_key(&key) };
+    (!taken).then_some(key)
+}
+
+/// Records what `module` imports: `import a::Counter` (or `a::{b::Counter, Point as P}`) by name,
+/// `import a::*` as a glob.
+fn collect_import(k: &mut Crate, module: &[String], prefix: &[String], tree: &UseTree) {
+    match tree {
+        UseTree::Path { segments, alias } => {
+            let path: Vec<String> = prefix.iter().chain(segments).cloned().collect();
+            if let Some(last) = path.last().filter(|l| path.len() > 1 && *l != "self") {
+                let name = alias.clone().unwrap_or_else(|| last.clone());
+                k.imports.insert((module.to_vec(), name), path);
+            }
+        }
+        UseTree::Glob { segments } => {
+            let path: Vec<String> = prefix.iter().chain(segments).cloned().collect();
+            k.globs.entry(module.to_vec()).or_default().push(path);
+        }
+        UseTree::Group { segments, items } => {
+            let path: Vec<String> = prefix.iter().chain(segments).cloned().collect();
+            for i in items {
+                collect_import(k, module, &path, i);
+            }
+        }
     }
 }
 
@@ -619,7 +796,9 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                         type_params: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Type { .. })).count(),
                         lifetimes: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count(),
                     };
-                    insert_unique(&mut k.classes, &mut k.ambiguous, t.name.clone(), info);
+                    if let Some(key) = type_key_for(k, &t.name, module, true) {
+                        k.classes.insert(key, info);
+                    }
                 }
                 TypeKind::Enum => {
                     let variants: Vec<(String, VariantShape)> = t
@@ -634,9 +813,6 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                             (v.name.clone(), shape)
                         })
                         .collect();
-                    for (vn, _) in &variants {
-                        k.variant_owner.entry(vn.clone()).or_default().push(t.name.clone());
-                    }
                     let mut methods = HashMap::new();
                     for m in &t.members {
                         if let ItemKind::Fun(f) = &m.kind {
@@ -652,9 +828,15 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
                         lifetimes: t.generics.params.iter().filter(|g| matches!(g, GenericParam::Lifetime { .. })).count(),
                         has_type_params: !only_lifetimes(&t.generics),
                     };
-                    insert_unique(&mut k.enums, &mut k.ambiguous, t.name.clone(), info);
+                    if let Some(key) = type_key_for(k, &t.name, module, false) {
+                        for (vn, _) in &info.variants {
+                            k.variant_owner.entry(vn.clone()).or_default().push((module.to_vec(), t.name.clone()));
+                        }
+                        k.enums.insert(key, info);
+                    }
                 }
             },
+            ItemKind::Import(decl) => collect_import(k, module, &[], &decl.tree),
             ItemKind::Mod { name, items } => {
                 let mut m = module.to_vec();
                 m.push(name.clone());
@@ -665,28 +847,43 @@ fn collect_items(k: &mut Crate, module: &[String], items: &[Item]) {
     }
 }
 
-fn collect_impls(k: &mut Crate, items: &[Item]) {
+/// The key of the class or enum an impl block written in `module` is for (`impl Counter`,
+/// `impl Display for a.Counter`), or the type's last name when it isn't an Oxie type.
+fn impl_owner(k: &Crate, imp: &ImplDecl, module: &[String]) -> Option<String> {
+    let name = imp.self_ty.last_name()?;
+    let path: Vec<String> = match &imp.self_ty {
+        Type::Path { segs, .. } => segs.iter().map(|s| s.name.clone()).collect(),
+        _ => vec![name.to_string()],
+    };
+    Some(k.type_key_at(&path, module).unwrap_or_else(|| name.to_string()))
+}
+
+fn collect_impls(k: &mut Crate, module: &[String], items: &[Item]) {
     for it in items {
         match &it.kind {
             ItemKind::Impl(imp) => {
-                let Some(name) = imp.self_ty.last_name() else { continue };
+                let Some(owner) = impl_owner(k, imp, module) else { continue };
                 let trait_info = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| k.traits.get(n)).cloned();
                 for m in &imp.members {
                     if let ItemKind::Fun(f) = &m.kind {
                         let trecv = trait_info.as_ref().and_then(|t| t.methods.get(&f.name)).map(|m| m.recv);
                         let mi = method_info_explicit(f, trecv).unwrap_or_else(|| default_mi(f));
-                        if let Some(c) = k.classes.get_mut(name) {
+                        if let Some(c) = k.classes.get_mut(&owner) {
                             if f.name == "new" && imp.trait_.is_none() {
                                 c.user_new = true;
                             }
                             c.methods.entry(f.name.clone()).or_insert(mi);
-                        } else if let Some(e) = k.enums.get_mut(name) {
+                        } else if let Some(e) = k.enums.get_mut(&owner) {
                             e.methods.entry(f.name.clone()).or_insert(mi);
                         }
                     }
                 }
             }
-            ItemKind::Mod { items, .. } => collect_impls(k, items),
+            ItemKind::Mod { name, items } => {
+                let mut m = module.to_vec();
+                m.push(name.clone());
+                collect_impls(k, &m, items);
+            }
             _ => {}
         }
     }
@@ -729,13 +926,14 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
     // gather method bodies per owner type, and the Oxie interfaces each type implements or extends
     let mut methods: Vec<MethodRef> = Vec::new();
     let mut supers: HashMap<String, Vec<String>> = HashMap::new();
-    fn gather<'a>(k: &Crate, items: &'a [Item], out: &mut Vec<MethodRef<'a>>, supers: &mut HashMap<String, Vec<String>>) {
+    fn gather<'a>(k: &Crate, module: &[String], items: &'a [Item], out: &mut Vec<MethodRef<'a>>, supers: &mut HashMap<String, Vec<String>>) {
         for it in items {
             match &it.kind {
                 ItemKind::Type(t) => {
-                    gather(k, &t.members, out, supers);
+                    gather(k, module, &t.members, out, supers);
+                    let owner = k.decl_key(module, &t.name);
                     let traits = t.supertypes.iter().filter_map(|st| st.last_name()).filter(|n| k.traits.contains_key(*n));
-                    supers.entry(t.name.clone()).or_default().extend(traits.map(String::from));
+                    supers.entry(owner.clone()).or_default().extend(traits.map(String::from));
                     for m in &t.members {
                         if let ItemKind::Fun(f) = &m.kind {
                             // methods implementing an Oxie interface take its receiver
@@ -752,7 +950,7 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                                     }
                                 }
                             }
-                            out.push(MethodRef { owner: t.name.clone(), fun: f, trait_recv: trecv, implements });
+                            out.push(MethodRef { owner: owner.clone(), fun: f, trait_recv: trecv, implements });
                         }
                     }
                 }
@@ -768,27 +966,31 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
                     }
                 }
                 ItemKind::Impl(imp) => {
-                    let Some(owner) = imp.self_ty.last_name() else { continue };
+                    let Some(owner) = impl_owner(k, imp, module) else { continue };
                     let tinfo = imp.trait_.as_ref().and_then(|t| t.last_name()).and_then(|n| k.traits.get(n));
                     if let Some(ti) = tinfo {
-                        supers.entry(owner.to_string()).or_default().push(ti.name.clone());
+                        supers.entry(owner.clone()).or_default().push(ti.name.clone());
                     }
                     for m in &imp.members {
                         if let ItemKind::Fun(f) = &m.kind {
                             let mi = tinfo.and_then(|t| t.methods.get(&f.name));
                             let trecv = mi.filter(|m| m.explicit).map(|m| m.recv);
                             let implements = mi.filter(|m| !m.explicit).and(tinfo.map(|t| t.name.clone()));
-                            out.push(MethodRef { owner: owner.to_string(), fun: f, trait_recv: trecv, implements });
+                            out.push(MethodRef { owner: owner.clone(), fun: f, trait_recv: trecv, implements });
                         }
                     }
                 }
-                ItemKind::Mod { items, .. } => gather(k, items, out, supers),
+                ItemKind::Mod { name, items } => {
+                    let mut m = module.to_vec();
+                    m.push(name.clone());
+                    gather(k, &m, items, out, supers);
+                }
                 _ => {}
             }
         }
     }
     for u in units {
-        gather(k, &u.file.items, &mut methods, &mut supers);
+        gather(k, &u.module, &u.file.items, &mut methods, &mut supers);
     }
 
     // initial: explicit receivers fixed, others start as Ref/Static
@@ -830,8 +1032,8 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             format!("the interface method `{}.{}` changes its object in `{}`, so every implementation takes `&mut self`", t, name, by)
         }
     };
-    // Methods sharing an owner and name (same-named classes in two modules) would undo each other's
-    // receiver every round, so a receiver is never lowered: `&self` < static < `&mut self`.
+    // Methods sharing an owner and name (`bump` in `impl Wrap<i32>` and in `impl Wrap<String>`) would
+    // undo each other's receiver every round, so a receiver is never lowered: `&self` < static < `&mut self`.
     let rank = |r: Recv| match r {
         Recv::RefMut => 2,
         Recv::Static => 1,
@@ -845,7 +1047,8 @@ fn infer_receivers(k: &mut Crate, units: &[SourceUnit]) {
             let fields: HashSet<String> = k.classes.get(&m.owner).map(|c| c.fields.iter().map(|f| f.name.clone()).collect()).unwrap_or_default();
             let recvs = callable_recvs(&m.owner, &decided, &supers);
             let facts = analyze_fun_with(m.fun, &fields, &recvs, &mut_params);
-            let returns_self = m.fun.ret.as_ref().is_some_and(|t| t.single_name() == Some("Self") || t.single_name() == Some(m.owner.as_str()));
+            let name = m.owner.rsplit("::").next().unwrap_or(&m.owner);
+            let returns_self = m.fun.ret.as_ref().is_some_and(|t| t.single_name() == Some("Self") || t.single_name() == Some(name));
             // implementations of an interface method that is `&mut self` stay `&mut self`
             let by = m.implements.as_ref().and_then(|t| trait_mut.get(&(t.clone(), m.fun.name.clone())).map(|by| (t, by)));
             let recv = if facts.mutates_self || by.is_some() {
@@ -1473,22 +1676,81 @@ class Chain(var n: i32) {
     fn methods_sharing_an_owner_and_name_dont_undo_each_other() {
         // one `bump` (and one `make`) would undo the other's receiver every round, forever
         let src = r#"
-mod a {
-    class Counter(var n: i32) {
-        fun bump() { n += 1 }
-        fun make(): Self = Counter(0)
-    }
+class Wrap<T>(var n: i32, val t: T)
+impl Wrap<i32> {
+    fun bump() { n += 1 }
+    fun make(): Self = Wrap(0, 0)
 }
-mod b {
-    class Counter(var n: i32) {
-        fun bump() {}
-        fun make(): Self = Counter(n)
-    }
+impl Wrap<String> {
+    fun bump() {}
+    fun make(): Self = Wrap(n, t.clone())
 }
 "#;
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || tx.send(receivers(src, "Counter")).unwrap());
+        std::thread::spawn(move || tx.send(receivers(src, "Wrap")).unwrap());
         let r = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("receiver inference doesn't end");
         assert_eq!(r["bump"], (Recv::RefMut, Some(("it changes `n`".into(), Some("n".into())))));
+    }
+
+    #[test]
+    fn same_named_classes_keep_their_own_receivers() {
+        let src = r#"
+mod a {
+    class Counter(var n: i32) {
+        fun bump() { n += 1 }
+    }
+}
+mod b {
+    class Counter(var log: Vec<String>) {
+        fun bump() {}
+    }
+    impl Counter {
+        fun reset() { log.clear() }
+    }
+}
+"#;
+        assert_eq!(receivers(src, "a::Counter")["bump"].0, Recv::RefMut);
+        let b = receivers(src, "b::Counter");
+        assert_eq!(b["bump"], (Recv::Ref, None));
+        assert_eq!(b["reset"].0, Recv::RefMut);
+    }
+
+    #[test]
+    fn a_name_several_modules_declare_means_the_one_in_scope() {
+        let src = r#"
+class Point(x: i32)
+mod a {
+    data class Point(x: i32, y: i32)
+    enum Shape { Dot }
+}
+mod b {
+    data class Point(label: String)
+    enum Shape { Dot }
+}
+mod c {
+    import super::b::Point
+    import super::a::*
+}
+mod d {
+    class Cache()
+}
+"#;
+        let (file, diags) = crate::parser::parse_file(src);
+        assert!(diags.is_empty(), "{:?}", diags);
+        let k = collect(&[SourceUnit { module: Vec::new(), file: &file }], "main", HashSet::new(), false);
+        let path = |s: &str| s.split("::").filter(|x| !x.is_empty()).map(String::from).collect::<Vec<_>>();
+        let point = |module: &str| k.class_in("Point", &path(module)).map(|c| c.module.clone());
+        assert_eq!(point(""), Some(path("")));
+        assert_eq!(point("a"), Some(path("a")));
+        assert_eq!(point("c"), Some(path("b")), "imported by name");
+        assert_eq!(k.enum_in("Shape", &path("c")).map(|e| e.module.clone()), Some(path("a")), "imported with `*`");
+        assert_eq!(k.class_at(&path("a::Point"), &[]).map(|c| c.fields.len()), Some(2));
+        assert_eq!(k.class_at(&path("super::b::Point"), &path("c")).map(|c| c.fields[0].name.clone()), Some("label".into()));
+        // a path names a class only through the module that declares it
+        assert_eq!(k.type_key_at(&path("d::Cache"), &[]), Some("Cache".into()));
+        assert_eq!(k.type_key_at(&path("std::Cache"), &[]), None);
+        // derives are decided per declaration
+        assert!(k.derives["a::Point"].iter().any(|d| d == "Copy"));
+        assert!(!k.derives["b::Point"].iter().any(|d| d == "Copy"));
     }
 }

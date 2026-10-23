@@ -241,7 +241,7 @@ impl<'a> Lowerer<'a> {
         if self.is_local(n) {
             return None;
         }
-        let c = self.k.class(n).filter(|c| c.has_generics)?;
+        let c = self.class_info(n).filter(|c| c.has_generics)?;
         let count = c.type_params;
         if count == 0 {
             return None;
@@ -586,14 +586,14 @@ impl<'a> Lowerer<'a> {
                 if let Some((p, _)) = self.as_path(recv) {
                     let owner = p.last().cloned().unwrap_or_default();
                     let owner = if owner == "Self" { self.class.as_ref().map(|c| c.name.clone()).unwrap_or_default() } else { owner };
-                    return self.k.class(&owner).and_then(|c| c.methods.get(name)).is_some_and(|m| m.throws);
+                    return self.class_info(&owner).and_then(|c| c.methods.get(name)).is_some_and(|m| m.throws);
                 }
                 let owner = match self.infer_type(recv) {
                     Some(Type::Ref { inner, .. }) => inner.single_name().map(|s| s.to_string()),
                     Some(t) => t.single_name().map(|s| s.to_string()),
                     None => None,
                 };
-                owner.and_then(|o| self.k.class(&o).and_then(|c| c.methods.get(name)).cloned()).is_some_and(|m| m.throws)
+                owner.and_then(|o| self.class_info(&o).and_then(|c| c.methods.get(name)).cloned()).is_some_and(|m| m.throws)
             }
             ExprKind::Await(x) => self.is_throwing_call(x),
             _ => false,
@@ -1385,7 +1385,7 @@ impl<'a> Lowerer<'a> {
                 self.e.w(&f);
                 return;
             }
-            if !self.is_local(n) && !self.k.classes.contains_key(n) && !self.k.funs.contains_key(n) {
+            if !self.is_local(n) && !self.k.is_class_name(n) && !self.k.funs.contains_key(n) {
                 if let Some(en) = self.k.variant_enum_in(n, Some(&self.module)) {
                     s.push_str(&format!("{}::{}", en.name, n));
                     self.e.w(&s);
@@ -1418,7 +1418,7 @@ impl<'a> Lowerer<'a> {
 
     /// Is `Type.method()` a call on the value of a fieldless struct (rather than a static call)?
     fn unit_value_method(&self, ty: &str, method: &str) -> bool {
-        let Some(c) = self.k.class(ty) else { return false };
+        let Some(c) = self.class_info(ty) else { return false };
         if !c.is_unit {
             return false;
         }
@@ -1502,7 +1502,7 @@ impl<'a> Lowerer<'a> {
                 let mut segs = p;
                 if segs[0] == "Self" {
                     // keep
-                } else if segs.len() == 2 && self.k.enum_(&segs[0]).is_none() {
+                } else if segs.len() == 2 && self.enum_info(&segs[0]).is_none() {
                     // fine
                 }
                 if segs.first().map(|s| s.as_str()) == Some("this") {
@@ -1584,7 +1584,7 @@ impl<'a> Lowerer<'a> {
                         return;
                     }
                 }
-                if let Some(cls) = self.k.class(&name).cloned() {
+                if let Some(cls) = self.class_info(&name).cloned() {
                     if !cls.is_tuple && !cls.is_union {
                         let g = generics.as_ref().map(|g| format!("::{}", self.generic_args_text(g))).unwrap_or_default();
                         self.e.w(&format!("{}{}::new", esc(&name), g));
@@ -1641,14 +1641,15 @@ impl<'a> Lowerer<'a> {
         }
         let n = segs.len();
         if n >= 2 {
+            // the type the call goes through: `Self`, `Color` or `shapes.Color`
             let owner = if segs[n - 2] == "Self" {
-                self.class.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "Self".into())
+                vec![self.class.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "Self".into())]
             } else {
-                segs[n - 2].clone()
+                segs[..n - 1].to_vec()
             };
             let last = &segs[n - 1];
             let path = self.join_path(segs);
-            if let Some(en) = self.k.enum_(&owner).cloned() {
+            if let Some(en) = self.enum_at(&owner).cloned() {
                 if let Some(shape) = en.variant(last).cloned() {
                     self.variant_ctor(&path, &shape, args, span);
                     return;
@@ -1659,7 +1660,7 @@ impl<'a> Lowerer<'a> {
                     return;
                 }
             }
-            if let Some(c) = self.k.class(&owner).cloned() {
+            if let Some(c) = self.class_at(&owner).cloned() {
                 if last == "new" && !c.user_new {
                     self.e.w(&path);
                     if let Some(g) = generics {
@@ -1673,6 +1674,17 @@ impl<'a> Lowerer<'a> {
                 if let Some(m) = c.methods.get(last).cloned() {
                     self.e.w(&path);
                     self.arg_list(args, Some(&m.params), TyPos::Param, span);
+                    return;
+                }
+            }
+            // `shapes.Circle(2.0)`: a class constructed through the module that declares it
+            if let Some(c) = self.k.type_key_at(segs, &self.module).and_then(|key| self.k.classes.get(&key)).cloned() {
+                if !c.is_tuple && !c.is_union {
+                    let g = generics.map(|g| format!("::{}", self.generic_args_text(g))).unwrap_or_default();
+                    self.e.w(&format!("{}{}::new", path, g));
+                    let params = c.ctor_params();
+                    let pos = if c.user_new { TyPos::Param } else { TyPos::Field };
+                    self.arg_list(args, Some(&params), pos, span);
                     return;
                 }
             }
@@ -2028,7 +2040,7 @@ impl<'a> Lowerer<'a> {
                     let gt = self.generic_args_text(g);
                     self.e.w(&format!("::{}", gt));
                 }
-                let params = self.k.class(n).and_then(|c| c.methods.get(name)).map(|m| m.params.clone());
+                let params = self.class_info(n).and_then(|c| c.methods.get(name)).map(|m| m.params.clone());
                 self.arg_list(args, params.as_deref(), TyPos::Param, span);
                 return;
             }
@@ -2061,7 +2073,7 @@ impl<'a> Lowerer<'a> {
                 Some(t) => t.single_name().map(|s| s.to_string()),
                 None => None,
             };
-            let m = owner.as_ref().and_then(|o| self.k.class(o).and_then(|c| c.methods.get(name)).or_else(|| self.k.enum_(o).and_then(|e| e.methods.get(name)))).cloned();
+            let m = owner.as_ref().and_then(|o| self.class_info(o).and_then(|c| c.methods.get(name)).or_else(|| self.enum_info(o).and_then(|e| e.methods.get(name)))).cloned();
             if let Some(m) = m {
                 self.expr(recv, P_POSTFIX);
                 self.e.w(&format!(".{}", esc(name)));
@@ -3090,7 +3102,7 @@ impl<'a> Lowerer<'a> {
             Some(VariantShape::Named(f)) => f,
             _ => owner
                 .as_ref()
-                .and_then(|o| self.k.class(o))
+                .and_then(|o| self.class_info(o))
                 .map(|c| c.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect())
                 .unwrap_or_default(),
         };
