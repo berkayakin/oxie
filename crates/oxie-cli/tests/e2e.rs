@@ -80,13 +80,18 @@ fn diagnostics_point_at_oxie_sources() {
             .iter()
             .map(|f| (f.file_name().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(f).unwrap()))
             .collect();
-        // (file name, line, text)
-        let comments = |prefix: &str| -> Vec<(String, String, String)> {
+        // (`file:line:`, or `file:line:col` and its line end for `// error: <line>:<col>: <text>`;
+        // the text)
+        let comments = |prefix: &str| -> Vec<(String, String)> {
             let mut out = Vec::new();
             for (name, src) in &files {
                 for rest in src.lines().filter_map(|l| l.trim().strip_prefix(prefix)) {
                     let (line, text) = rest.trim().split_once(':').unwrap();
-                    out.push((name.clone(), line.trim().to_string(), text.trim().to_string()));
+                    let loc = match text.split_once(':') {
+                        Some((col, rest)) if !col.is_empty() && col.chars().all(|c| c.is_ascii_digit()) => (format!("{}:{}:{}\n", name, line.trim(), col), rest),
+                        _ => (format!("{}:{}:", name, line.trim()), text),
+                    };
+                    out.push((loc.0, loc.1.trim().to_string()));
                 }
             }
             out
@@ -107,17 +112,15 @@ fn diagnostics_point_at_oxie_sources() {
         if stderr.contains("a bug in Oxie") {
             failures.push(format!("{}: reported as a compiler bug\nstderr:\n{}", p.display(), stderr));
         }
-        for (name, line, text) in expected {
-            let loc = format!("{}:{}:", name, line);
+        for (loc, text) in expected {
             let found = stderr.split("\n\n").any(|block| block.contains(&loc) && block.contains(&text));
             if !found {
-                failures.push(format!("{}: missing error at {}:{} containing `{}`\nstderr:\n{}", p.display(), name, line, text, stderr));
+                failures.push(format!("{}: missing error at {} containing `{}`\nstderr:\n{}", p.display(), loc.trim(), text, stderr));
             }
         }
-        for (name, line, text) in comments("// not:") {
-            let loc = format!("{}:{}:", name, line);
+        for (loc, text) in comments("// not:") {
             if stderr.split("\n\n").any(|block| block.contains(&loc) && block.contains(&text)) {
-                failures.push(format!("{}: unexpected error at {}:{} containing `{}`\nstderr:\n{}", p.display(), name, line, text, stderr));
+                failures.push(format!("{}: unexpected error at {} containing `{}`\nstderr:\n{}", p.display(), loc.trim(), text, stderr));
             }
         }
         // rustc reports some mistakes twice; each is shown once

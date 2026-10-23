@@ -72,7 +72,11 @@ The compiler is a library (`oxie-compiler`) with no dependencies. `oxie-build` c
 
 The `Lowerer` walks one file and writes Rust with an `Emitter` that tracks indentation and
 records source-map marks (generated line/column → source offset) at every statement and
-expression.
+expression, and at each name a format string reads inline (`{low}` maps to the `$` of `$low`),
+since rustc points inside the string for errors about it. Names Oxie introduces (`__oxie_v1`,
+`'__oxie_try1`) are numbered per function, so changing a function renumbers only its own.
+Multi-arm `match` lowerings (`?:` with a default that isn't a literal, `?` inside `try`) put
+each arm on its own line, as rustfmt does.
 
 Contexts tracked while lowering:
 

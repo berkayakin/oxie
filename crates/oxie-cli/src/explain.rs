@@ -529,10 +529,14 @@ fn trait_missing(d: &mut MappedDiag, sources: &Sources, lines: &[&str], names: &
     }
     let Some(ty) = names.first() else { return };
     let display = msg.ends_with("doesn't implement `std::fmt::Display`");
-    let debug = msg.ends_with("doesn't implement `Debug`") || msg.ends_with("doesn't implement `std::fmt::Debug`");
+    let debug = msg.ends_with("doesn't implement `std::fmt::Debug`") || msg.ends_with("doesn't implement `Debug`");
     if !display && !debug {
         bound_fix(d, lines);
         return;
+    }
+    // a name read inline maps to its `$`: underline the whole `$low` / `${low}`
+    if let Some(len) = placeholder_len(lines.get(d.line as usize).copied().unwrap_or(""), d.col) {
+        (d.end_line, d.end_col) = (d.line, d.col + len);
     }
     if is_type_param(ty) {
         bound_fix(d, lines);
@@ -555,6 +559,31 @@ fn trait_missing(d: &mut MappedDiag, sources: &Sources, lines: &[&str], names: &
         }
     } else if user_kind.is_some() {
         d.notes.push(help(&format!("`data class` and `enum` get a debug form automatically; for a plain `class`, add `@derive(Debug)` to `{}`.", base)));
+    }
+}
+
+/// The length of the template placeholder (`$name`, `${...}`) starting at `col`.
+fn placeholder_len(line: &str, col: u32) -> Option<u32> {
+    let rest: Vec<char> = line.chars().skip(col as usize).collect();
+    match rest.get(1)? {
+        '{' if rest[0] == '$' => {
+            let mut depth = 0;
+            for (i, c) in rest.iter().enumerate().skip(1) {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(i as u32 + 1);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        c if rest[0] == '$' && (c.is_alphabetic() || *c == '_') => Some(1 + rest[1..].iter().take_while(|c| is_ident_char(**c)).count() as u32),
+        _ => None,
     }
 }
 
@@ -1351,6 +1380,9 @@ mod tests {
         assert_eq!(byte_offset("ab\ncdé f", 1, 4), 8);
         assert_eq!(between("the trait bound `String: ElvisOr<_>` is not satisfied", "the trait bound `", ": Elvis"), Some("String".into()));
         assert_eq!(code(r#"val s = "a // b" // note"#), r#"val s = "a // b" "#);
+        assert_eq!(placeholder_len(r#"println("low: $low items")"#, 14), Some(4));
+        assert_eq!(placeholder_len(r#"println("low: ${low.len()} items")"#, 14), Some(12));
+        assert_eq!(placeholder_len(r#"println("low: ${low} items")"#, 15), None);
         assert!(declares_fun("fun keep(v: Vec<i32>) = v", "keep") && !declares_fun("// see fun keep(v)", "keep"));
     }
 

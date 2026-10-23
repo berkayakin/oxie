@@ -41,6 +41,12 @@
   or a `shared class` is declared in another file, the error points there
   (`::: src/text.oxi:3:35`) and its fix edits that file, in the terminal and as a quick fix in
   editors. Before, they only found declarations in the error's own file.
+* An error about a name read in a template (`println("low stock: $low")` with a `Vec`) points
+  at `$low` instead of at `println`.
+* Generated Rust: `?:` with a default that isn't a literal and `?` inside `try` put each `match`
+  arm on its own line instead of one long line; names Oxie introduces (`__oxie_v1`) are
+  numbered per function, so changing a function doesn't renumber the rest of the file; the
+  header of a script's generated file names the script instead of `main.oxi`.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are

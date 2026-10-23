@@ -18,3 +18,9 @@ data class User(name: String, address: Address?)
 // `?.` reads `city` through the borrowed `u`, so `?: "unknown"` is a `&str`
 fun city(u: &User): String = u.address?.city ?: "unknown"
 // error: 19: fix: use a copy (`.clone()`): `fun city(u: &User): String = u.address?.city.clone() ?: "unknown"`
+
+// the name read in a template is pointed at, not the whole `println`
+fun show(low: Vec<&str>) {
+    println("low stock: $low items")
+    // error: 24:25: has no text form for `$` templates
+}

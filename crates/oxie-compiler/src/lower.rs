@@ -1343,6 +1343,8 @@ impl<'a> Lowerer<'a> {
 
     /// Emits a function body block: tail value for non-unit functions, `Ok(())` for unit throwing ones.
     pub(crate) fn fn_block(&mut self, b: &Block, ret: Option<&Type>, throws: bool) {
+        // generated names are numbered per function, so a change renumbers only its function
+        let outer_tmp = std::mem::take(&mut self.tmp);
         let outer = self.scopes.iter().flat_map(|s| s.keys().cloned()).collect();
         self.reused_iters.extend(visit::reused_loop_iters(outer, b));
         self.e.w("{");
@@ -1365,6 +1367,7 @@ impl<'a> Lowerer<'a> {
         self.e.dedent();
         self.e.nl();
         self.e.w("}");
+        self.tmp = outer_tmp;
     }
 
     fn ext_fun(&mut self, it: &Item, f: &FunDecl, ctx: ItemCtx) {

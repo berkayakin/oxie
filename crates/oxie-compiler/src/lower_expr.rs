@@ -824,7 +824,11 @@ impl<'a> Lowerer<'a> {
                     let err = self.fresh("e");
                     self.e.w("match ");
                     self.expr(x, P_LOWEST);
-                    self.e.w(&format!(" {{ Ok({v}) => {v}, Err({err}) => break '{label} Err(::std::convert::From::from({err})) }}"));
+                    self.e.w(" {");
+                    self.e.indent();
+                    self.e.w(&format!("\nOk({v}) => {v},\nErr({err}) => break '{label} Err(::std::convert::From::from({err})),"));
+                    self.e.dedent();
+                    self.e.w("\n}");
                 } else {
                     self.expr(x, P_POSTFIX);
                     self.e.w("?");
@@ -1930,25 +1934,35 @@ impl<'a> Lowerer<'a> {
 
     /// `"text {} {name}", args` for a template.
     pub(crate) fn format_args(&mut self, parts: &[TemplatePart]) {
-        let mut fmt = String::new();
+        // the format string in pieces, each name read inline (`{low}`) with the span of its
+        // name: rustc points inside the string for errors about it (`low` has no `Display`)
+        let mut pieces: Vec<(String, Option<Span>)> = Vec::new();
         let mut args: Vec<&Expr> = Vec::new();
         for p in parts {
             match p {
-                TemplatePart::Lit(s) => fmt.push_str(&escape_braces(s)),
+                TemplatePart::Lit(s) => pieces.push((escape_braces(s), None)),
                 TemplatePart::Expr(e, spec) => {
                     let spec_s = spec.as_ref().map(|s| format!(":{}", s)).unwrap_or_default();
                     if let Some(n) = e.ident() {
                         if self.is_local(n) && !n.starts_with("r#") && esc(n) == n {
-                            fmt.push_str(&format!("{{{}{}}}", n, spec_s));
+                            pieces.push((format!("{{{}{}}}", n, spec_s), Some(e.span)));
                             continue;
                         }
                     }
-                    fmt.push_str(&format!("{{{}}}", spec_s));
+                    pieces.push((format!("{{{}}}", spec_s), None));
                     args.push(e);
                 }
             }
         }
-        self.e.w(&format!("\"{}\"", fmt));
+        self.e.w("\"");
+        for (text, span) in pieces {
+            if let Some(s) = span {
+                // the `{` maps to the `$` of `$low` (the `{` of `${low}`), right before the name
+                self.e.mark(Span::empty_at(s.start.saturating_sub(1)));
+            }
+            self.e.w(&text);
+        }
+        self.e.w("\"");
         for a in args {
             self.e.w(", ");
             self.expr(a, P_LOWEST);
@@ -2532,9 +2546,13 @@ impl<'a> Lowerer<'a> {
         self.e.w(&format!("match {}::Elvis::opt(", RT));
         self.expr(l, P_LOWEST);
         self.force_safe = saved;
-        self.e.w(&format!(") {{ Some({v}) => {v}, None => "));
+        self.e.w(") {");
+        self.e.indent();
+        self.e.w(&format!("\nSome({v}) => {v},\nNone => "));
         self.expr(r, P_LOWEST);
-        self.e.w(" }");
+        self.e.w(",");
+        self.e.dedent();
+        self.e.w("\n}");
     }
 
     fn return_expr(&mut self, v: Option<&Expr>) {
