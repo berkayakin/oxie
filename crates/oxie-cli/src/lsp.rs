@@ -301,7 +301,8 @@ impl Server {
             let result = cargo::check_collect(&root, target_dir.as_deref()).unwrap_or_default();
             let mut by_file: HashMap<PathBuf, Vec<Value>> = HashMap::new();
             for d in result {
-                if !d.from_oxie {
+                // a compiler bug inside the runtime module has no .oxi file to show it on
+                if !d.from_oxie || d.file.extension().is_none_or(|e| e != "oxi") {
                     continue;
                 }
                 let text = std::fs::read_to_string(&d.file).unwrap_or_default();

@@ -5,6 +5,9 @@
 * Panics point at the `.oxi` source: `oxie run` and `oxie test` rewrite the location of a
   panic, backtrace frames and failed assertions in tests from the generated Rust to the `.oxi`
   line they came from.
+* Errors only a bug in Oxie can cause (inside the support module, or a Rust syntax error in
+  generated code) are reported as "Oxie generated Rust that doesn't compile", with rustc's
+  message and the generated line, instead of as an error in your code.
 * A VS Code extension in `editors/vscode-oxie`: highlighting, the language server, ▶ run and
   test buttons, the generated Rust beside the source, tasks and snippets.
 * Language server: files opened through a symlinked directory (on macOS, anything under `/tmp`)

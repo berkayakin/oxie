@@ -163,6 +163,55 @@ impl Mapper {
         Some((map.source.clone(), sl + 1, sc + 1))
     }
 
+    /// An error only a bug in Oxie can cause: one inside the runtime module, or a Rust syntax
+    /// error in code generated from a file without verbatim Rust (`rust { }` blocks and macro
+    /// calls are copied as they are, so their syntax errors are the user's). It is reported as
+    /// such, at the nearest `.oxi` position, with rustc's message and the generated line.
+    fn compiler_bug(&mut self, root: &Path, span: &Value, level: &str, code: Option<&str>, message: &str) -> Option<MappedDiag> {
+        const SYNTAX: &[&str] = &["expected ", "unexpected ", "mismatched closing delimiter", "unclosed delimiter", "this file contains an unclosed delimiter", "unknown start of token", "unterminated "];
+        if level != "error" {
+            return None;
+        }
+        let gen = Self::gen_path(root, span)?;
+        let n = |k: &str| span.get(k).and_then(|v| v.as_u64()).map(|v| v as u32);
+        let (gl, gc) = (n("line_start")?, n("column_start")?);
+        let (file, line, col) = if gen.file_name().is_some_and(|f| f == "__oxie.rs") {
+            (gen.clone(), gl - 1, gc - 1)
+        } else if code.is_none() && SYNTAX.iter().any(|p| message.starts_with(p)) {
+            let (src, sl, sc) = self.map_location(&gen, gl, gc)?;
+            if has_verbatim_rust(self.text_of(&src)) {
+                return None;
+            }
+            (src, sl - 1, sc - 1)
+        } else {
+            return None;
+        };
+        let generated = self.text_of(&gen).lines().nth(gl as usize - 1).unwrap_or("").trim().to_string();
+        Some(MappedDiag {
+            level: "error".into(),
+            code: None,
+            message: "Oxie generated Rust that doesn't compile (a bug in Oxie)".into(),
+            file,
+            line,
+            col,
+            end_line: line,
+            end_col: col + 1,
+            label: None,
+            notes: vec![
+                format!("rustc: {} ({}:{}:{})", message, gen.display(), gl, gc),
+                format!("generated: `{}`", generated),
+                "help: please report it at https://github.com/oxie-lang/oxie/issues with the .oxi code; `oxie emit <file>` prints the generated Rust".into(),
+            ],
+            from_oxie: true,
+            secondary: Vec::new(),
+            suggestions: Vec::new(),
+            raw_suggestions: Vec::new(),
+            rust_message: None,
+            gen_text: None,
+            fixes: Vec::new(),
+        })
+    }
+
     fn gen_path(root: &Path, span: &Value) -> Option<PathBuf> {
         let mut path = PathBuf::from(span.get("file_name")?.as_str()?);
         if path.is_relative() {
@@ -199,6 +248,9 @@ impl Mapper {
         // prefer the deepest macro expansion site that is in user code
         let primary = spans.iter().find(|s| s.get("is_primary").and_then(|p| p.as_bool()).unwrap_or(false)).or(spans.first())?;
         let span = expansion_site(primary);
+        if let Some(d) = self.compiler_bug(root, span, &level, code.as_deref(), &message) {
+            return Some(d);
+        }
         let (file, line, col, end_line, end_col, from_oxie) = self.map_span(root, span)?;
         let label = primary.get("label").and_then(|l| l.as_str()).map(|s| s.to_string());
         let gen_text = self.span_text(root, span);
@@ -277,6 +329,13 @@ impl Mapper {
         }
         Some(d)
     }
+}
+
+/// Does the source hold Rust that Oxie copies as it is: a `rust { }` block or a macro call
+/// (`name!(..)`)?
+fn has_verbatim_rust(src: &str) -> bool {
+    let b = src.as_bytes();
+    src.contains("rust {") || src.contains("rust{") || (1..b.len().saturating_sub(1)).any(|i| b[i] == b'!' && matches!(b[i + 1], b'(' | b'[' | b'{') && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
 }
 
 fn expansion_site(span: &Value) -> &Value {
@@ -479,4 +538,61 @@ pub fn check_collect(root: &Path, target_dir: Option<&Path>) -> std::io::Result<
         }
     }
     Ok(diags)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A generated `main.rs` (with its map) and `__oxie.rs` for `src`, in a fresh directory.
+    fn generated(name: &str, src: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("oxie-bugs-{}-{}", std::process::id(), name));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("app.oxi"), src).unwrap();
+        std::fs::write(dir.join("main.rs"), "fn main() {\n    let x = 1 2;\n}\n").unwrap();
+        std::fs::write(dir.join("main.rs.map"), format!("oxie-sourcemap 1\n{}\n0 0 0 0\n1 4 1 4\n", dir.join("app.oxi").display())).unwrap();
+        std::fs::write(dir.join("__oxie.rs"), "pub fn helper() {\n    undefined();\n}\n").unwrap();
+        dir
+    }
+
+    fn message(file: &Path, line: u32, col: u32, code: Option<&str>, text: &str) -> Value {
+        serde_json::json!({
+            "level": "error",
+            "message": text,
+            "code": code.map(|c| serde_json::json!({"code": c})),
+            "spans": [{"file_name": file.display().to_string(), "line_start": line, "line_end": line, "column_start": col, "column_end": col + 1, "is_primary": true, "label": null, "expansion": null}],
+            "children": []
+        })
+    }
+
+    #[test]
+    fn syntax_errors_in_generated_code_are_compiler_bugs() {
+        let dir = generated("syntax", "fun main() {\n    val x = 1\n}\n");
+        let d = Mapper::default().map_message(&dir, &message(&dir.join("main.rs"), 2, 15, None, "expected `;`, found `2`")).unwrap();
+        assert!(d.message.contains("a bug in Oxie"), "{}", d.message);
+        assert_eq!((d.file.file_name().unwrap().to_str(), d.line), (Some("app.oxi"), 1));
+        assert!(d.notes.iter().any(|n| n.contains("let x = 1 2;")), "{:?}", d.notes);
+        // an error with a code is a type or borrow error, which the user can cause
+        let d = Mapper::default().map_message(&dir, &message(&dir.join("main.rs"), 2, 13, Some("E0308"), "mismatched types")).unwrap();
+        assert!(!d.message.contains("a bug in Oxie"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn syntax_errors_in_verbatim_rust_are_the_users() {
+        let dir = generated("verbatim", "fun main() {\n    rust { let x = 1 2; }\n}\n");
+        let d = Mapper::default().map_message(&dir, &message(&dir.join("main.rs"), 2, 15, None, "expected `;`, found `2`")).unwrap();
+        assert!(!d.message.contains("a bug in Oxie"), "{}", d.message);
+        assert!(has_verbatim_rust("val v = my_macro!(1)") && !has_verbatim_rust("if (!(a && b)) x != y"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn errors_in_the_runtime_module_are_compiler_bugs() {
+        let dir = generated("runtime", "fun main() {}\n");
+        let d = Mapper::default().map_message(&dir, &message(&dir.join("__oxie.rs"), 2, 5, Some("E0425"), "cannot find function `undefined` in this scope")).unwrap();
+        assert!(d.message.contains("a bug in Oxie"), "{}", d.message);
+        assert_eq!(d.file.file_name().unwrap(), "__oxie.rs");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -79,6 +79,10 @@ fn diagnostics_point_at_oxie_sources() {
             failures.push(format!("{}: expected compilation to fail", p.display()));
             continue;
         }
+        // user errors must never be reported as Oxie generating invalid Rust
+        if stderr.contains("a bug in Oxie") {
+            failures.push(format!("{}: reported as a compiler bug\nstderr:\n{}", p.display(), stderr));
+        }
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         for (line, text) in expected {
             let loc = format!("{}:{}:", name, line);

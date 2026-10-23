@@ -114,6 +114,20 @@ the fixes are code actions (quick fixes).
 
 Each generated file has a source map next to it (`main.rs.map`) used for the translation.
 
+Some errors can only come from a bug in Oxie: an error inside the support module `__oxie.rs`,
+or a Rust syntax error in code generated from a file that has no `rust { }` block or macro call
+(those are copied as they are). They are reported as such, at the nearest `.oxi` line, with
+rustc's message and the generated line, so they aren't mistaken for mistakes in your code:
+
+```
+error: Oxie generated Rust that doesn't compile (a bug in Oxie)
+ --> src/main.oxi:4:5
+  = rustc: expected `;`, found `2` (/.../out/oxie/main.rs:9:15)
+  = generated: `let x = 1 2;`
+  = help: please report it at https://github.com/oxie-lang/oxie/issues with the .oxi code;
+    `oxie emit <file>` prints the generated Rust
+```
+
 The maps are used at run time too: when a program run with `oxie run` or `oxie test` panics,
 the message, the backtrace frames (`RUST_BACKTRACE=1`) and failed assertions in tests point at
 `.oxi` lines instead of the generated Rust:
