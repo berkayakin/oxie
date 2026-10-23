@@ -405,8 +405,8 @@ fn scripts_opened_together_are_all_checked() {
 }
 
 /// Every quick fix offered for the programs (and projects) in `tests/diagnostics` makes the
-/// error it is offered for go away: each fix is applied on its own, as an editor would, to a
-/// copy of the program, which is then built again.
+/// error it is offered for go away, and adds no error to the lines it changes: each fix is
+/// applied on its own, as an editor would, to a copy of the program, which is then built again.
 #[test]
 fn quick_fixes_fix_their_errors() {
     let dir = oxie_compiler::compile::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/diagnostics")).unwrap();
@@ -425,7 +425,7 @@ fn quick_fixes_fix_their_errors() {
 }
 
 /// Applies each fix offered for `p` (a program, or a project directory) to a fresh copy of it and
-/// builds that: how many fixes there were, and the ones that left their error.
+/// builds that: how many fixes there were, and the ones that left their error or added one.
 fn check_fixes(p: &Path, cache: &Path) -> (usize, Vec<String>) {
     let name = p.file_name().unwrap().to_string_lossy().to_string();
     let project = p.is_dir();
@@ -481,8 +481,8 @@ fn check_fixes(p: &Path, cache: &Path) -> (usize, Vec<String>) {
         for (i, fix) in d["data"]["fixes"].as_array().into_iter().flatten().enumerate() {
             checked += 1;
             let fixed = copy_to(&fixes_dir.join(format!("{}-{}-{}", name, line + 1, i)));
-            // the error's line after the fix, which may add or remove lines above it
-            let mut moved = 0;
+            // the lines of this file the fix replaces: (first, last, lines added, lines of the new text)
+            let mut replaced: Vec<(i64, i64, i64, i64)> = Vec::new();
             let mut edits: Vec<&Value> = fix["edits"].as_array().unwrap().iter().collect();
             edits.sort_by_key(|e| std::cmp::Reverse((e["range"]["start"]["line"].as_u64(), e["range"]["start"]["character"].as_u64())));
             for e in edits {
@@ -491,11 +491,29 @@ fn check_fixes(p: &Path, cache: &Path) -> (usize, Vec<String>) {
                 let mut text = std::fs::read_to_string(&target).unwrap();
                 let (start, end) = (offset(&text, &e["range"]["start"]), offset(&text, &e["range"]["end"]));
                 let new = e["newText"].as_str().unwrap();
-                if target.ends_with(&main_name) && e["range"]["end"]["line"].as_i64().unwrap() < line {
-                    moved += new.matches('\n').count() as i64 - text[start..end].matches('\n').count() as i64;
+                if target.ends_with(&main_name) {
+                    let (first, last) = (e["range"]["start"]["line"].as_i64().unwrap(), e["range"]["end"]["line"].as_i64().unwrap());
+                    let lines = new.matches('\n').count() as i64;
+                    replaced.push((first, last, lines - text[start..end].matches('\n').count() as i64, lines));
                 }
                 text.replace_range(start..end, new);
                 std::fs::write(&target, text).unwrap();
+            }
+            // a line after the fix, which may add or remove lines above it; a replaced line is
+            // where its replacement starts
+            let after = |l: i64| replaced.iter().find(|r| r.0 <= l && l <= r.1).map_or(l, |r| r.0) + replaced.iter().filter(|r| r.1 < l).map(|r| r.2).sum::<i64>();
+            // the kinds of error lines `from..=to` had before the fix
+            let had = |from: i64, to: i64| -> Vec<String> { rustc.iter().filter(|o| o["range"]["start"]["line"].as_i64().is_some_and(|l| from <= l && l <= to)).map(|o| kind(o)).collect() };
+            // the lines to check after the fix, with the errors they may have: the error's line,
+            // and the lines the fix wrote
+            let mut check: Vec<(i64, Vec<String>)> = vec![(after(line), before.clone())];
+            for &(first, last, _, lines) in &replaced {
+                for l in (0..=lines).map(|k| after(first) + k) {
+                    match check.iter_mut().find(|c| c.0 == l) {
+                        Some(c) => c.1.extend(had(first, last)),
+                        None => check.push((l, had(first, last))),
+                    }
+                }
             }
             let title = format!("{}:{}: the fix `{}` for {}", p.display(), line + 1, fix["title"].as_str().unwrap_or(""), code);
             // the fixed program is still valid Oxie (rustc never sees it otherwise)
@@ -509,13 +527,15 @@ fn check_fixes(p: &Path, cache: &Path) -> (usize, Vec<String>) {
                 oxie().arg("run").arg(fixed.join(&name)).current_dir(&fixed).env("OXIE_CACHE", cache).stdin(Stdio::null()).output().unwrap()
             };
             let stderr = String::from_utf8_lossy(&out.stderr);
-            let at = format!("{}:{}:", main_name, line + 1 + moved);
-            // the errors now on its line: not the one it was for, and none it didn't have
-            for head in stderr.split("\n\n").filter(|b| b.contains(&at)).filter_map(|b| b.lines().next()).filter(|h| h.starts_with("error")) {
-                if head.contains(&code) {
-                    failures.push(format!("{} leaves the error\n{}", title, stderr));
-                } else if !before.iter().any(|k| head.contains(k.as_str())) {
-                    failures.push(format!("{} adds an error on its line: {}\n{}", title, head, stderr));
+            // the errors now on these lines: not the one it was for, and none they didn't have
+            for (l, had) in &check {
+                let at = format!("{}:{}:", main_name, l + 1);
+                for head in stderr.split("\n\n").filter(|b| b.contains(&at)).filter_map(|b| b.lines().next()).filter(|h| h.starts_with("error")) {
+                    if *l == after(line) && head.contains(&code) {
+                        failures.push(format!("{} leaves the error\n{}", title, stderr));
+                    } else if !had.iter().any(|k| head.contains(k.as_str())) {
+                        failures.push(format!("{} adds an error on line {}: {}\n{}", title, l + 1, head, stderr));
+                    }
                 }
             }
             let _ = std::fs::remove_dir_all(&fixed);

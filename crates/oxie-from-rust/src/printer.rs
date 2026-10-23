@@ -454,6 +454,9 @@ impl<'a> Printer<'a> {
             _ => return None,
         };
         let syn::Stmt::Expr(body, None) = &f.block.stmts[0] else { return None };
+        if !crate::expr::expr_attrs(body).is_empty() {
+            return None;
+        }
         // the printer context of a method of this type
         let saved = std::mem::take(&mut self.cx);
         self.cx = self.method_cx(decl, &f.sig, &f.block, &HashSet::new());
@@ -470,7 +473,7 @@ impl<'a> Printer<'a> {
             }
             let mut arms = Vec::new();
             for arm in &m.arms {
-                if arm.guard.is_some() {
+                if arm.guard.is_some() || !arm.attrs.is_empty() {
                     return None;
                 }
                 let b = match &*arm.body {
@@ -497,6 +500,9 @@ impl<'a> Printer<'a> {
 
     /// `write!(f, "...", args)` / `f.write_str("...")` as an Oxie string.
     fn write_template(&mut self, e: &syn::Expr, f: &str) -> Option<String> {
+        if !crate::expr::expr_attrs(e).is_empty() {
+            return None;
+        }
         match e {
             syn::Expr::Macro(m) if m.mac.path.is_ident("write") => {
                 let args = crate::expr::macro_args(&m.mac)?;

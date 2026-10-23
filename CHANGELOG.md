@@ -56,6 +56,16 @@
 * The quick fix "make it a `move` lambda" for a trailing lambda (`thread::spawn { .. }`) writes
   `thread::spawn(move { .. })`; it used to write `thread::spawn move { .. }`, which doesn't
   parse. A test now applies every quick fix offered for `tests/diagnostics` and builds again.
+* Borrow errors suggest what costs nothing before a copy, and no copy that doesn't compile. A
+  moved value gets "pass a copy" (`.clone()`) only when its type implements `Clone`: a
+  `Vec<MutexGuard<i32>>`, or a class without `Clone`, used to get a `.clone()` that rustc
+  rejects, and is now told to use the value before the call, or to let the function borrow it.
+  `if (val v = cache.get(&id)) return v` before `cache.insert(id, ...)` suggests the entry API,
+  `cache.entry(id).or_insert_with { ... }`, and changing `v[i]` in a loop over
+  `v.iter().enumerate()` suggests `for (x in v.iter_mut()) { *x = ... }`, both with a quick fix
+  in the simple cases. A quick fix is no longer one part of a rustc suggestion that edits
+  several places (`value` without the `let value = name.clone()` it needs), and the quick fix
+  test checks the lines a fix changes too.
 * A method that calls an interface method taking `&mut self` takes `&mut self` too. It used to
   stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
   method being `&mut self` because another implementation changes its object), when it was a
@@ -76,6 +86,11 @@
 * Functions with the same name in different modules keep their own parameters; a call means
   the module's own function or the one it imports. Before, calls to either lost the parameters
   (no lending, defaults or `throws`).
+* `oxie from-rust` keeps attributes on statements and `let`s: `#[cfg(test)] v.push(1);` becomes
+  `@cfg(test) v.push(1)`. It used to drop them, so a statement meant only for tests ran in every
+  build. A doc comment on a statement becomes an ordinary comment (it used to comment out the
+  statement), and an expression with an attribute, which Oxie has no syntax for (`#[cfg]` on a
+  block's value or on a `vec!` element), is kept as Rust with a TODO.
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`. A
   `Vec<T>` is lent only when dropping a `T` just frees memory, so a function given mutex guards

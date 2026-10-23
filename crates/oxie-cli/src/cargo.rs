@@ -36,7 +36,8 @@ pub struct MappedDiag {
     pub from_oxie: bool,
     /// Other labeled spans ("value moved here", ...).
     pub secondary: Vec<Label>,
-    /// rustc's suggestions whose spans map exactly onto the .oxi source.
+    /// rustc's suggestions whose spans map exactly onto the .oxi source (not the parts of a
+    /// suggestion that edits several places).
     pub suggestions: Vec<Suggestion>,
     /// rustc suggestions as plain text (for `use` paths and the like).
     pub raw_suggestions: Vec<String>,
@@ -304,9 +305,17 @@ impl Mapper {
                         }
                     }
                 }
+                // replacements at different places are parts of one suggestion, which only work
+                // together (alternatives replace the same span)
+                let range = |sp: &Value| ["file_name", "byte_start", "byte_end"].map(|k| sp.get(k).cloned());
+                let parts: Vec<&Value> = child_spans.iter().filter(|sp| sp.get("suggested_replacement").is_some_and(|s| s.is_string())).collect();
+                let multipart = parts.windows(2).any(|w| range(w[0]) != range(w[1]));
                 for sp in &child_spans {
                     let Some(sugg) = sp.get("suggested_replacement").and_then(|s| s.as_str()) else { continue };
                     raw_suggestions.push(sugg.to_string());
+                    if multipart {
+                        continue;
+                    }
                     if let Some((f, l, c, el, ec)) = self.map_span_exact(root, sp) {
                         if f == file {
                             suggestions.push(Suggestion { line: l, col: c, end_line: el, end_col: ec, replacement: sugg.to_string() });

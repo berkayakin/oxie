@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cargo::{Edit, Fix, Label, MappedDiag};
 use crate::sources::Sources;
-use oxie_compiler::ast::ExprKind;
+use oxie_compiler::ast::{Block, Cond, Expr, ExprKind, File, FunDecl, Item, ItemKind, Pat, Stmt, Type, TypeDecl, UnOp};
 use oxie_compiler::diag::Span;
 
 pub fn explain(d: &mut MappedDiag, sources: &Sources) {
@@ -95,6 +95,10 @@ fn generated_names(d: &mut MappedDiag) {
 
 fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str) {
     refine(d, lines, name);
+    // rustc suggests a copy (`.clone()`, `<T as Clone>::clone(..)`, or one taken before a lambda)
+    // only when the type implements `Clone`; a plain `.clone()` is its suggestion at the move
+    let copyable = d.raw_suggestions.iter().any(|s| s.contains("clone("));
+    let clone_here = d.raw_suggestions.iter().any(|s| s == ".clone()");
     let in_loop = d.label.as_deref().is_some_and(|l| l.contains("previous iteration")) || d.secondary.iter().any(|s| s.text.contains("previous iteration"));
     let mut move_site: Option<(u32, u32)> = None;
     let mut callee: Option<(String, usize)> = None;
@@ -150,17 +154,23 @@ fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str
             d.secondary.push(Label { file: file.clone(), line: *l, col: *c, end_col: *e, text: format!("{} keeps it: {}", callee_text, why), exact: true });
         }
         let because = why.map(|(.., w)| format!(" ({})", w)).unwrap_or_default();
+        let instead = match (copyable, in_loop) {
+            (true, _) => format!(" Pass a copy with `{}.clone()`.", name),
+            (false, false) => format!(" Finish using `{}` before the call.", name),
+            (false, true) => String::new(),
+        };
         d.notes.push(help(&format!(
-            "giving a value to a function moves it: {} keeps it{}, and `{}` can't be used afterwards. Pass a copy with `{}.clone()`.",
-            callee_text, because, name, name
+            "giving a value to a function moves it: {} keeps it{}, and `{}` can't be used afterwards.{}",
+            callee_text, because, name, instead
         )));
     } else {
+        let instead = if copyable { format!("Pass a copy with `{}.clone()`, or let {} borrow the value instead", name, callee_text) } else { format!("Let {} borrow the value instead", callee_text) };
         d.notes.push(help(&format!(
-            "giving a value to a function or another variable moves it: {} owns it now, and `{}` can't be used afterwards. Pass a copy with `{}.clone()`, or let {} borrow the value instead.",
-            callee_text, name, name, callee_text
+            "giving a value to a function or another variable moves it: {} owns it now, and `{}` can't be used afterwards. {}.",
+            callee_text, name, instead
         )));
     }
-    if let Some((l, c)) = move_site {
+    if let Some((l, c)) = move_site.filter(|_| clone_here) {
         let line = lines.get(l as usize).copied().unwrap_or("");
         if word_at(line, c as usize) == Some(name) {
             let end = c + name.chars().count() as u32;
@@ -237,19 +247,45 @@ fn borrow_mut(d: &mut MappedDiag, sources: &Sources, lines: &[&str], first: &str
 /// The class of the variable `name` used at `line`: the type its `val`/`var` declares or the
 /// class its initializer constructs (`val c = Counter()`), or the type of a parameter `name`.
 fn local_class(lines: &[&str], name: &str, line: u32) -> Option<String> {
-    let after: String = match [find_decl(lines, name, line, "val"), find_decl(lines, name, line, "var")].into_iter().flatten().max() {
+    let decl = declaration(lines, name, line)?;
+    let after = decl.strip_prefix(':').or_else(|| decl.strip_prefix('='))?;
+    let ty: String = after.trim_start().trim_start_matches('&').trim_start_matches("mut ").chars().take_while(|c| is_ident_char(*c)).collect();
+    ty.chars().next().is_some_and(char::is_uppercase).then_some(ty)
+}
+
+/// The element type of the list `name` used at `line`: from the `Vec<T>` or `[T]` its `val`/`var`
+/// or parameter declares, or `i32`/`f64` for a `vec[...]` of number literals.
+fn element_type(lines: &[&str], name: &str, line: u32) -> Option<String> {
+    let decl = declaration(lines, name, line)?;
+    if let Some(ty) = decl.strip_prefix(':') {
+        let ty = ty.trim_start().trim_start_matches('&').trim_start_matches("mut ").trim_start();
+        let inner = ty.strip_prefix("Vec<").or_else(|| ty.strip_prefix('['))?;
+        return Some(inner.chars().take_while(|c| is_ident_char(*c)).collect());
+    }
+    let items: Vec<&str> = decl.strip_prefix('=')?.trim_start().strip_prefix("vec[")?.split(']').next()?.split(',').map(str::trim).collect();
+    let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '_');
+    let int = |s: &str| digits(s.strip_prefix('-').unwrap_or(s));
+    let float = |s: &str| s.strip_prefix('-').unwrap_or(s).split_once('.').is_some_and(|(a, b)| digits(a) && digits(b));
+    if items.iter().all(|s| int(s)) {
+        Some("i32".into())
+    } else {
+        items.iter().all(|s| float(s)).then(|| "f64".into())
+    }
+}
+
+/// What follows the name in the declaration of the variable or parameter `name` used at `line`:
+/// `: Type = ...` or `= value` for a `val`/`var`, `: Type...` for a parameter.
+fn declaration(lines: &[&str], name: &str, line: u32) -> Option<String> {
+    match [find_decl(lines, name, line, "val"), find_decl(lines, name, line, "var")].into_iter().flatten().max() {
         Some((l, c)) => {
             let rest: String = lines[l as usize].chars().skip(c as usize + 3).collect();
-            let rest = rest.trim_start().strip_prefix(name)?.trim_start();
-            rest.strip_prefix(':').or_else(|| rest.strip_prefix('='))?.to_string()
+            Some(rest.trim_start().strip_prefix(name)?.trim_start().to_string())
         }
         None => {
             let (pl, pc, ..) = param_decl(lines, name, line)?;
-            lines[pl as usize].chars().skip(pc as usize).collect()
+            Some(format!(": {}", lines[pl as usize].chars().skip(pc as usize).collect::<String>()))
         }
-    };
-    let ty: String = after.trim_start().trim_start_matches('&').trim_start_matches("mut ").chars().take_while(|c| is_ident_char(*c)).collect();
-    ty.chars().next().is_some_and(char::is_uppercase).then_some(ty)
+    }
 }
 
 /// `name.method(` at `col` of the line: the method's name.
@@ -303,6 +339,8 @@ fn borrow_conflict(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: 
     // `*self` in a method is `this`
     let is_this = name == "*self" || name == "self";
     let name = if is_this { "this" } else { name };
+    // changed (borrowed for changing) while a shared borrow is still in use
+    let changed_while_read = code == "E0502" && d.message.contains("as mutable because it is also borrowed as immutable");
     let relabel = |t: &str| -> String {
         let t = t.to_string();
         if t.contains("immutable borrow later used") || t.contains("borrow later used") || t.contains("first borrow later used") {
@@ -339,7 +377,7 @@ fn borrow_conflict(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: 
         }
     }
     let headline = match code {
-        "E0502" if d.message.contains("as mutable because it is also borrowed as immutable") => format!("`{}` can't be changed while it is borrowed", name),
+        "E0502" if changed_while_read => format!("`{}` can't be changed while it is borrowed", name),
         "E0502" => format!("`{}` can't be read while it is being changed", name),
         "E0499" => format!("`{}` is already borrowed for changing", name),
         "E0505" => format!("`{}` can't be moved while it is borrowed", name),
@@ -364,6 +402,10 @@ fn borrow_conflict(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: 
             d.fixes.push(Fix { title: format!("loop over a copy of `{}`", field), edits: vec![edit(l, end, end, ".clone()")] });
             return;
         }
+    }
+    // shapes with a change that costs nothing: a map's entry API, a loop over `iter_mut()`
+    if changed_while_read && (entry_instead(d, sources) || iter_mut_instead(d, sources, lines)) {
+        return;
     }
     // a change made by calling a method that Oxie made `&mut self`: say why it changes the value
     let changes = |t: &str| t.contains("is changed here") || t.contains("for changing");
@@ -401,6 +443,252 @@ fn borrow_conflict(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: 
         d.fixes.push(Fix { title: "copy the value instead of borrowing it".into(), edits: vec![edit(s.line, amp, amp + 1, ""), edit(s.line, end, end, ".clone()")] });
         break;
     }
+}
+
+/// `if (val v = m.get(&k)) return v` right before `m.insert(k, value)`, on a `HashMap` or
+/// `BTreeMap` parameter or field: returning the reference keeps `m` borrowed after the `if` too,
+/// since rustc doesn't tell the path that returned from the one that goes on. The entry API looks
+/// the key up once. When the next statement is `return m.get(&k)!!`, the fix replaces the three.
+fn entry_instead(d: &mut MappedDiag, sources: &Sources) -> bool {
+    let Some(here) = sources.file(&d.file) else { return false };
+    let src = here.text.as_str();
+    let Some(borrow) = d.secondary.iter().find(|s| s.text.contains("is borrowed here")) else { return false };
+    if !d.secondary.iter().any(|s| s.text.starts_with("returning this value requires")) {
+        return false;
+    }
+    let (get_at, insert_at) = (byte_offset(src, borrow.line, borrow.col) as u32, byte_offset(src, d.line, d.col) as u32);
+    let text = |s: Span| src.get(s.start as usize..s.end as usize).unwrap_or("").to_string();
+    // the key a lookup or an insert names: `id` for `&id` and for `id.clone()`
+    let key = |s: Span| {
+        let k = text(s);
+        let k = k.trim_start_matches('&');
+        [".clone()", ".to_string()", ".to_owned()"].iter().fold(k, |k, m| k.strip_suffix(m).unwrap_or(k)).to_string()
+    };
+    // `m.get(k)`, alone or unwrapped (`!!`, `.unwrap()`): (map, key)
+    let lookup = |e: &Expr| match &e.kind {
+        ExprKind::MethodCall { recv, name, args, .. } if name == "get" && args.len() == 1 => Some((text(recv.span), key(args[0].value.span))),
+        _ => None,
+    };
+    let unwrapped = |e: &Expr| match &e.kind {
+        ExprKind::Unwrap(g) => lookup(g),
+        ExprKind::MethodCall { recv, name, args, .. } if name == "unwrap" && args.is_empty() => lookup(recv),
+        _ => None,
+    };
+    // the `if` and its lookup; the insert, its map, key, key text, value text and whether the value
+    // can run in a lambda; the unwrapped lookups that may follow (their span, whether they return)
+    let (mut first, mut insert, mut after) = (None, None, Vec::new());
+    oxie_compiler::visit::walk_items(&here.ast().items, &mut |e| {
+        match &e.kind {
+            ExprKind::If { cond, then, else_: None } => {
+                if let Cond::Let { pat: Pat::Ident { name: v, .. }, expr, implicit_some: true } = &**cond {
+                    let returns_v = matches!(&then.stmts[..], [Stmt::Expr { expr: Expr { kind: ExprKind::Return(Some(r)), .. }, .. }] if r.ident() == Some(v.as_str()));
+                    if expr.span.start == get_at && returns_v {
+                        first = lookup(expr).map(|l| (e.span, l));
+                    }
+                }
+            }
+            ExprKind::MethodCall { recv, name, args, .. } if name == "insert" && args.len() == 2 && e.span.start == insert_at => {
+                let (k, value) = (&args[0].value, &args[1].value);
+                insert = Some((e.span, text(recv.span), key(k.span), text(k.span), text(value.span), lambda_body_ok(value, &text(recv.span))));
+            }
+            ExprKind::Return(Some(r)) => after.extend(unwrapped(r).map(|l| (e.span, true, l))),
+            _ => after.extend(unwrapped(e).map(|l| (e.span, false, l))),
+        }
+        true
+    });
+    let (Some((if_span, (map, k))), Some((call, insert_map, insert_key, key_text, value, value_ok))) = (first, insert) else { return false };
+    // nothing but blank space, `;` and (unless `strict`) comments between two statements
+    let gap = |a: u32, b: u32, strict: bool| src.get(a as usize..b as usize).is_some_and(|t| t.lines().all(|l| (if strict { l } else { code(l) }).chars().all(|c| c.is_whitespace() || c == ';')));
+    let Some(is_param) = map_declared(here.ast(), insert_at, &map) else { return false };
+    if map != insert_map || k != insert_key || !gap(if_span.end, call.start, false) {
+        return false;
+    }
+    let entry = format!("{}.entry({}).or_insert_with {{ {} }}", map, key_text, value);
+    for s in d.secondary.iter_mut().filter(|s| s.text.starts_with("returning this value requires")) {
+        s.text = format!("returned here, so `{}` stays borrowed for the rest of the function", map);
+    }
+    d.notes.push(help(&format!(
+        "returning the reference from `{}.get()` keeps `{}` borrowed until the function returns, even on the path where the key is missing, so `{}.insert()` can't change it. Look the key up once with the entry API, which inserts only when the key is missing: `{}`.",
+        map, map, map, entry
+    )));
+    // the lookup that ends the function, after the insert (the fix keeps comments, so there are
+    // none in between); the value runs in a lambda while the map parameter is borrowed (a field's
+    // lambda could need `this`)
+    let tail = |s: Span, ret: bool| ret || src[s.end as usize..].trim_start().starts_with('}');
+    let last = after.into_iter().find(|(s, ret, l)| gap(call.end, s.start, true) && tail(*s, *ret) && *l == (map.clone(), k.clone()));
+    if let Some((s, ret, _)) = last.filter(|_| is_param && value_ok && !value.contains('\n') && gap(if_span.end, call.start, true)) {
+        let edit = span_edit(src, Span { start: if_span.start, end: s.end }, &format!("{}{}", if ret { "return " } else { "" }, entry));
+        d.fixes.push(Fix { title: format!("look `{}` up once with `{}.entry()`", key_text, map), edits: vec![edit] });
+    }
+    true
+}
+
+/// Can `e` be the body of a lambda that runs while `map` is borrowed: it doesn't name the map,
+/// use `it` or leave the function.
+fn lambda_body_ok(e: &Expr, map: &str) -> bool {
+    let mut ok = true;
+    oxie_compiler::visit::walk_expr(e, &mut |x| {
+        let leaves = matches!(x.kind, ExprKind::Return(_) | ExprKind::Throw(_) | ExprKind::Try(_) | ExprKind::Await(_) | ExprKind::Break { .. } | ExprKind::Continue(_));
+        ok &= !leaves && !matches!(x.ident(), Some(n) if n == map || n == "it");
+        ok
+    });
+    ok
+}
+
+/// Whether `recv` (`m` or `this.m`, read at `offset`) is declared as a `HashMap` or `BTreeMap`:
+/// `Some(true)` for a parameter of the function, `Some(false)` for a field of its class.
+fn map_declared(file: &File, offset: u32, recv: &str) -> Option<bool> {
+    let (f, class) = fun_at(&file.items, offset)?;
+    let field = recv.strip_prefix("this.");
+    let param = f.params.iter().find(|p| field.is_none() && p.name() == Some(recv)).map(|p| &p.ty);
+    let ty = param.or_else(|| class?.fields.iter().find(|x| x.name == field.unwrap_or(recv)).map(|x| &x.ty))?;
+    let ty = match ty {
+        Type::Ref { inner, .. } => inner,
+        t => t,
+    };
+    matches!(ty.last_name(), Some("HashMap" | "BTreeMap")).then_some(param.is_some())
+}
+
+/// The function or method whose declaration holds `offset`, and its class.
+fn fun_at(items: &[Item], offset: u32) -> Option<(&FunDecl, Option<&TypeDecl>)> {
+    let it = items.iter().find(|it| it.span.start <= offset && offset < it.span.end)?;
+    match &it.kind {
+        ItemKind::Fun(f) => Some((f, None)),
+        ItemKind::Type(t) => fun_at(&t.members, offset).map(|(f, _)| (f, Some(t))),
+        ItemKind::Impl(i) => fun_at(&i.members, offset),
+        ItemKind::Mod { items, .. } | ItemKind::Object { items, .. } => fun_at(items, offset),
+        _ => None,
+    }
+}
+
+/// `v[i] = ...` in a loop over `v.iter().enumerate()` whose body uses `v` only as `v[i]`: the loop
+/// reads `v` while the body changes it. Changing each element through `v.iter_mut()` is allowed
+/// and costs nothing. The fix rewrites a body of one statement when the elements are numbers.
+fn iter_mut_instead(d: &mut MappedDiag, sources: &Sources, lines: &[&str]) -> bool {
+    let Some(here) = sources.file(&d.file) else { return false };
+    let src = here.text.as_str();
+    let Some(borrow) = d.secondary.iter().find(|s| s.text.contains("is borrowed here")) else { return false };
+    let (iter_at, change_at) = (byte_offset(src, borrow.line, borrow.col) as u32, byte_offset(src, d.line, d.col) as u32);
+    let within = |s: Span, at: u32| s.start <= at && at < s.end;
+    let mut found = None;
+    oxie_compiler::visit::walk_items(&here.ast().items, &mut |e| {
+        if let ExprKind::For { pat: Pat::Tuple(ps), iter, body, .. } = &e.kind {
+            if within(iter.span, iter_at) && within(body.span, change_at) {
+                found = indexed_loop(src, ps, iter, body);
+            }
+        }
+        found.is_none()
+    });
+    let Some(l) = found else { return false };
+    d.notes.retain(|n| !n.contains("index-based loop"));
+    let example = match &l.stmt {
+        Some(s) => format!("for ({}) {{ {} }}", l.head, s),
+        None => format!("for ({}) {{ *{} = ... }}", l.head, l.elem),
+    };
+    d.notes.push(help(&format!(
+        "`{}.iter()` borrows `{}` for the whole loop, so the body can't change `{}[{}]`, even though it is the element the loop is at. Loop over `{}.iter_mut()` instead, which lets the body change each element through `{}`: `{}`.",
+        l.list, l.list, l.list, l.index, l.list, l.elem, example
+    )));
+    let numbers = l.list.chars().all(is_ident_char) && element_type(lines, &l.list, d.line).is_some_and(|t| is_copy_type(&t));
+    if l.stmt.is_some() && numbers {
+        let edits = l.edits.iter().map(|(s, t)| span_edit(src, *s, t)).collect();
+        d.fixes.push(Fix { title: format!("change the elements through `{}.iter_mut()`", l.list), edits });
+    }
+    true
+}
+
+/// A loop `for ((i, x) in v.iter().enumerate())` whose body changes `v[i]` (see `iter_mut_instead`).
+struct IndexedLoop {
+    list: String,
+    index: String,
+    elem: String,
+    /// The loop's head over `v.iter_mut()`, enumerated when the body uses `i` apart from `v[i]`.
+    head: String,
+    /// The edits that make the loop change the elements through `x`.
+    edits: Vec<(Span, String)>,
+    /// The body's one statement after the edits, when each read of `x` became `*x` or stayed the
+    /// receiver of a method call.
+    stmt: Option<String>,
+}
+
+/// The loop over `iter` when it is `v.iter().enumerate()` into `(i, x)` and the body uses `v`
+/// only as `v[i]`, and assigns only to `v[i]`.
+fn indexed_loop(src: &str, ps: &[Pat], iter: &Expr, body: &Block) -> Option<IndexedLoop> {
+    let [Pat::Ident { name: i, span: i_span, .. }, Pat::Ident { name: x, span: x_span, .. }] = ps else { return None };
+    let ExprKind::MethodCall { recv: iter_call, name: enumerate, args, .. } = &iter.kind else { return None };
+    let ExprKind::MethodCall { recv: list, name: iter_name, args: iter_args, .. } = &iter_call.kind else { return None };
+    if enumerate != "enumerate" || iter_name != "iter" || !args.is_empty() || !iter_args.is_empty() {
+        return None;
+    }
+    let text = |s: Span| src.get(s.start as usize..s.end as usize).unwrap_or("");
+    let v = text(list.span);
+    let is_elem = |e: &Expr| matches!(&e.kind, ExprKind::Index(l, ix) if text(l.span) == v && ix.ident() == Some(i.as_str()));
+    let is_x = |e: &Expr| e.ident() == Some(x.as_str());
+    // what becomes `*x`: each `v[i]`, and `x` read as an operand; the reads of `x` handled so
+    // (or left as they are), and all of them
+    let (mut derefs, mut handled, mut reads, mut writes) = (Vec::new(), 0, 0, 0);
+    let (mut index_used, mut other) = (false, false);
+    for s in &body.stmts {
+        oxie_compiler::visit::walk_stmt(s, &mut |e| {
+            match &e.kind {
+                _ if is_elem(e) => {
+                    derefs.push(e.span);
+                    return false;
+                }
+                ExprKind::Assign(_, target, value) => {
+                    if is_elem(target) {
+                        writes += 1;
+                    } else {
+                        other = true;
+                    }
+                    if is_x(value) {
+                        derefs.push(value.span);
+                        handled += 1;
+                    }
+                }
+                ExprKind::Binary(_, a, b) => {
+                    for o in [a, b].into_iter().filter(|o| is_x(o)) {
+                        derefs.push(o.span);
+                        handled += 1;
+                    }
+                }
+                ExprKind::Unary(UnOp::Neg, a) if is_x(a) => {
+                    derefs.push(a.span);
+                    handled += 1;
+                }
+                ExprKind::Unary(UnOp::Deref, a) | ExprKind::MethodCall { recv: a, .. } if is_x(a) => handled += 1,
+                _ if is_x(e) => reads += 1,
+                _ if e.ident() == Some(i.as_str()) => index_used = true,
+                _ if text(e.span) == v => other = true,
+                _ => {}
+            }
+            true
+        });
+    }
+    // the pattern `(i, x) in ` before the iterable
+    let open = src[..i_span.start as usize].rfind('(')?;
+    let close = x_span.end as usize + src[x_span.end as usize..].find(')')?;
+    let blank = |a: usize, b: usize, t: &str| src.get(a..b).is_some_and(|s| s.trim() == t);
+    let pattern = blank(open + 1, i_span.start as usize, "") && blank(i_span.end as usize, x_span.start as usize, ",") && blank(x_span.end as usize, close, "") && blank(close + 1, iter.span.start as usize, "in");
+    if other || writes == 0 || !pattern {
+        return None;
+    }
+    let head = if index_used { format!("({}, {}) in {}.iter_mut().enumerate()", i, x, v) } else { format!("{} in {}.iter_mut()", x, v) };
+    let stmt = match &body.stmts[..] {
+        [Stmt::Expr { expr, .. }] if handled == reads => {
+            let mut t = text(expr.span).to_string();
+            let mut ds: Vec<&Span> = derefs.iter().collect();
+            ds.sort_by_key(|s| std::cmp::Reverse(s.start));
+            for s in ds {
+                t.replace_range((s.start - expr.span.start) as usize..(s.end - expr.span.start) as usize, &format!("*{}", x));
+            }
+            (!t.contains('\n')).then_some(t)
+        }
+        _ => None,
+    };
+    let mut edits = vec![(Span::new(open, iter.span.end as usize), head.clone())];
+    edits.extend(derefs.into_iter().map(|s| (s, format!("*{}", x))));
+    Some(IndexedLoop { list: v.to_string(), index: i.clone(), elem: x.clone(), head, edits, stmt })
 }
 
 /// A value that isn't `Send`/`Sync` used from another thread: usually a `shared class` handle.
@@ -1093,6 +1381,13 @@ fn edit(line: u32, col: u32, end_col: u32, text: &str) -> Edit {
     Edit { file: None, line, col, end_line: line, end_col, text: text.to_string() }
 }
 
+/// An edit that replaces the bytes `span` of `src`.
+fn span_edit(src: &str, span: Span, text: &str) -> Edit {
+    let idx = oxie_compiler::LineIndex::new(src);
+    let ((l, c), (el, ec)) = (idx.line_col(src, span.start as usize), idx.line_col(src, span.end as usize));
+    Edit { file: None, line: l as u32, col: c as u32, end_line: el as u32, end_col: ec as u32, text: text.to_string() }
+}
+
 fn describe(path: &str) -> String {
     if path.is_empty() {
         "a value".into()
@@ -1531,6 +1826,59 @@ mod tests {
         assert_eq!(local_class(&["fun f(c: &mut Counter) {", "    c.hit()"], "c", 1), Some("Counter".into()));
         assert_eq!(local_class(&["fun f() {", "    val m = make()"], "m", 1), None);
         assert!(declares_fun("fun keep(v: Vec<i32>) = v", "keep") && !declares_fun("// see fun keep(v)", "keep"));
+        assert_eq!(element_type(&["fun f() {", "    var v = vec[1, 2, 3]", "    v[0] = 4"], "v", 2), Some("i32".into()));
+        assert_eq!(element_type(&["    var w = vec[1.5, -2.0]"], "w", 0), Some("f64".into()));
+        assert_eq!(element_type(&["    var w = vec[1, 2.5]"], "w", 0), None);
+        assert_eq!(element_type(&["fun f(v: &mut Vec<u8>) {", "    v[0] = 1"], "v", 1), Some("u8".into()));
+        assert_eq!(element_type(&["    var s: Vec<String> = vec[]"], "s", 0), Some("String".into()));
+    }
+
+    #[test]
+    fn shapes_with_a_change_that_costs_nothing() {
+        // the loop over `iter_mut()` and the body's statement, for the loop in `src`
+        let looped = |src: &str| {
+            let file = oxie_compiler::parser::parse_file(src).0;
+            let mut found = None;
+            oxie_compiler::visit::walk_items(&file.items, &mut |e| {
+                if let ExprKind::For { pat: Pat::Tuple(ps), iter, body, .. } = &e.kind {
+                    found = indexed_loop(src, ps, iter, body).map(|l| (l.head, l.stmt));
+                }
+                true
+            });
+            found
+        };
+        let body = |b: &str| looped(&format!("fun f(v: &mut Vec<i32>) {{\n    for ((i, x) in v.iter().enumerate()) {{ {} }}\n}}\n", b));
+        assert_eq!(body("v[i] = x * 2"), Some(("x in v.iter_mut()".into(), Some("*x = *x * 2".into()))));
+        assert_eq!(body("v[i] += x.pow(2) + i as i32"), Some(("(i, x) in v.iter_mut().enumerate()".into(), Some("*x += x.pow(2) + i as i32".into()))));
+        // `x` passed on: the loop, without the statement
+        assert_eq!(body("v[i] = g(x)"), Some(("x in v.iter_mut()".into(), None)));
+        // another element, the list itself, or a change of something else
+        assert_eq!(body("v[i] = v[0] + x"), None);
+        assert_eq!(body("v[i] = x + v.len() as i32"), None);
+        assert_eq!(body("n = x * 2"), None);
+
+        let src = "class C(var m: HashMap<u32, String> = HashMap::new()) {\n    fun f(n: &mut BTreeMap<u32, u32>, s: &mut Vec<u32>) { m.len() }\n}\n";
+        let file = oxie_compiler::parser::parse_file(src).0;
+        let at = src.find("m.len()").unwrap() as u32;
+        assert_eq!(map_declared(&file, at, "n"), Some(true));
+        assert_eq!(map_declared(&file, at, "m"), Some(false));
+        assert_eq!(map_declared(&file, at, "this.m"), Some(false));
+        assert_eq!(map_declared(&file, at, "s"), None);
+
+        let value = |v: &str| {
+            let src = format!("fun f() {{ g({}) }}\n", v);
+            let file = oxie_compiler::parser::parse_file(&src).0;
+            let mut ok = None;
+            oxie_compiler::visit::walk_items(&file.items, &mut |e| {
+                if let ExprKind::Call { args, .. } = &e.kind {
+                    ok = ok.or(Some(lambda_body_ok(&args[0].value, "cache")));
+                }
+                true
+            });
+            ok.unwrap()
+        };
+        assert!(value("load(id)"));
+        assert!(!value("cache.len()") && !value("load(id)?") && !value("it + 1"));
     }
 
     /// A rustc error mapped to `file` (zero-based line and columns).
