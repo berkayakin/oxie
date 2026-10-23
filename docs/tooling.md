@@ -250,8 +250,30 @@ editing the grammar, run `editors/build-kuana-extension.sh` and **Reload Extensi
 Kuana's own source (branch `oxie-language` of the editor) additionally shows a `.oxi` file icon
 and adds `oxie run`, `oxie test`, `oxie build` and `oxie fmt` to the Run… list of Oxie projects.
 
+### VS Code
+
+The extension in [`editors/vscode-oxie`](../editors/vscode-oxie) adds:
+
+* syntax highlighting (a TextMate grammar), with `rust { }` blocks highlighted as Rust and
+  ` ```oxie ` blocks in Markdown files;
+* the language server; if `oxie` isn't on the `PATH` or in `~/.cargo/bin`, it offers to run
+  `cargo install oxie`;
+* ▶ Run and Run --release above `fun main`, ▶ Run Test above each `test` block, and Run File,
+  Run File (Release) and Run Tests in File in the editor's run menu;
+* **Show Generated Rust**: the Rust for the current file beside it, updated as you type;
+* `oxie build`, `run`, `test`, `check` and `fmt` tasks for Oxie projects (Terminal → Run Task);
+* snippets, the same as Kuana's.
+
+Settings: `oxie.path` (the `oxie` command, for example a checkout's `target/debug/oxie`),
+`oxie.cargoCheck` (`cargo check` on open and save) and `oxie.trace.server`. In Restricted Mode
+only highlighting and snippets work, because building runs the project's build scripts.
+
+Install: build the package with `npm install` and `npm run package` in `editors/vscode-oxie`,
+then run `code --install-extension oxie-0.1.0.vsix` (or use **Extensions: Install from VSIX…**).
+
 ### Other editors
 
 Any editor with LSP support can use `oxie lsp` for `*.oxi` files. For syntax highlighting, use
-the tree-sitter grammar in `editors/tree-sitter-oxie` (Neovim, Helix, Zed), or Kotlin
-highlighting as a fallback.
+the tree-sitter grammar in `editors/tree-sitter-oxie` (Neovim, Helix, Zed), the TextMate grammar
+`editors/vscode-oxie/syntaxes/oxie.tmLanguage.json` (JetBrains IDEs through TextMate Bundles,
+Shiki), or Kotlin highlighting as a fallback.

@@ -251,9 +251,13 @@ Differences are within timing noise. See [docs/performance.md](docs/performance.
 
 * **Kuana**: the extension in [`editors/kuana-oxie`](editors/kuana-oxie) gives highlighting,
   outline, ▶ run/test buttons, snippets and the language server.
+* **VS Code**: the extension in [`editors/vscode-oxie`](editors/vscode-oxie) gives highlighting,
+  the language server, ▶ run/test buttons, the generated Rust beside the source, tasks and
+  snippets.
 * **Any LSP editor**: run `oxie lsp` for diagnostics, completion, hover (with the generated Rust),
   go to definition, references, rename, signature help, formatting, symbols and inlay hints.
-* **Tree-sitter**: the grammar is in [`editors/tree-sitter-oxie`](editors/tree-sitter-oxie).
+* **Grammars**: tree-sitter in [`editors/tree-sitter-oxie`](editors/tree-sitter-oxie), TextMate
+  in [`editors/vscode-oxie/syntaxes`](editors/vscode-oxie/syntaxes).
 
 ## Documentation
 
@@ -280,7 +284,7 @@ crates/oxie-compiler   lexer, parser, semantic analysis, lowering to Rust, forma
 crates/oxie-build      build.rs helper used by Oxie projects
 crates/oxie-cli        the `oxie` command and language server
 crates/oxie-from-rust  Rust → Oxie translator (`oxie from-rust`)
-editors/              tree-sitter grammar and Kuana extension
+editors/              tree-sitter grammar, Kuana and VS Code extensions
 examples/             example projects (also run by the test suite)
 bench/                Oxie vs Rust benchmarks
 tests/                end-to-end and diagnostics tests

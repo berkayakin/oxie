@@ -1,0 +1,167 @@
+// SYNTAX TEST "source.oxie" "declarations"
+
+import std::collections::HashMap
+// <------ keyword.other.import.oxie
+//     ^^^ entity.name.namespace.oxie
+//        ^^ keyword.operator.namespace.oxie
+//          ^^^^^^^^^^^ entity.name.namespace.oxie
+//                       ^^^^^^^ entity.name.type.oxie
+import { Display, Formatter as Fmt } from std::fmt
+//       ^^^^^^^ entity.name.type.oxie
+//                          ^^ keyword.other.oxie
+//                                   ^^^^ keyword.other.oxie
+//                                        ^^^ entity.name.namespace.oxie
+
+fun main() {
+// <--- meta.function.definition.oxie keyword.other.fn.oxie
+//  ^^^^ entity.name.function.oxie
+//      ^ punctuation.brackets.round.oxie
+}
+async fun fetch(url: &str, retries: u32 = 3): String throws {
+// <----- keyword.other.oxie
+//        ^^^^^ entity.name.function.oxie
+//              ^^^ variable.parameter.oxie
+//                 ^ keyword.operator.key-value.oxie
+//                   ^ keyword.operator.borrow.and.oxie
+//                    ^^^ entity.name.type.primitive.oxie
+//                         ^^^^^^^ variable.parameter.oxie
+//                                  ^^^ entity.name.type.numeric.oxie
+//                                        ^ constant.numeric.decimal.oxie
+//                                            ^^^^^^ entity.name.type.oxie
+//                                                   ^^^^^^ keyword.other.oxie
+}
+fun <T: Clone> Vec<T>.second(): T? = self.get(1).cloned()
+//  ^ punctuation.brackets.angle.oxie
+//      ^^^^^ entity.name.type.oxie
+//             ^^^ entity.name.type.oxie
+//                    ^^^^^^ entity.name.function.oxie
+//                               ^ keyword.operator.question.oxie
+//                                   ^^^^ variable.language.self.oxie
+//                                        ^^^ entity.name.function.oxie
+//                                               ^^^^^^ entity.name.function.oxie
+fun String.shout(): String = this.to_uppercase()
+//  ^^^^^^ entity.name.type.oxie
+//        ^ keyword.operator.access.dot.oxie
+//         ^^^^^ entity.name.function.oxie
+//                           ^^^^ variable.language.this.oxie
+fun apply(f: (i32) -> i32, x: i32) = f(x)
+//        ^ variable.parameter.oxie
+//                 ^^ keyword.operator.arrow.skinny.oxie
+//                         ^ variable.parameter.oxie
+//                                   ^ entity.name.function.oxie
+//                            ^^^ - variable.parameter.oxie
+mut fun Vec<i32>.bump(by: i32) { for (x in self.iter_mut()) *x += by }
+// <--- storage.modifier.mut.oxie
+//               ^^^^ entity.name.function.oxie
+//                    ^^ variable.parameter.oxie
+//                                      ^^ keyword.other.oxie
+//                                                             ^^ keyword.operator.assignment.oxie
+
+data class Point(val x: f64, var y: f64 = 0.0) : Display {
+// <---- storage.modifier.oxie
+//   ^^^^^ keyword.declaration.class.oxie storage.type.oxie
+//         ^^^^^ entity.name.type.class.oxie
+//               ^^^ storage.type.oxie
+//                   ^ variable.other.property.oxie
+//                               ^ variable.other.property.oxie
+//                                        ^^^ constant.numeric.decimal.oxie
+//                                               ^^^^^^^ entity.name.type.oxie
+    var label: String = ""
+//  ^^^ keyword.other.oxie storage.type.oxie
+//      ^^^^^ variable.other.oxie
+    init { label = "p" }
+//  ^^^^ keyword.other.init.oxie
+    override fun toString() = "($x, $y)"
+//  ^^^^^^^^ storage.modifier.oxie
+//               ^^^^^^^^ entity.name.function.oxie
+    operator fun plus(other: Point): Point = Point(x + other.x, y + other.y)
+//  ^^^^^^^^ storage.modifier.oxie
+//                    ^^^^^ variable.parameter.oxie
+//                                           ^^^^^ entity.name.type.oxie
+    private fun reset() { x = 0.0 }
+//  ^^^^^^^ storage.modifier.visibility.oxie
+    companion object { fun origin(): Point = Point(0.0, 0.0) }
+//  ^^^^^^^^^ storage.modifier.oxie
+//            ^^^^^^ keyword.declaration.object.oxie
+}
+class Account(id: String, private owner: String) {
+//            ^^ variable.other.property.oxie
+//                        ^^^^^^^ storage.modifier.visibility.oxie
+//                                ^^^^^ variable.other.property.oxie
+}
+@sync shared class Counter(var n: i32 = 0)
+// <----- meta.attribute.oxie
+//    ^^^^^^ storage.modifier.oxie
+//                 ^^^^^^^ entity.name.type.class.oxie
+struct Meters(f64)
+// <------ keyword.declaration.struct.oxie
+//     ^^^^^^ entity.name.type.struct.oxie
+//            ^^^ entity.name.type.numeric.oxie
+union Bits { i: u32, f: f32 }
+// <----- keyword.declaration.union.oxie
+//    ^^^^ entity.name.type.union.oxie
+
+error enum BankError {
+// <----- storage.modifier.oxie
+//    ^^^^ keyword.declaration.enum.oxie
+//         ^^^^^^^^^ entity.name.type.enum.oxie
+    NotFound(id: String) = "account $id not found"
+//  ^^^^^^^^ entity.name.type.oxie
+//                                  ^ punctuation.definition.template-expression.begin.oxie
+//                                   ^^ variable.other.oxie
+    @from Io(std::io::Error)
+//   ^^^^ entity.name.function.decorator.oxie
+//                ^^ entity.name.namespace.oxie
+}
+interface Shape : Display {
+// <--------- keyword.declaration.interface.oxie
+//        ^^^^^ entity.name.type.interface.oxie
+    type Id
+//  ^^^^ keyword.declaration.type.oxie
+//       ^^ entity.name.type.declaration.oxie
+    const MAX: u32 = 10
+//  ^^^^^ storage.modifier.oxie
+//        ^^^ constant.other.caps.oxie
+    fun area(): f64
+//      ^^^^ entity.name.function.oxie
+}
+impl Display for Point {
+// <---- keyword.other.oxie
+//           ^^^ keyword.control.oxie
+    fun fmt(&self, f: &mut Formatter): fmt::Result = write!(f, "{}", self.x)
+//           ^^^^ variable.language.self.oxie
+//                 ^ variable.parameter.oxie
+//                     ^^^ storage.modifier.mut.oxie
+//                                     ^^^ entity.name.namespace.oxie
+//                                                   ^^^^^^ entity.name.function.macro.oxie
+}
+object Config { val NAME = "app" }
+// <------ keyword.declaration.object.oxie
+//     ^^^^^^ entity.name.type.object.oxie
+//                  ^^^^ constant.other.caps.oxie
+typealias Pair = (i32, i32)
+// <--------- keyword.declaration.type.oxie
+//        ^^^^ entity.name.type.declaration.oxie
+type Callback = Box<dyn Fn(i32)>
+// <---- keyword.declaration.type.oxie
+//                  ^^^ keyword.other.oxie
+//                      ^^ entity.name.type.oxie
+mod util { pub fun helper() = 1 }
+// <--- storage.type.oxie
+//  ^^^^ entity.name.module.oxie
+//         ^^^ storage.modifier.visibility.oxie
+//                 ^^^^^^ entity.name.function.oxie
+extern "C" fun abs(x: i32): i32
+// <------ keyword.other.oxie
+//     ^^^ string.quoted.double.oxie
+
+test "adds numbers" {
+// <---- keyword.other.test.oxie
+//   ^^^^^^^^^^^^^^ string.quoted.double.oxie
+    assert_eq(1 + 1, 2)
+//  ^^^^^^^^^ entity.name.function.oxie
+}
+async test "needs tokio" throws { }
+// <----- keyword.other.oxie
+//    ^^^^ keyword.other.test.oxie
+//                       ^^^^^^ keyword.other.oxie

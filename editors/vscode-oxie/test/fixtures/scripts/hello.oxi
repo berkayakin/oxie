@@ -1,0 +1,23 @@
+/// A point in the plane.
+data class Point(val x: f64, val y: f64) {
+    fun length(): f64 = (x * x + y * y).sqrt()
+}
+
+fun greet(name: &str): String = "Hello, $name!"
+
+rust {
+    fn twice(x: i32) -> i32 {
+        let y = x * 2;
+        y
+    }
+}
+
+fun main() {
+    val p = Point(3.0, 4.0)
+    println(greet("Oxie"))
+    println("${p.length()} ${twice(2)}")
+}
+
+test "greets everyone" {
+    assert_eq(greet("you"), "Hello, you!")
+}

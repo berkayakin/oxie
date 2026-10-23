@@ -1,0 +1,42 @@
+// SYNTAX TEST "source.oxie" "attributes and rust blocks"
+
+#![allow(dead_code)]
+// <- meta.attribute.oxie punctuation.definition.attribute.oxie
+// ^^^^^ meta.attribute.oxie entity.name.function.oxie
+//       ^^^^^^^^^ meta.attribute.oxie variable.other.oxie
+#[derive(Debug, Clone)]
+//^^^^^^ meta.attribute.oxie entity.name.function.oxie
+//       ^^^^^ entity.name.type.oxie
+    @tokio::main
+//  ^ punctuation.definition.attribute.oxie
+//   ^^^^^^^^^^^ entity.name.function.decorator.oxie
+    @serde(rename_all = "camelCase")
+//   ^^^^^ entity.name.function.decorator.oxie
+//                      ^^^^^^^^^^^ string.quoted.double.oxie
+    @cfg(debug_assertions) println("debug")
+//   ^^^ entity.name.function.decorator.oxie
+//                         ^^^^^^^ entity.name.function.oxie
+rust {
+    fn helper(x: u32) -> u32 {
+//  ^^ meta.embedded.block.rust keyword.other.fn.rust
+//     ^^^^^^ meta.embedded.block.rust entity.name.function.rust
+        if x > 0 { x } else { 0 }
+//      ^^ meta.embedded.block.rust
+    }
+//  ^ meta.embedded.block.rust punctuation.brackets.curly.rust
+    macro_rules! square { ($e:expr) => { $e * $e }; }
+//  ^^^^^^^^^^^^ meta.embedded.block.rust entity.name.function.macro.rules.rust
+//               ^^^^^^ entity.name.function.macro.rust
+}
+// <- punctuation.brackets.curly.oxie
+// <- - meta.embedded.block.rust
+fun after() = rust { 1 + 1 }
+// <--- keyword.other.fn.oxie
+// <--- - meta.embedded.block.rust
+//            ^^^^ keyword.other.rust.oxie
+//                   ^ meta.embedded.block.rust
+//                         ^ punctuation.brackets.curly.oxie
+//                         ^ - meta.embedded.block.rust
+macro_rules! twice { ($e:expr) => { $e + $e } }
+// <------------ entity.name.function.macro.rules.oxie
+//           ^^^^^ entity.name.function.macro.oxie

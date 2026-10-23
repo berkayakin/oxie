@@ -1,0 +1,579 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Oxie",
+  "scopeName": "source.oxie",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#lifetimes" },
+    { "include": "#rust-block" },
+    { "include": "#attributes" },
+    { "include": "#import" },
+    { "include": "#declarations" },
+    { "include": "#modifiers" },
+    { "include": "#keywords" },
+    { "include": "#macros" },
+    { "include": "#calls" },
+    { "include": "#namespaces" },
+    { "include": "#numbers" },
+    { "include": "#types" },
+    { "include": "#operators" },
+    { "include": "#punctuation" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "comment": "/// doc comment, //! module doc",
+          "name": "comment.line.documentation.oxie",
+          "match": "(///(?!/)|//!).*",
+          "captures": { "1": { "name": "punctuation.definition.comment.oxie" } }
+        },
+        {
+          "name": "comment.line.double-slash.oxie",
+          "match": "(//).*",
+          "captures": { "1": { "name": "punctuation.definition.comment.oxie" } }
+        },
+        { "include": "#block-comment" }
+      ]
+    },
+    "block-comment": {
+      "comment": "block comments nest",
+      "name": "comment.block.oxie",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.oxie" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.comment.end.oxie" } },
+      "patterns": [{ "include": "#block-comment" }]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "comment": "\"\"\"multi-line\"\"\" strings: templates, no escapes",
+          "name": "string.quoted.triple.oxie",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.oxie" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.oxie" } },
+          "patterns": [{ "include": "#template" }]
+        },
+        {
+          "comment": "raw strings r\"..\", r#\"..\"#, br\"..\", cr\"..\": no escapes, no templates",
+          "name": "string.quoted.double.oxie",
+          "begin": "\\b([bc]?r)(#*)(\")",
+          "end": "(\")(\\2)",
+          "beginCaptures": {
+            "1": { "name": "string.quoted.byte.raw.oxie" },
+            "2": { "name": "punctuation.definition.string.raw.oxie" },
+            "3": { "name": "punctuation.definition.string.begin.oxie" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.string.end.oxie" },
+            "2": { "name": "punctuation.definition.string.raw.oxie" }
+          }
+        },
+        {
+          "comment": "byte and C strings b\"..\", c\"..\": escapes, no templates",
+          "name": "string.quoted.double.oxie",
+          "begin": "\\b([bc])(\")",
+          "end": "\"",
+          "beginCaptures": {
+            "1": { "name": "string.quoted.byte.raw.oxie" },
+            "2": { "name": "punctuation.definition.string.begin.oxie" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.oxie" } },
+          "patterns": [{ "include": "#escapes" }]
+        },
+        {
+          "comment": "strings with escapes and templates: \"Hello, $name! ${a + b}\"",
+          "name": "string.quoted.double.oxie",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.oxie" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.oxie" } },
+          "patterns": [{ "include": "#escapes" }, { "include": "#template" }]
+        }
+      ]
+    },
+    "escapes": {
+      "name": "constant.character.escape.oxie",
+      "match": "\\\\(?:u\\{[0-9A-Fa-f_]+\\}|u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|.|$)"
+    },
+    "template": {
+      "patterns": [
+        {
+          "comment": "${expression} and ${expression:format}",
+          "name": "meta.template.expression.oxie",
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.definition.template-expression.begin.oxie" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.template-expression.end.oxie" } },
+          "contentName": "meta.embedded.line.oxie",
+          "patterns": [{ "include": "#format-spec" }, { "include": "#braces" }, { "include": "$self" }]
+        },
+        {
+          "comment": "$name",
+          "name": "meta.template.expression.oxie",
+          "match": "(\\$)([_[:alpha:]][_[:alnum:]]*|[0-9]+)",
+          "captures": {
+            "1": { "name": "punctuation.definition.template-expression.begin.oxie" },
+            "2": {
+              "patterns": [
+                {
+                  "match": "\\b[[:upper:]]{2}[[:upper:][:digit:]_]*\\b",
+                  "name": "constant.other.caps.oxie"
+                },
+                { "match": ".+", "name": "variable.other.oxie" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "format-spec": {
+      "comment": "the Rust format spec after a single colon: ${value:.2}, ${list:?}",
+      "match": "(?<!:)(:)(?!:)([_[:alnum:]?<>^+\\-#.$][_[:alnum:]?<>^+\\-#.$ ]*)(?=\\})",
+      "captures": {
+        "1": { "name": "punctuation.separator.format-spec.oxie" },
+        "2": { "name": "storage.type.format.oxie" }
+      }
+    },
+    "braces": {
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.brackets.curly.oxie" } },
+      "endCaptures": { "0": { "name": "punctuation.brackets.curly.oxie" } },
+      "patterns": [{ "include": "#braces" }, { "include": "$self" }]
+    },
+    "chars": {
+      "comment": "'a', '\\n', '\\u{1F600}', b'a'",
+      "name": "string.quoted.single.char.oxie",
+      "match": "(\\bb)?(')([^'\\\\\\n]|\\\\(?:u\\{[0-9A-Fa-f_]+\\}|x[0-9A-Fa-f]{2}|.))(')",
+      "captures": {
+        "1": { "name": "string.quoted.byte.raw.oxie" },
+        "2": { "name": "punctuation.definition.char.oxie" },
+        "3": { "patterns": [{ "include": "#escapes" }] },
+        "4": { "name": "punctuation.definition.char.oxie" }
+      }
+    },
+    "lifetimes": {
+      "comment": "'a, and labels 'outer",
+      "match": "(')([_[:alpha:]][_[:alnum:]]*)(?!')",
+      "captures": {
+        "1": { "name": "punctuation.definition.lifetime.oxie" },
+        "2": { "name": "entity.name.type.lifetime.oxie" }
+      }
+    },
+    "rust-block": {
+      "comment": "rust { ... } holds plain Rust",
+      "begin": "\\b(rust)\\s*(\\{)",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.rust.oxie" },
+        "2": { "name": "punctuation.brackets.curly.oxie" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.brackets.curly.oxie" } },
+      "contentName": "meta.embedded.block.rust",
+      "patterns": [{ "include": "#rust-code" }]
+    },
+    "rust-code": {
+      "comment": "Braces are counted here. The Rust grammar's rules for `fn name(` and `macro_rules! name {` would consume a `{`, so they are matched first.",
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+((?:r#)?[_[:alpha:]][_[:alnum:]]*)",
+          "captures": { "1": { "name": "keyword.other.fn.rust" }, "2": { "name": "entity.name.function.rust" } }
+        },
+        {
+          "match": "\\b(macro_rules!)\\s*((?:r#)?[_[:alpha:]][_[:alnum:]]*)?",
+          "captures": {
+            "1": { "name": "entity.name.function.macro.rules.rust" },
+            "2": { "name": "entity.name.function.macro.rust" }
+          }
+        },
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.brackets.curly.rust" } },
+          "endCaptures": { "0": { "name": "punctuation.brackets.curly.rust" } },
+          "patterns": [{ "include": "#rust-code" }]
+        },
+        { "include": "source.rust" }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        {
+          "comment": "#[derive(Debug)], #![allow(dead_code)]",
+          "name": "meta.attribute.oxie",
+          "begin": "(#)(!?)(\\[)",
+          "end": "\\]",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.attribute.oxie" },
+            "2": { "name": "punctuation.definition.attribute.oxie" },
+            "3": { "name": "punctuation.brackets.attribute.oxie" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.brackets.attribute.oxie" } },
+          "patterns": [{ "include": "#brackets" }, { "include": "$self" }]
+        },
+        {
+          "comment": "@inline, @tokio::main, @derive(Serialize)",
+          "name": "meta.attribute.oxie",
+          "match": "(@)((?:[_[:alpha:]][_[:alnum:]]*(?:::|\\.))*[_[:alpha:]][_[:alnum:]]*)",
+          "captures": {
+            "1": { "name": "punctuation.definition.attribute.oxie" },
+            "2": { "name": "entity.name.function.decorator.oxie" }
+          }
+        }
+      ]
+    },
+    "brackets": {
+      "begin": "\\[",
+      "end": "\\]",
+      "beginCaptures": { "0": { "name": "punctuation.brackets.square.oxie" } },
+      "endCaptures": { "0": { "name": "punctuation.brackets.square.oxie" } },
+      "patterns": [{ "include": "#brackets" }, { "include": "$self" }]
+    },
+    "parens": {
+      "begin": "\\(",
+      "end": "\\)",
+      "beginCaptures": { "0": { "name": "punctuation.brackets.round.oxie" } },
+      "endCaptures": { "0": { "name": "punctuation.brackets.round.oxie" } },
+      "patterns": [{ "include": "#parens" }, { "include": "$self" }]
+    },
+    "import": {
+      "comment": "import a.b.C, import a::b::{C, D as E}, import { C } from a::b, use ...",
+      "name": "meta.import.oxie",
+      "begin": "\\b(import|use)\\b",
+      "end": "(?=;|$)",
+      "beginCaptures": { "1": { "name": "keyword.other.import.oxie" } },
+      "patterns": [
+        { "include": "#comments" },
+        { "match": "\\b(as|from)\\b", "name": "keyword.other.oxie" },
+        { "match": "\\b(crate)\\b", "name": "keyword.other.crate.oxie" },
+        { "match": "\\b(self|super)\\b", "name": "variable.language.$1.oxie" },
+        {
+          "match": "\\b(?:r#)?[_[:lower:]][_[:alnum:]]*(?=\\s*(?:::|\\.))",
+          "name": "entity.name.namespace.oxie"
+        },
+        { "include": "$self" }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        { "include": "#function" },
+        { "include": "#class" },
+        {
+          "match": "\\b(class|struct|union|interface|trait|enum)\\s+((?:r#)?[_[:alpha:]][_[:alnum:]]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.$1.oxie storage.type.oxie" },
+            "2": { "name": "entity.name.type.$1.oxie" }
+          }
+        },
+        {
+          "match": "\\b(companion)\\s+(object)\\b(?:\\s+((?:r#)?[_[:alpha:]][_[:alnum:]]*))?",
+          "captures": {
+            "1": { "name": "storage.modifier.oxie" },
+            "2": { "name": "keyword.declaration.object.oxie storage.type.oxie" },
+            "3": { "name": "entity.name.type.object.oxie" }
+          }
+        },
+        {
+          "match": "\\b(object)\\s+((?:r#)?[_[:alpha:]][_[:alnum:]]*)(?=\\s*(?:[{:]|$))",
+          "captures": {
+            "1": { "name": "keyword.declaration.object.oxie storage.type.oxie" },
+            "2": { "name": "entity.name.type.object.oxie" }
+          }
+        },
+        {
+          "match": "\\b(mod)\\s+((?:r#)?[_[:alpha:]][_[:alnum:]]*)",
+          "captures": {
+            "1": { "name": "keyword.other.oxie storage.type.oxie" },
+            "2": { "name": "entity.name.module.oxie" }
+          }
+        },
+        {
+          "comment": "typealias Name = T, type Name = T, and associated types",
+          "match": "\\b(typealias|type)\\s+((?:r#)?[_[:alpha:]][_[:alnum:]]*)(?=\\s*(?:[=<:]|where\\b|$))",
+          "captures": {
+            "1": { "name": "keyword.declaration.type.oxie storage.type.oxie" },
+            "2": { "name": "entity.name.type.declaration.oxie" }
+          }
+        },
+        {
+          "comment": "test \"name\" { }",
+          "match": "\\b(?:(async)\\s+)?(test)\\b(?=\\s*\")",
+          "captures": {
+            "1": { "name": "keyword.other.oxie" },
+            "2": { "name": "keyword.other.test.oxie storage.type.oxie" }
+          }
+        },
+        {
+          "match": "\\b(init)\\s*(?=\\{)",
+          "captures": { "1": { "name": "keyword.other.init.oxie storage.type.oxie" } }
+        }
+      ]
+    },
+    "function": {
+      "patterns": [
+        {
+          "comment": "fun name(params), fun <T> Type.name(params): the parameter list is scoped",
+          "name": "meta.function.definition.oxie",
+          "begin": "\\b(fun|fn)\\b\\s*(<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?\\s*(?:([_[:alpha:]][_[:alnum:]]*(?:\\s*<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?)\\s*(\\.)\\s*)?((?:r#)?[_[:alpha:]][_[:alnum:]]*)\\s*(<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?\\s*(\\()",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": { "name": "keyword.other.fn.oxie" },
+            "2": { "patterns": [{ "include": "$self" }] },
+            "3": { "patterns": [{ "include": "$self" }] },
+            "4": { "name": "keyword.operator.access.dot.oxie" },
+            "5": { "name": "entity.name.function.oxie" },
+            "6": { "patterns": [{ "include": "$self" }] },
+            "7": { "name": "punctuation.brackets.round.oxie" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.brackets.round.oxie" } },
+          "patterns": [{ "include": "#parameters" }]
+        },
+        {
+          "match": "\\b(fun|fn)\\b\\s*(<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?\\s*(?:([_[:alpha:]][_[:alnum:]]*(?:\\s*<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?)\\s*(\\.)\\s*)?((?:r#)?[_[:alpha:]][_[:alnum:]]*)",
+          "captures": {
+            "1": { "name": "keyword.other.fn.oxie" },
+            "2": { "patterns": [{ "include": "$self" }] },
+            "3": { "patterns": [{ "include": "$self" }] },
+            "4": { "name": "keyword.operator.access.dot.oxie" },
+            "5": { "name": "entity.name.function.oxie" }
+          }
+        }
+      ]
+    },
+    "parameters": {
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#attributes" },
+        {
+          "match": "\\b(?:(val|var)\\s+|(mut)\\s+)?((?:r#)?[_[:alpha:]][_[:alnum:]]*)\\s*(:)(?!:)",
+          "captures": {
+            "1": { "name": "keyword.other.oxie storage.type.oxie" },
+            "2": { "name": "storage.modifier.mut.oxie" },
+            "3": { "name": "variable.parameter.oxie" },
+            "4": { "name": "keyword.operator.key-value.oxie" }
+          }
+        },
+        { "include": "#parens" },
+        { "include": "$self" }
+      ]
+    },
+    "class": {
+      "comment": "class Name<T>(val a: A, b: B): the constructor parameters are fields",
+      "name": "meta.class.oxie",
+      "begin": "\\b(class|struct)\\s+((?:r#)?[_[:alpha:]][_[:alnum:]]*)\\s*(<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?\\s*(\\()",
+      "end": "\\)",
+      "beginCaptures": {
+        "1": { "name": "keyword.declaration.$1.oxie storage.type.oxie" },
+        "2": { "name": "entity.name.type.$1.oxie" },
+        "3": { "patterns": [{ "include": "$self" }] },
+        "4": { "name": "punctuation.brackets.round.oxie" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.brackets.round.oxie" } },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#attributes" },
+        {
+          "match": "\\b(pub|private|internal|public|protected|override)\\b(?=\\s+(?:(?:val|var)\\s+)?[_[:alpha:]])",
+          "name": "storage.modifier.visibility.oxie"
+        },
+        {
+          "match": "\\b(?:(val|var)\\s+)?((?:r#)?[_[:alpha:]][_[:alnum:]]*)\\s*(:)(?!:)",
+          "captures": {
+            "1": { "name": "keyword.other.oxie storage.type.oxie" },
+            "2": { "name": "variable.other.property.oxie" },
+            "3": { "name": "keyword.operator.key-value.oxie" }
+          }
+        },
+        { "include": "#parens" },
+        { "include": "$self" }
+      ]
+    },
+    "modifiers": {
+      "patterns": [
+        {
+          "match": "\\b(data|error|sealed|value|shared|open|abstract|final|inline)\\b(?=\\s+class\\b)",
+          "name": "storage.modifier.oxie"
+        },
+        { "match": "\\b(error)\\b(?=\\s+enum\\b)", "name": "storage.modifier.oxie" },
+        {
+          "match": "\\b(private|internal|public|protected)\\b(?=\\s+(?:[_[:alpha:]]+\\s+)*(?:fun|fn|class|struct|union|interface|trait|enum|object|typealias|type|val|var|let|const|static|mod|impl|init|data|error|sealed|value|shared|companion|test)\\b)",
+          "name": "storage.modifier.visibility.oxie"
+        },
+        {
+          "match": "\\b(override|operator|open|abstract|final|inline|suspend)\\b(?=\\s+(?:[_[:alpha:]]+\\s+)*(?:fun|fn|class|struct|union|interface|trait|enum|object|typealias|type|val|var|let|const|static|mod|impl|init|data|error|sealed|value|shared|companion|test)\\b)",
+          "name": "storage.modifier.oxie"
+        }
+      ]
+    },
+    "keywords": {
+      "comment": "after a `.` these are member names (x?.let { }), except `.await`",
+      "patterns": [
+        {
+          "match": "(?<!\\.)\\b(if|else|when|match|for|while|do|loop|return|break|continue|throw|try|catch)\\b",
+          "name": "keyword.control.oxie"
+        },
+        { "match": "\\bawait\\b", "name": "keyword.control.oxie" },
+        { "match": "(?<!\\.)\\b(val|var|let)\\b", "name": "keyword.other.oxie storage.type.oxie" },
+        { "match": "(?<!\\.)\\b(fun|fn)\\b", "name": "keyword.other.fn.oxie" },
+        {
+          "match": "(?<!\\.)\\b(class|struct|interface|trait|enum|typealias)\\b",
+          "name": "keyword.declaration.$1.oxie storage.type.oxie"
+        },
+        { "match": "(?<!\\.)\\b(mod|extern)\\b", "name": "keyword.other.oxie storage.type.oxie" },
+        {
+          "match": "(?<!\\.)\\b(impl|where|in|is|as|async|dyn|move|ref|unsafe|throws)\\b",
+          "name": "keyword.other.oxie"
+        },
+        { "match": "(?<!\\.)\\bmut\\b", "name": "storage.modifier.mut.oxie" },
+        { "match": "(?<!\\.)\\b(static|const)\\b", "name": "storage.modifier.oxie" },
+        { "match": "(?<!\\.)\\bpub\\b", "name": "storage.modifier.visibility.oxie" },
+        { "match": "(?<!\\.)\\bcrate\\b", "name": "keyword.other.crate.oxie" },
+        { "match": "(?<!\\.)\\b(true|false)\\b", "name": "constant.language.bool.oxie" },
+        { "match": "(?<!\\.)\\bnull\\b", "name": "constant.language.null.oxie" },
+        { "match": "(?<!\\.)\\b(self|Self)\\b", "name": "variable.language.self.oxie" },
+        { "match": "(?<!\\.)\\bthis\\b", "name": "variable.language.this.oxie" },
+        { "match": "(?<!\\.)\\bsuper\\b", "name": "variable.language.super.oxie" },
+        {
+          "comment": "infix words: a to b, 0 until n, 10 downTo 0, r step 2",
+          "match": "(?<=[_[:alnum:])\\]\"'}]\\s)(to|until|downTo|step)(?=\\s+[-_[:alnum:](\"'\\[{&!])",
+          "name": "keyword.other.oxie"
+        }
+      ]
+    },
+    "macros": {
+      "patterns": [
+        {
+          "match": "\\b(macro_rules!)\\s*((?:r#)?[_[:alpha:]][_[:alnum:]]*)?",
+          "captures": {
+            "1": { "name": "entity.name.function.macro.rules.oxie" },
+            "2": { "name": "entity.name.function.macro.oxie" }
+          }
+        },
+        {
+          "comment": "println!(...), vec![...]",
+          "name": "meta.macro.oxie",
+          "match": "\\b([_[:alpha:]][_[:alnum:]]*!)(?=\\s*[(\\[{])",
+          "captures": { "1": { "name": "entity.name.function.macro.oxie" } }
+        }
+      ]
+    },
+    "calls": {
+      "patterns": [
+        {
+          "comment": "f(x), f::<T>(x); Name(x) is a type",
+          "match": "\\b(?:r#)?[_[:lower:]][_[:alnum:]]*(?=\\s*(?:\\(|::<))",
+          "name": "entity.name.function.oxie"
+        },
+        {
+          "comment": "methods with a trailing lambda: xs.map { it * 2 }",
+          "match": "(?<=\\.)\\s*((?:r#)?[_[:lower:]][_[:alnum:]]*)(?=\\s*\\{)",
+          "captures": { "1": { "name": "entity.name.function.oxie" } }
+        }
+      ]
+    },
+    "namespaces": { "match": "\\b(?:r#)?[_[:lower:]][_[:alnum:]]*(?=::)", "name": "entity.name.namespace.oxie" },
+    "numbers": {
+      "patterns": [
+        {
+          "comment": "tuple fields: pair.0",
+          "match": "(?<=\\.)[0-9]+\\b",
+          "name": "constant.numeric.decimal.oxie"
+        },
+        {
+          "match": "\\b(0x[0-9A-Fa-f_]+)([iu](?:8|16|32|64|128|size))?\\b",
+          "captures": {
+            "1": { "name": "constant.numeric.hex.oxie" },
+            "2": { "name": "entity.name.type.numeric.oxie" }
+          }
+        },
+        {
+          "match": "\\b(0o[0-7_]+)([iu](?:8|16|32|64|128|size))?\\b",
+          "captures": {
+            "1": { "name": "constant.numeric.oct.oxie" },
+            "2": { "name": "entity.name.type.numeric.oxie" }
+          }
+        },
+        {
+          "match": "\\b(0b[01_]+)([iu](?:8|16|32|64|128|size))?\\b",
+          "captures": {
+            "1": { "name": "constant.numeric.bin.oxie" },
+            "2": { "name": "entity.name.type.numeric.oxie" }
+          }
+        },
+        {
+          "comment": "1_000, 1.5, 1e-3, 5u8, 2.0f32, 10L",
+          "match": "\\b([0-9][0-9_]*(?:\\.[0-9][0-9_]*)?(?:[eE][+-]?[0-9_]*[0-9][0-9_]*)?)([iu](?:8|16|32|64|128|size)|f32|f64|L)?\\b",
+          "captures": {
+            "1": { "name": "constant.numeric.decimal.oxie" },
+            "2": { "name": "entity.name.type.numeric.oxie" }
+          }
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "match": "\\b(Some|None)\\b", "name": "entity.name.type.option.oxie" },
+        { "match": "\\b(Ok|Err)\\b", "name": "entity.name.type.result.oxie" },
+        {
+          "match": "\\b(?:[iu](?:8|16|32|64|128|size)|f32|f64)\\b",
+          "name": "entity.name.type.numeric.oxie"
+        },
+        { "match": "\\b(?:bool|char|str)\\b", "name": "entity.name.type.primitive.oxie" },
+        {
+          "comment": "MAX_SIZE",
+          "match": "\\b[[:upper:]]{2}[[:upper:][:digit:]_]*\\b",
+          "name": "constant.other.caps.oxie"
+        },
+        { "match": "\\b_?[[:upper:]][_[:alnum:]]*\\b", "name": "entity.name.type.oxie" }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "match": "\\?\\.", "name": "keyword.operator.access.optional.oxie" },
+        { "match": "\\?:", "name": "keyword.operator.elvis.oxie" },
+        { "match": "!!", "name": "keyword.operator.unwrap.oxie" },
+        { "match": "::", "name": "keyword.operator.namespace.oxie" },
+        { "match": "->", "name": "keyword.operator.arrow.skinny.oxie" },
+        { "match": "=>", "name": "keyword.operator.arrow.fat.oxie" },
+        { "match": "\\.\\.[.=<]?", "name": "keyword.operator.range.oxie" },
+        { "match": "\\.", "name": "keyword.operator.access.dot.oxie" },
+        { "match": "(?:<<|>>|[-+*/%^&|])=", "name": "keyword.operator.assignment.oxie" },
+        { "match": "[=!]=|<=|>=", "name": "keyword.operator.comparison.oxie" },
+        { "match": "=", "name": "keyword.operator.assignment.equal.oxie" },
+        { "match": "&&|\\|\\||!", "name": "keyword.operator.logical.oxie" },
+        { "match": "<<", "name": "keyword.operator.bitwise.oxie" },
+        {
+          "comment": "with spaces around: a comparison, else generics",
+          "match": "(?<=\\s)[<>](?=\\s)",
+          "name": "keyword.operator.comparison.oxie"
+        },
+        { "match": "[<>]", "name": "punctuation.brackets.angle.oxie" },
+        { "match": "&", "name": "keyword.operator.borrow.and.oxie" },
+        { "match": "\\|", "name": "keyword.operator.bitwise.oxie" },
+        { "match": "[-+*/%^~]", "name": "keyword.operator.math.oxie" },
+        { "match": "\\?", "name": "keyword.operator.question.oxie" },
+        { "match": ":", "name": "keyword.operator.key-value.oxie" }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": ",", "name": "punctuation.comma.oxie" },
+        { "match": ";", "name": "punctuation.semi.oxie" },
+        { "match": "[{}]", "name": "punctuation.brackets.curly.oxie" },
+        { "match": "[()]", "name": "punctuation.brackets.round.oxie" },
+        { "match": "[\\[\\]]", "name": "punctuation.brackets.square.oxie" }
+      ]
+    },
+    "variables": {
+      "comment": "like Rust: names after a single `.` (fields) are left unscoped",
+      "match": "\\b(?<!(?<!\\.)\\.)(?:r#)?[_[:lower:]][_[:alnum:]]*\\b",
+      "name": "variable.other.oxie"
+    }
+  }
+}

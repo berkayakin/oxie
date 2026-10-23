@@ -1,0 +1,76 @@
+// SYNTAX TEST "source.oxie" "strings, characters and comments"
+
+// line comment
+// <-- comment.line.double-slash.oxie punctuation.definition.comment.oxie
+// ^^^^ comment.line.double-slash.oxie
+/// doc comment
+// <--- comment.line.documentation.oxie
+//! module doc
+// <--- comment.line.documentation.oxie
+//// not a doc comment
+// <---- comment.line.double-slash.oxie
+val a = 1 /* block /* nested */ still */ + 2
+//        ^^ comment.block.oxie
+//                    ^^^^^^ comment.block.oxie
+//                              ^^^^^ comment.block.oxie
+//                                       ^ keyword.operator.math.oxie
+val s = "Hello, $name! sum: ${a + b} cost: \$5\n"
+//      ^ string.quoted.double.oxie punctuation.definition.string.begin.oxie
+//              ^ meta.template.expression.oxie punctuation.definition.template-expression.begin.oxie
+//               ^^^^ string.quoted.double.oxie variable.other.oxie
+//                          ^^ punctuation.definition.template-expression.begin.oxie
+//                            ^ meta.embedded.line.oxie variable.other.oxie
+//                              ^ keyword.operator.math.oxie
+//                                 ^ punctuation.definition.template-expression.end.oxie
+//                                         ^^ constant.character.escape.oxie
+//                                           ^ string.quoted.double.oxie
+//                                           ^ - constant.numeric.decimal.oxie
+//                                            ^^ constant.character.escape.oxie
+val f = "${value:.2} ${list:?} ${a::b} $MAX"
+//              ^ punctuation.separator.format-spec.oxie
+//               ^^ storage.type.format.oxie
+//                          ^ storage.type.format.oxie
+//                                ^^ keyword.operator.namespace.oxie
+//                                      ^^^ constant.other.caps.oxie
+val g = "${items.map { it * 2 }.sum()} done"
+//               ^^^ entity.name.function.oxie
+//                            ^ punctuation.brackets.curly.oxie
+//                              ^^^ entity.name.function.oxie
+//                                   ^ punctuation.definition.template-expression.end.oxie
+//                                     ^^^^ string.quoted.double.oxie
+val h = "${m["key"]} ok"
+//           ^^^^^ meta.template.expression.oxie string.quoted.double.oxie
+//                   ^^ string.quoted.double.oxie
+//                   ^^ - meta.template.expression.oxie
+val multi = """
+//          ^^^ string.quoted.triple.oxie punctuation.definition.string.begin.oxie
+    Dear $name, \no escape "quoted"
+//  ^^^^ string.quoted.triple.oxie
+//        ^^^^ variable.other.oxie
+//              ^^^ string.quoted.triple.oxie
+//              ^^^ - constant.character.escape.oxie
+//                         ^^^^^^^^ string.quoted.triple.oxie
+    """
+//  ^^^ punctuation.definition.string.end.oxie
+val raw = r#"no $template, "quotes" ok"#
+//        ^ string.quoted.byte.raw.oxie
+//         ^ punctuation.definition.string.raw.oxie
+//              ^^^^^^^^^ string.quoted.double.oxie
+//              ^^^^^^^^^ - meta.template.expression.oxie
+//                                    ^ punctuation.definition.string.end.oxie
+val bytes = b"abc\x00" + br"raw" + c"cstr"
+//          ^ string.quoted.byte.raw.oxie
+//               ^^^^ constant.character.escape.oxie
+//                       ^^ string.quoted.byte.raw.oxie
+//                                 ^ string.quoted.byte.raw.oxie
+val chars = listOf('a', '\n', '\u{1F600}', b'x', '\'')
+//                 ^^^ string.quoted.single.char.oxie
+//                       ^^ constant.character.escape.oxie
+//                             ^^^^^^^^^ constant.character.escape.oxie
+//                                         ^^^^ string.quoted.single.char.oxie
+//                                                ^^ constant.character.escape.oxie
+fun longest<'a>(a: &'a str): &'a str = a
+//           ^ entity.name.type.lifetime.oxie
+//                   ^ entity.name.type.lifetime.oxie
+val r#type = 1
+//  ^^^^^^ variable.other.oxie

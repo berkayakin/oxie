@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* A VS Code extension in `editors/vscode-oxie`: highlighting, the language server, ▶ run and
+  test buttons, the generated Rust beside the source, tasks and snippets.
 * Language server: files opened through a symlinked directory (on macOS, anything under `/tmp`)
   get their diagnostics, and definitions point at the open file instead of a second copy. A
   script opened while another script's `cargo check` runs is checked next; before, its rustc

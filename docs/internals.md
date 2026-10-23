@@ -150,6 +150,13 @@ stream grouped by brackets. It parses all repository files without errors and is
 highlighting, outline, indentation, text objects and runnables.
 `editors/build-kuana-extension.sh` regenerates it and copies it into the Kuana extension.
 
+VS Code highlights with a TextMate grammar instead,
+`editors/vscode-oxie/syntaxes/oxie.tmLanguage.json`: regular expressions, edited as JSON. Its
+scope names follow VS Code's Rust grammar wherever Oxie and Rust share a construct, so a `.oxi`
+file and the Rust generated from it look alike in any theme. `rust { }` blocks embed the Rust
+grammar; braces inside them are counted by the Oxie grammar. `npm run test:grammar` checks the
+scopes asserted in `editors/vscode-oxie/test/grammar/*.oxi`.
+
 ## Tests
 
 * `crates/oxie-compiler` unit tests: lexer and formatter.
@@ -160,4 +167,6 @@ highlighting, outline, indentation, text objects and runnables.
   * every example in `examples/` runs (compared with `expected.txt`) and its tests pass;
   * every runnable code block in `README.md` and `docs/*.md` compiles and runs.
 * `crates/oxie-cli/tests/lsp.rs` drives the language server over stdio.
+* `editors/vscode-oxie`: `npm test` runs the grammar tests, then integration tests in VS Code
+  (`test/suite`) with the language server on a copy of `test/fixtures`.
 * `tests/run_e2e.sh` runs the e2e programs from the shell.

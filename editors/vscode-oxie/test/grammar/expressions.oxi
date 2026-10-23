@@ -1,0 +1,125 @@
+// SYNTAX TEST "source.oxie" "expressions"
+
+fun main() {
+    val total = items.iter().map { it.price }.sum::<f64>()
+//  ^^^ keyword.other.oxie storage.type.oxie
+//      ^^^^^ variable.other.oxie
+//              ^^^^^ variable.other.oxie
+//                    ^^^^ entity.name.function.oxie
+//                           ^^^ entity.name.function.oxie
+//                                 ^^ variable.other.oxie
+//                                    ^^^^^ - variable.other.oxie
+//                                            ^^^ entity.name.function.oxie
+    var count = 0
+//  ^^^ storage.type.oxie
+//              ^ constant.numeric.decimal.oxie
+    let mut n: i64 = 10L
+//  ^^^ storage.type.oxie
+//      ^^^ storage.modifier.mut.oxie
+//                   ^^ constant.numeric.decimal.oxie
+//                     ^ entity.name.type.numeric.oxie
+    val nums = vec[0xFF, 0o17, 0b1010, 1_000, 1.5e-3, 5u8, 2.0f32]
+//                 ^^^^ constant.numeric.hex.oxie
+//                       ^^^^ constant.numeric.oct.oxie
+//                             ^^^^^^ constant.numeric.bin.oxie
+//                                     ^^^^^ constant.numeric.decimal.oxie
+//                                            ^^^^^^ constant.numeric.decimal.oxie
+//                                                    ^ constant.numeric.decimal.oxie
+//                                                     ^^ entity.name.type.numeric.oxie
+//                                                            ^^^ entity.name.type.numeric.oxie
+    val name = user?.address?.city ?: "unknown"
+//                 ^^ keyword.operator.access.optional.oxie
+//                                 ^^ keyword.operator.elvis.oxie
+    val port = parse_port(s)!! + pair.0
+//             ^^^^^^^^^^ entity.name.function.oxie
+//                          ^^ keyword.operator.unwrap.oxie
+//                                    ^ constant.numeric.decimal.oxie
+    user?.let { println("found ${it.name}") }
+//        ^^^ entity.name.function.oxie
+//        ^^^ - storage.type.oxie
+    for (i in 0 until 10 step 2) print(i)
+//  ^^^ keyword.control.oxie
+//              ^^^^^ keyword.other.oxie
+//                       ^^^^ keyword.other.oxie
+    for (i in 10 downTo 0) { }
+//               ^^^^^^ keyword.other.oxie
+    val to = 5
+//      ^^ variable.other.oxie
+//      ^^ - keyword.other.oxie
+    val pair = 1 to "one"
+//               ^^ keyword.other.oxie
+    if (x !in xs && y is Some) return
+//  ^^ keyword.control.oxie
+//        ^ keyword.operator.logical.oxie
+//         ^^ keyword.other.oxie
+//               ^^ keyword.operator.logical.oxie
+//                    ^^ keyword.other.oxie
+//                       ^^^^ entity.name.type.option.oxie
+//                             ^^^^^^ keyword.control.oxie
+    val r = 0..10 + 0..=9 + 0..<n
+//           ^^ keyword.operator.range.oxie
+//                   ^^^ keyword.operator.range.oxie
+//                           ^^^ keyword.operator.range.oxie
+    val small = a < b && c >= d
+//                ^ keyword.operator.comparison.oxie
+//                         ^^ keyword.operator.comparison.oxie
+    val m: HashMap<String, Vec<i32>> = HashMap()
+//                ^ punctuation.brackets.angle.oxie
+//                                     ^^^^^^^ entity.name.type.oxie
+    val kind = when (n) {
+//             ^^^^ keyword.control.oxie
+        0 -> "zero"
+//        ^^ keyword.operator.arrow.skinny.oxie
+        in 1..=9 -> "small"
+//      ^^ keyword.other.oxie
+        is Some(v) if v > 0 -> "guard"
+//      ^^ keyword.other.oxie
+//                 ^^ keyword.control.oxie
+        else -> "other"
+//      ^^^^ keyword.control.oxie
+    }
+    val res = match x { Ok(v) => v, Err(e) => throw e }
+//            ^^^^^ keyword.control.oxie
+//                      ^^ entity.name.type.result.oxie
+//                            ^^ keyword.operator.arrow.fat.oxie
+//                                  ^^^ entity.name.type.result.oxie
+//                                            ^^^^^ keyword.control.oxie
+    'outer: for (a in xs) { break 'outer }
+//  ^ punctuation.definition.lifetime.oxie
+//   ^^^^^ entity.name.type.lifetime.oxie
+    try { risky()? } catch (e: MyError) { null }
+//  ^^^ keyword.control.oxie
+//               ^ keyword.operator.question.oxie
+//                   ^^^^^ keyword.control.oxie
+//                                        ^^^^ constant.language.null.oxie
+    val add = { a, b -> a + b }
+//                   ^^ keyword.operator.arrow.skinny.oxie
+    val ts = (a, b) => a + b
+//                  ^^ keyword.operator.arrow.fat.oxie
+    val rs = |a, b| a + b
+//           ^ keyword.operator.bitwise.oxie
+    val h = thread::spawn(move { work() })
+//          ^^^^^^ entity.name.namespace.oxie
+//                  ^^^^^ entity.name.function.oxie
+//                        ^^^^ keyword.other.oxie
+    val price = await fetch_price(item).await
+//              ^^^^^ keyword.control.oxie
+//                                      ^^^^^ keyword.control.oxie
+    println!("{} items", n)
+//  ^^^^^^^^ entity.name.function.macro.oxie
+    val p = Point { x: 1.0, y: 2.0 }
+//          ^^^^^ entity.name.type.oxie
+    val c = Color.Red
+//          ^^^^^ entity.name.type.oxie
+//                ^^^ entity.name.type.oxie
+    val r = &v[1..3]
+//          ^ keyword.operator.borrow.and.oxie
+//            ^ punctuation.brackets.square.oxie
+    flag = !flag || other
+//       ^ keyword.operator.assignment.equal.oxie
+//         ^ keyword.operator.logical.oxie
+//               ^^ keyword.operator.logical.oxie
+    final(result)
+//  ^^^^^ entity.name.function.oxie
+//  ^^^^^ - storage.modifier.oxie
+}
