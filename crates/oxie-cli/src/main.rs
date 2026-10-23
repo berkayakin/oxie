@@ -176,7 +176,7 @@ fn cmd_run(args: &[String]) -> R {
             if !path.exists() {
                 return Err(format!("{} not found", f));
             }
-            let abs = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+            let abs = oxie_compiler::compile::canonicalize(&path).map_err(|e| e.to_string())?;
             // a file inside a project's src/ runs that project
             match Project::find(abs.parent().unwrap()) {
                 Some(p) if abs.starts_with(p.src_dir()) && p.manifest.contains("oxie-build") => (p, None),
@@ -231,7 +231,7 @@ fn cmd_test(args: &[String]) -> R {
     let filter: Vec<String> = opts.iter().filter(|a| !a.starts_with('-') && !a.ends_with(".oxi")).map(|f| test_filter(f)).collect();
     let (p, script) = match &file {
         Some(f) => {
-            let abs = std::fs::canonicalize(f).map_err(|e| e.to_string())?;
+            let abs = oxie_compiler::compile::canonicalize(f).map_err(|e| e.to_string())?;
             match Project::find(abs.parent().unwrap()) {
                 Some(p) if abs.starts_with(p.src_dir()) => (p, false),
                 _ => (project::script_project(&abs).map_err(|e| e.to_string())?, true),
@@ -331,7 +331,7 @@ fn cmd_fmt(args: &[String]) -> R {
 
 fn cmd_emit(args: &[String]) -> R {
     let file = args.iter().find(|a| !a.starts_with("--")).ok_or("usage: oxie emit <file.oxi>")?;
-    let abs = std::fs::canonicalize(file).map_err(|e| format!("{}: {}", file, e))?;
+    let abs = oxie_compiler::compile::canonicalize(file).map_err(|e| format!("{}: {}", file, e))?;
     let project = Project::find(abs.parent().unwrap()).filter(|p| abs.starts_with(p.src_dir()));
     let (out, root) = match &project {
         Some(p) => {

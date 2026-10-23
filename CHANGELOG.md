@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix
+  written into `Cargo.toml` and build scripts, which Cargo rejected ("invalid path url").
 * `oxie init` in a crate that already has `[build-dependencies]` adds `oxie-build` to that
   table instead of writing a second one, which Cargo rejected as a duplicate key.
 * The repository moved to [github.com/oxie-lang/oxie](https://github.com/oxie-lang/oxie); links

@@ -196,7 +196,7 @@ pub fn script_deps(src: &str) -> Vec<String> {
 
 /// Creates (or refreshes) a hidden Cargo project for a single .oxi script.
 pub fn script_project(file: &Path) -> std::io::Result<Project> {
-    let abs = std::fs::canonicalize(file)?;
+    let abs = oxie_compiler::compile::canonicalize(file)?;
     let src = std::fs::read_to_string(&abs)?;
     let stem = abs.file_stem().unwrap().to_string_lossy().replace(|c: char| !c.is_alphanumeric(), "_");
     let stem = if stem.chars().next().is_none_or(|c| c.is_ascii_digit()) { format!("script_{}", stem) } else { stem };
@@ -230,7 +230,7 @@ fn write_if_changed(p: &Path, text: &str) -> std::io::Result<()> {
 
 /// Inputs for a script: the file itself as the crate root.
 pub fn script_inputs(file: &Path) -> std::io::Result<Vec<Input>> {
-    let abs = std::fs::canonicalize(file)?;
+    let abs = oxie_compiler::compile::canonicalize(file)?;
     let text = std::fs::read_to_string(&abs)?;
     Ok(vec![Input { rel_path: PathBuf::from("main.oxi"), abs_path: abs, text }])
 }

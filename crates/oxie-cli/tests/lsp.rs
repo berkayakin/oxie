@@ -131,7 +131,7 @@ fn language_server_features() {
     std::fs::create_dir_all(&dir).unwrap();
     let file: PathBuf = dir.join("demo.oxi");
     std::fs::write(&file, SRC).unwrap();
-    let uri = format!("file://{}", std::fs::canonicalize(&file).unwrap().display());
+    let uri = format!("file://{}", oxie_compiler::compile::canonicalize(&file).unwrap().display());
 
     let mut c = Client::start();
     let init = c.request("initialize", json!({"rootUri": format!("file://{}", dir.display()), "capabilities": {}}));
@@ -211,7 +211,7 @@ fn borrow_errors_have_quick_fixes() {
     std::fs::create_dir_all(&dir).unwrap();
     let file: PathBuf = dir.join("moved.oxi");
     std::fs::write(&file, MOVED).unwrap();
-    let uri = format!("file://{}", std::fs::canonicalize(&file).unwrap().display());
+    let uri = format!("file://{}", oxie_compiler::compile::canonicalize(&file).unwrap().display());
 
     let mut c = Client::start_with(false);
     let init = c.request("initialize", json!({"rootUri": format!("file://{}", dir.display()), "capabilities": {}}));

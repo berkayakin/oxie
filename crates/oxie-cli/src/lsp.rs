@@ -127,7 +127,7 @@ struct Server {
 }
 
 fn canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    oxie_compiler::compile::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 impl Server {

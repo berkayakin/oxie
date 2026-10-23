@@ -265,6 +265,22 @@ pub fn compile_one(text: &str) -> (String, Vec<Diag>) {
 }
 
 /// Discovers all .oxi files under `src_dir`.
+/// `std::fs::canonicalize` without the `\\?\` prefix it adds on Windows: Cargo manifests and
+/// paths written into generated code don't accept it (`D:\a` instead of `\\?\D:\a`).
+pub fn canonicalize(p: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    let p = std::fs::canonicalize(p)?;
+    let plain = without_verbatim_prefix(&p.to_string_lossy());
+    Ok(plain.map(PathBuf::from).unwrap_or(p))
+}
+
+fn without_verbatim_prefix(path: &str) -> Option<String> {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{rest}"));
+    }
+    // only drive paths: other verbatim paths have no plain spelling
+    path.strip_prefix(r"\\?\").filter(|rest| rest.as_bytes().get(1) == Some(&b':')).map(str::to_string)
+}
+
 pub fn discover(src_dir: &Path) -> std::io::Result<Vec<Input>> {
     let mut out = Vec::new();
     fn walk(dir: &Path, root: &Path, out: &mut Vec<Input>) -> std::io::Result<()> {
@@ -277,7 +293,7 @@ pub fn discover(src_dir: &Path) -> std::io::Result<Vec<Input>> {
             } else if p.extension().is_some_and(|x| x == "oxi") {
                 let text = std::fs::read_to_string(&p)?;
                 let rel = p.strip_prefix(root).unwrap().to_path_buf();
-                let abs_path = std::fs::canonicalize(&p).unwrap_or(p.clone());
+                let abs_path = canonicalize(&p).unwrap_or(p.clone());
                 out.push(Input { rel_path: rel, abs_path, text });
             }
         }
@@ -334,4 +350,17 @@ pub fn write_output(out: &Output, out_dir: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_verbatim_prefix;
+
+    #[test]
+    fn verbatim_prefix_is_removed() {
+        assert_eq!(without_verbatim_prefix(r"\\?\D:\a\oxie"), Some(r"D:\a\oxie".to_string()));
+        assert_eq!(without_verbatim_prefix(r"\\?\UNC\server\share\x"), Some(r"\\server\share\x".to_string()));
+        assert_eq!(without_verbatim_prefix(r"\\?\Volume{1234}\x"), None);
+        assert_eq!(without_verbatim_prefix("/home/ada/x.oxi"), None);
+    }
 }
