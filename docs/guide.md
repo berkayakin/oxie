@@ -483,6 +483,7 @@ What Oxie removes is the bookkeeping around it:
 * `for (x in xs)` borrows `xs` when it is used after the loop, so iterating doesn't use up the
   list;
 * a call on a field whose argument changes the same object runs that argument first (below);
+* a loop over one field can call a method that changes other fields (below);
 * trait bounds on type parameters are inferred from the body: `fun show<T>(x: T) = "<$x>"`
   becomes `fn show<T>(x: T) -> String where T: Display`.
 
@@ -513,6 +514,36 @@ fun main() {
 ```
 
 It does this only where the new order can't be noticed, so a statement keeps doing what it says.
+
+Rust also rejects `self.note(item)` inside `for item in &self.items` when `note` changes
+`self`: the loop borrows `items`, and the call borrows all of `self`. When `note` uses only
+other fields, Oxie gives it those fields instead of `self`, which is what you would write by
+hand:
+
+```oxie
+class Inventory(var items: Vec<String>) {
+    var count = 0
+
+    // fn note(item: &str, count: &mut i32) { *count += 1; ... }
+    fun note(item: &str) {
+        count += 1
+        println("$count: $item")
+    }
+
+    // Self::note(&item, &mut self.count)
+    fun scan() {
+        for (item in items) { note(item) }
+    }
+}
+
+fun main() {
+    var inv = Inventory(vec["apple".to_string(), "pear".to_string()])
+    inv.scan()
+}
+```
+
+A method that changes the list the loop goes over stays a method, and the error stays: there,
+the loop really would see the list change.
 
 When the borrow checker still says no, the error is explained in Oxie terms, with fixes. Here
 `register` stores the name in a list, so it has to own it:

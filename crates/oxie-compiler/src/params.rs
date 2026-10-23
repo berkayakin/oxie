@@ -12,7 +12,7 @@ use crate::symbols::type_text;
 use crate::visit::{walk_block, walk_expr};
 
 /// Methods that only read a `String` and exist on `str` with the same meaning.
-const STR_READS: &[&str] = &[
+pub(crate) const STR_READS: &[&str] = &[
     "len", "is_empty", "contains", "starts_with", "ends_with", "chars", "char_indices", "bytes", "lines", "split",
     "splitn", "rsplit", "rsplitn", "split_whitespace", "split_once", "rsplit_once", "trim", "trim_start", "trim_end",
     "strip_prefix", "strip_suffix", "to_uppercase", "to_lowercase", "to_string", "to_owned", "find", "rfind", "replace",
@@ -20,7 +20,7 @@ const STR_READS: &[&str] = &[
 ];
 
 /// Methods that only read a `Vec<T>` and exist on slices (including Oxie's list operations).
-const VEC_READS: &[&str] = &[
+pub(crate) const VEC_READS: &[&str] = &[
     "len", "is_empty", "contains", "starts_with", "ends_with", "iter", "first", "last", "get", "to_vec", "to_owned",
     "join", "concat", "windows", "chunks", "binary_search", "split_first", "split_last", "map", "map_indexed",
     "filter", "filter_not", "filter_map", "flat_map", "for_each", "for_each_indexed", "find", "find_last",

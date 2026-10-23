@@ -1,4 +1,4 @@
-//! Generic read-only traversal over expressions.
+//! Generic traversal over expressions.
 
 use crate::ast::*;
 
@@ -143,6 +143,152 @@ pub fn walk_stmt(s: &Stmt, f: &mut dyn FnMut(&Expr) -> bool) {
         }
         Stmt::Expr { expr, .. } => walk_expr(expr, f),
         Stmt::Attributed { stmt, .. } => walk_stmt(stmt, f),
+        Stmt::Item(_) => {}
+    }
+}
+
+/// `walk_expr` that can change the expressions: calls `f` on every expression in pre-order, and
+/// skips the children when it returns false (after replacing the expression, say).
+pub fn walk_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
+    if !f(e) {
+        return;
+    }
+    use ExprKind::*;
+    match &mut e.kind {
+        Template(parts) => {
+            for p in parts {
+                if let TemplatePart::Expr(x, _) = p {
+                    walk_expr_mut(x, f);
+                }
+            }
+        }
+        Unary(_, x) | Try(x) | Unwrap(x) | Await(x) | Cast(x, _) | Paren(x) | Throw(x) => walk_expr_mut(x, f),
+        Field { recv, .. } => walk_expr_mut(recv, f),
+        Binary(_, a, b) | Assign(_, a, b) | Elvis(a, b) | Pair(a, b) | Index(a, b) | ArrayRepeat(a, b) => {
+            walk_expr_mut(a, f);
+            walk_expr_mut(b, f);
+        }
+        In { item, coll, .. } => {
+            walk_expr_mut(item, f);
+            walk_expr_mut(coll, f);
+        }
+        Is { expr, .. } => walk_expr_mut(expr, f),
+        Call { callee, args } => {
+            walk_expr_mut(callee, f);
+            for a in args {
+                walk_expr_mut(&mut a.value, f);
+            }
+        }
+        MethodCall { recv, args, .. } => {
+            walk_expr_mut(recv, f);
+            for a in args {
+                walk_expr_mut(&mut a.value, f);
+            }
+        }
+        BuiltinMacro { args, .. } => {
+            for a in args {
+                walk_expr_mut(&mut a.value, f);
+            }
+        }
+        If { cond, then, else_ } => {
+            walk_cond_mut(cond, f);
+            walk_block_mut(then, f);
+            if let Some(e) = else_ {
+                walk_expr_mut(e, f);
+            }
+        }
+        When { subject, arms, .. } => {
+            if let Some(s) = subject {
+                walk_expr_mut(s, f);
+            }
+            for a in arms {
+                for c in &mut a.conds {
+                    match c {
+                        WhenCond::In { expr, .. } | WhenCond::Expr(expr) => walk_expr_mut(expr, f),
+                        _ => {}
+                    }
+                }
+                if let Some(g) = &mut a.guard {
+                    walk_expr_mut(g, f);
+                }
+                walk_expr_mut(&mut a.body, f);
+            }
+        }
+        Block(b) | Unsafe(b) | ConstBlock(b) | LabeledBlock { block: b, .. } | Loop { body: b, .. } | Async { block: b, .. } => walk_block_mut(b, f),
+        While { cond, body, .. } => {
+            walk_cond_mut(cond, f);
+            walk_block_mut(body, f);
+        }
+        DoWhile { body, cond, .. } => {
+            walk_block_mut(body, f);
+            walk_expr_mut(cond, f);
+        }
+        For { iter, body, .. } => {
+            walk_expr_mut(iter, f);
+            walk_block_mut(body, f);
+        }
+        Lambda { body, .. } => walk_expr_mut(body, f),
+        Return(Some(x)) => walk_expr_mut(x, f),
+        Break { value: Some(x), .. } => walk_expr_mut(x, f),
+        Tuple(v) | Array(v) | VecLit(v) | MapLit(v) | SetLit(v) => {
+            for x in v {
+                walk_expr_mut(x, f);
+            }
+        }
+        Range { start, end, .. } => {
+            if let Some(x) = start {
+                walk_expr_mut(x, f);
+            }
+            if let Some(x) = end {
+                walk_expr_mut(x, f);
+            }
+        }
+        StructLit { fields, base, .. } => {
+            for (_, v) in fields {
+                if let Some(v) = v {
+                    walk_expr_mut(v, f);
+                }
+            }
+            if let Some(b) = base {
+                walk_expr_mut(b, f);
+            }
+        }
+        TryCatch { body, catch } => {
+            walk_block_mut(body, f);
+            if let Some(c) = catch {
+                walk_block_mut(&mut c.body, f);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn walk_cond_mut(c: &mut Cond, f: &mut dyn FnMut(&mut Expr) -> bool) {
+    match c {
+        Cond::Expr(e) => walk_expr_mut(e, f),
+        Cond::Let { expr, .. } => walk_expr_mut(expr, f),
+        Cond::Chain(parts) => parts.iter_mut().for_each(|c| walk_cond_mut(c, f)),
+    }
+}
+
+pub fn walk_block_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr) -> bool) {
+    for s in &mut b.stmts {
+        walk_stmt_mut(s, f);
+    }
+}
+
+pub fn walk_stmt_mut(s: &mut Stmt, f: &mut dyn FnMut(&mut Expr) -> bool) {
+    match s {
+        Stmt::Let { init, else_, .. } => {
+            if let Some(e) = init {
+                walk_expr_mut(e, f);
+            }
+            if let Some(b) = else_ {
+                walk_block_mut(b, f);
+            }
+        }
+        Stmt::Expr { expr, .. } => walk_expr_mut(expr, f),
+        Stmt::Attributed { stmt, .. } => walk_stmt_mut(stmt, f),
         Stmt::Item(_) => {}
     }
 }

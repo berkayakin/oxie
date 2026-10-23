@@ -1,0 +1,31 @@
+// A method that a loop over another field calls takes the fields it uses instead of `this`.
+
+class Inventory(var items: Vec<String>) {
+    var count = 0
+    var limit: usize = 10
+    var prefix = "item"
+
+    // changes `count`, reads `limit` (a copy) and `prefix` (as `&str`)
+    fun note(item: &str) {
+        if (count < limit as i32) count += 1
+        println("$prefix $item: $count")
+    }
+
+    // not called while a field is borrowed: a method as written
+    fun reset() {
+        count = 0
+    }
+
+    fun scan() {
+        for (item in items) {
+            note(item)
+        }
+        reset()
+    }
+}
+
+fun main() {
+    var inv = Inventory(vec["apple".to_string(), "pear".to_string()])
+    inv.scan()
+    println(inv.count)
+}

@@ -117,6 +117,19 @@ fun short(x: i32) = x * 2
   call or a read of a field, so `items.insert(count(), next_id())` stays as written. A `Copy`
   field is copied before the arguments run, so `next.min(next_id())`, which Rust accepts, is
   left as written too.
+* **Methods that take only the fields they use**: a method that changes `this`, called inside a
+  loop over a field (`for (item in items) { note(item) }`) or a lambda passed to a method of one
+  (`items.iter().for_each { note(it) }`), takes the fields it uses instead of `this`:
+  `fn note(item: &str, count: &mut i32)`, called as `Self::note(&item, &mut self.count)`. Rust
+  rejects `self.note(item)` there, since the loop borrows `items` and the call all of `self`;
+  borrows of different fields, or two reads of one, are allowed. A field the method changes is
+  passed as `&mut`, a `Copy` field it only reads by value, and another field it only reads as
+  `&T` (`&str` or `&[T]` when that is enough). Only for a method that uses at most three fields
+  and doesn't change the one the loop goes over (it may read it, unless the loop changes it:
+  then the conflict is real, and stays an error), that doesn't use `this` itself or call other
+  methods, whose result borrows nothing, that has a block body or a declared result type, and
+  that isn't `pub` and is called only from its own class (another value's call, `other.note()`,
+  keeps it a method). Its other calls pass the fields too.
 * **Modifiers**: `async fun`, `unsafe fun`, `const fun`, `extern "C" fun`.
 * **Automatic lifetimes**: when a function returns a reference and Rust cannot infer which
   parameter it borrows from, Oxie ties the result to all reference parameters

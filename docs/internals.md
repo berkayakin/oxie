@@ -12,6 +12,7 @@ This document is for people working on Oxie itself.
   ▼
   │ sema.rs       crate-wide symbol table: classes, enums, traits, functions, modules,
   │               extension traits; receiver inference; automatic derives
+  │ fields.rs     methods that take only the fields they use (then sema.rs again)
   ▼
   │ lower.rs      items, types, patterns → Rust text
   │ lower_expr.rs statements and expressions → Rust text (with source-map marks)
@@ -136,6 +137,23 @@ Notable translations:
   Oxie can't see into, type parameters and `Rc`/`Arc` (whose counts can be observed) keep it
   owned, and the note names the element type as the cause. `kept_reason` reports the
   first use that keeps a parameter owned ("it returns `v`"), for the explanation of E0382.
+* **Methods that take only the fields they use** (`fields.rs`, after receiver inference): a
+  `&mut self` method that a method of its class calls inside a loop over another field (or a
+  lambda passed to a method of one) becomes `static`, with the fields it uses as parameters.
+  The loop has to keep the field borrowed (`borrowed_field`): the field itself or a lazy view
+  of it (`items.iter().enumerate()`), not a copy (`items.clone()`). The fields come after its
+  own parameters, and its calls pass `this.field` for them (in parameter order, with left-out
+  defaults filled in). `field_uses` records where the body uses each field, which decides the
+  parameter: by value for a `Copy` field it only reads, `&mut` for one it changes (assigns, calls
+  a `MUTATING_METHODS` method or one Oxie doesn't know on, borrows mutably), else `&T`, or
+  `&str`/`&[T]` when every method called on it is in `STR_READS`/`VEC_READS`; and where the
+  body reads it as `*field`. The method must use at most three fields, not change a field
+  borrowed around a call nor read one borrowed mutably there (those conflicts are real), not
+  use `this` itself, call no method of the class, have no result borrowed from a field, and
+  only be called from its class
+  (`used_outside`, by name). The rewritten AST goes through `sema::collect` again, so the
+  callers' receivers come from the field parameters, and `ParamNote`s say why each field is a
+  parameter.
 * **Arguments that change `this`** (`move_args_changing_this` in `lower_expr.rs`): for a
   statement, block tail, `when` arm or lambda body that calls a method on a field of `this`,
   `calls_changing_this` walks the arguments in Rust's evaluation order and collects the calls

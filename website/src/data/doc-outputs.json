@@ -141,6 +141,11 @@
   },
   {
     "file": "docs/guide.md",
+    "output": "1: apple\n2: pear\n",
+    "source": "class Inventory(var items: Vec<String>) {\n    var count = 0\n\n    // fn note(item: &str, count: &mut i32) { *count += 1; ... }\n    fun note(item: &str) {\n        count += 1\n        println(\"$count: $item\")\n    }\n\n    // Self::note(&item, &mut self.count)\n    fun scan() {\n        for (item in items) { note(item) }\n    }\n}\n\nfun main() {\n    var inv = Inventory(vec[\"apple\".to_string(), \"pear\".to_string()])\n    inv.scan()\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
     "output": "2\n",
     "source": "fun add(a: i32, b: i32) = a + b\n\ntest \"adds numbers\" {\n    assert_eq(add(2, 2), 4)\n}\n\ntest \"parsing fails on letters\" throws {\n    val r = \"x\".parse::<i32>()\n    assert(r.is_err())\n}\n\nfun main() = println(add(1, 1))\n"
   },

@@ -1,0 +1,8 @@
+item start: 1
+item apple: 2
+item apple: 4
+item pear: 5
+item pear: 7
+item once: 8
+8 ["APPLE", "PEAR"] Point { x: 2, y: 0 }
+3

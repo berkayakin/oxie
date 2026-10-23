@@ -131,8 +131,18 @@ pub fn compile(inputs: Vec<Input>, opts: &Options) -> Output {
     sema::auto_type_lifetimes(&mut parsed.iter_mut().map(|p| &mut p.file).collect::<Vec<_>>());
     let param_notes = crate::params::borrow_params(&mut parsed.iter_mut().map(|p| &mut p.file).collect::<Vec<_>>());
     let has_lib = parsed.iter().any(|p| p.is_root && p.input.rel_path.file_stem().is_some_and(|s| s == "lib"));
-    let units: Vec<SourceUnit> = parsed.iter().map(|p| SourceUnit { module: p.module.clone(), file: &p.file }).collect();
-    let k = sema::collect(&units, &opts.crate_name, opts.extern_crates.clone(), has_lib);
+    let collect = |parsed: &[Parsed]| {
+        let units: Vec<SourceUnit> = parsed.iter().map(|p| SourceUnit { module: p.module.clone(), file: &p.file }).collect();
+        sema::collect(&units, &opts.crate_name, opts.extern_crates.clone(), has_lib)
+    };
+    let mut k = collect(&parsed);
+    // methods that take only the fields they use (which needs the receivers), then the receivers
+    // again for their callers
+    let field_notes = crate::fields::take_fields(&mut parsed.iter_mut().map(|p| (p.module.as_slice(), &mut p.file)).collect::<Vec<_>>(), &k);
+    if !field_notes.is_empty() {
+        k = collect(&parsed);
+    }
+    let param_notes: Vec<crate::params::ParamNote> = param_notes.into_iter().chain(field_notes).collect();
 
     let mut out = Output::default();
     // module tree: path -> generated file

@@ -1,0 +1,69 @@
+// A method that uses only some fields, called while a loop goes over another field, takes those
+// fields (`fn note(item: &str, weight: i32, count: &mut i32, ...)`), so the loop can call it:
+// Rust rejects `self.note(item)` there, since the loop borrows `items` and the call all of `this`.
+
+data class Point(var x: i32, var y: i32)
+
+class Inventory(var items: Vec<String>) {
+    var count = 0
+    var limit: usize = 10
+    var prefix = "item"
+    var seen: Vec<String> = vec[]
+    var pos = Point(0, 0)
+
+    init {
+        note("start")
+    }
+
+    // changes `count`, and reads `limit` (a copy) and `prefix` (as `&str`)
+    fun note(item: &str, weight: i32 = 1) {
+        if (count < limit as i32) count += weight
+        println("$prefix $item: $count")
+    }
+
+    // changes `seen`, a list
+    fun record(item: &str) {
+        seen.push(item.to_uppercase())
+    }
+
+    // changes a field of `pos`, a `Copy` value
+    fun step() {
+        pos.x += 1
+    }
+
+    fun scan() {
+        for (item in items) {
+            note(item)
+            note(item, weight = 2)
+            this.record(item)
+        }
+        // a lambda passed to a method of `items` borrows it too
+        items.iter().for_each { step() }
+    }
+
+    // a call without a loop around it passes the fields as well
+    fun once() = note("once")
+}
+
+// reads `items` while the loop goes over it: two reads at once are fine
+class Shelf(var items: Vec<String>) {
+    var seen = 0
+
+    fun mark(item: &str) {
+        if (items.len() > 1) seen += item.len() as i32
+    }
+
+    fun check() {
+        for (item in items) { mark(item) }
+    }
+}
+
+fun main() {
+    var inv = Inventory(vec["apple".to_string(), "pear".to_string()])
+    inv.scan()
+    inv.once()
+    println("${inv.count} ${inv.seen:?} ${inv.pos:?}")
+    var shelf = Shelf(vec["ab".to_string(), "c".to_string()])
+    shelf.check()
+    println(shelf.seen)
+}

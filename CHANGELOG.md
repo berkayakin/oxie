@@ -103,6 +103,13 @@
   after the method (`let next_id = self.next_id(); self.items.push(next_id);`). Rust borrows
   the field for the call before it runs the arguments, so it rejected the statement. Only
   statements that rustc rejects change, and `oxie emit --annotate` says why for each local.
+* A loop over a field can call a method that changes other fields: `for (item in items) {
+  note(item) }`, with `note` changing `count`, used to be rejected by rustc, since the call
+  borrowed all of `this` while the loop borrowed `items`. Oxie now gives such a method the
+  fields it uses instead of `this` (`fn note(item: &str, count: &mut i32)`, called as
+  `Self::note(&item, &mut self.count)`), when it uses at most three fields, doesn't change the
+  one the loop goes over, and is called only from its own class. `oxie emit --annotate` says why
+  for each field.
 * Capture lists: `{ [counter, tx] -> ... }` gives a lambda its own clones of `counter` and `tx`
   (and `[n = expr]` a computed value) and makes it `move`, replacing Rust's
   `let tx = tx.clone(); move || ...` before every thread or callback.

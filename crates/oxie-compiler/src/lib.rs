@@ -8,6 +8,7 @@ pub mod bounds;
 pub mod compile;
 pub mod diag;
 pub mod emit;
+pub mod fields;
 pub mod format;
 pub mod infer;
 pub mod lexer;

@@ -1,0 +1,40 @@
+// A loop over a field calling a method that changes `this`: Oxie gives the method the fields it
+// uses instead of `this` only when the conflict isn't real and every call is in the class.
+
+// `keep` changes `items`, the list the loop goes over: the conflict is real
+class Basket(var items: Vec<String>, var count: i32 = 0) {
+    fun keep(item: &str) {
+        items.push(item.to_string())
+        count += 1
+    }
+
+    fun copy_all() {
+        for (item in items) {
+            keep(item)
+            // error: 13: `this` can't be changed while it is borrowed
+            // error: 13: fix: loop over a copy of `items`
+        }
+    }
+}
+
+// `note` is also called from outside its class, so its signature stays
+class Counter(var items: Vec<String>, var count: i32 = 0) {
+    fun note(item: &str) {
+        count += item.len() as i32
+    }
+
+    fun scan() {
+        for (item in items) {
+            note(item)
+            // error: 28: `this` can't be changed while it is borrowed
+        }
+    }
+}
+
+fun main() {
+    var b = Basket(vec["a".to_string()])
+    b.copy_all()
+    var c = Counter(vec["a".to_string()])
+    c.note("x")
+    c.scan()
+}
