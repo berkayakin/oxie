@@ -6,8 +6,8 @@ members = ["crates/*", "examples/*", "bench"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/berkayakin/oxie"
-homepage = "https://github.com/berkayakin/oxie"
+repository = "https://github.com/oxie-lang/oxie"
+homepage = "https://github.com/oxie-lang/oxie"
 rust-version = "1.82"
 
 # The crates published to crates.io; a path for building here, a version for crates.io.

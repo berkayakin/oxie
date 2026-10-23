@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* The repository moved to [github.com/oxie-lang/oxie](https://github.com/oxie-lang/oxie); links
+  to the old address redirect.
 * The crates declare `rust-version = "1.82"`, the oldest Rust that builds Oxie and its
   generated code, so an older Rust gets a clear error instead of a failed build.
 

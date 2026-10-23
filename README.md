@@ -159,12 +159,12 @@ prebuilt binary or from source:
 
 ```bash
 # macOS and Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/berkayakin/oxie/releases/latest/download/oxie-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/oxie-lang/oxie/releases/latest/download/oxie-installer.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/berkayakin/oxie/releases/latest/download/oxie-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/oxie-lang/oxie/releases/latest/download/oxie-installer.ps1 | iex"
 ```
 
 ```bash
@@ -175,7 +175,7 @@ cargo binstall oxie
 cargo install oxie
 ```
 
-Binaries for macOS, Linux and Windows are also on the [releases page](https://github.com/berkayakin/oxie/releases). Projects `oxie`
+Binaries for macOS, Linux and Windows are also on the [releases page](https://github.com/oxie-lang/oxie/releases). Projects `oxie`
 creates get the `oxie-build` helper from crates.io. To work on Oxie itself, see
 [working on Oxie](docs/tooling.md#working-on-oxie).
 

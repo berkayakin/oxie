@@ -14,7 +14,7 @@
     "license": "MIT OR Apache-2.0",
     "description": "Oxie grammar for tree-sitter",
     "links": {
-      "repository": "https://github.com/berkayakin/oxie"
+      "repository": "https://github.com/oxie-lang/oxie"
     }
   }
 }

@@ -4,7 +4,7 @@
   "description": "Tree-sitter grammar for the Oxie programming language",
   "main": "grammar.js",
   "license": "MIT OR Apache-2.0",
-  "repository": "https://github.com/berkayakin/oxie",
+  "repository": "https://github.com/oxie-lang/oxie",
   "scripts": {
     "generate": "tree-sitter generate",
     "test": "tree-sitter test"

@@ -4,7 +4,7 @@ version = "0.1.0"
 schema_version = 1
 description = "Support for the Oxie programming language: syntax highlighting, outline, run and test buttons, and the Oxie language server (diagnostics, completion, hover, go to definition, rename, formatting)."
 authors = ["Berkay Akin"]
-repository = "https://github.com/berkayakin/oxie"
+repository = "https://github.com/oxie-lang/oxie"
 
 # The grammar is bundled in grammars/oxie/src (generated from editors/tree-sitter-oxie).
 [grammars.oxie]

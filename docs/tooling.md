@@ -11,12 +11,12 @@ Each of these installs `oxie` into `~/.cargo/bin`:
 
 ```bash
 # macOS and Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/berkayakin/oxie/releases/latest/download/oxie-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/oxie-lang/oxie/releases/latest/download/oxie-installer.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/berkayakin/oxie/releases/latest/download/oxie-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/oxie-lang/oxie/releases/latest/download/oxie-installer.ps1 | iex"
 ```
 
 ```bash
@@ -28,7 +28,7 @@ cargo install oxie
 ```
 
 The installers and `cargo binstall` download a prebuilt binary from the
-[releases page](https://github.com/berkayakin/oxie/releases) (macOS on Apple silicon and Intel, Linux on x86-64 and ARM, Windows on
+[releases page](https://github.com/oxie-lang/oxie/releases) (macOS on Apple silicon and Intel, Linux on x86-64 and ARM, Windows on
 x86-64), which also has checksums. `cargo install` compiles it, which takes a minute or two.
 Running the same command again updates `oxie`.
 
@@ -39,7 +39,7 @@ installed `oxie` (`oxie-build = "0.1.0"` for `oxie` 0.1.0). After updating `oxie
 ### Working on Oxie
 
 ```bash
-git clone https://github.com/berkayakin/oxie.git && cd oxie
+git clone https://github.com/oxie-lang/oxie.git && cd oxie
 cargo install --path crates/oxie-cli
 export OXIE_HOME="$PWD"
 ```
