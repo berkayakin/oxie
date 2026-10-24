@@ -7,12 +7,13 @@ Support for the [Oxie programming language](../../README.md) in the Kuana editor
 * the Oxie language server: diagnostics (Oxie and rustc errors mapped to `.oxi` lines),
   completion, hover with the generated Rust, go to definition, references, rename, signature
   help, formatting, inlay hints;
-* ▶ run buttons on `fun main` and on each `test "..."` block;
+* ▶ run buttons on `fun main` and on each `test "..."` block, which show the test's last result (✓/✕);
 * snippets.
 
 ## Install
 
-1. Install the `oxie` command (the language server is `oxie lsp`):
+1. Install the `oxie` command (the language server is `oxie lsp`): open an `.oxi` file and click
+   **Install** in Kuana's status bar, which downloads it from the latest GitHub release, or:
 
    ```bash
    cargo install oxie

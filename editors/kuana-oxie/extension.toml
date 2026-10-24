@@ -1,6 +1,6 @@
 id = "oxie"
 name = "Oxie"
-version = "0.1.0"
+version = "0.1.1"
 schema_version = 1
 description = "Support for the Oxie programming language: syntax highlighting, outline, run and test buttons, and the Oxie language server (diagnostics, completion, hover, go to definition, rename, formatting)."
 authors = ["Berkay Akin"]
@@ -16,3 +16,8 @@ command = "oxie"
 args = ["lsp"]
 install = "cargo install oxie"
 root_markers = ["Cargo.toml"]
+
+# Kuana's Install button: the oxie command from the latest GitHub release (cargo-dist's builds)
+[language_servers.oxi.installer]
+github = "oxie-lang/oxie"
+assets = { "macos-aarch64" = "oxie-aarch64-apple-darwin.tar.xz", "macos-x86_64" = "oxie-x86_64-apple-darwin.tar.xz", "linux-aarch64" = "oxie-aarch64-unknown-linux-gnu.tar.xz", "linux-x86_64" = "oxie-x86_64-unknown-linux-gnu.tar.xz", "windows-x86_64" = "oxie-x86_64-pc-windows-msvc.zip" }

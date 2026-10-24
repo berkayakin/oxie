@@ -16,14 +16,14 @@
   {
     "label": "oxie test: $ZED_CUSTOM_OXIE_TEST_NAME",
     "command": "oxie",
-    "args": ["test", "$ZED_FILE", "$ZED_CUSTOM_OXIE_TEST_NAME"],
+    "args": ["test", "$ZED_FILE", "$ZED_CUSTOM_OXIE_TEST_NAME", "--", "--format=pretty"],
     "cwd": "$ZED_DIRNAME",
     "tags": ["oxie-test"]
   },
   {
     "label": "oxie test (all)",
     "command": "oxie",
-    "args": ["test", "$ZED_FILE"],
+    "args": ["test", "$ZED_FILE", "--", "--format=pretty"],
     "cwd": "$ZED_DIRNAME",
     "tags": ["oxie-test", "oxie-main"]
   },
