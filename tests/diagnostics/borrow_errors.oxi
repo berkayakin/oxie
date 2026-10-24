@@ -37,3 +37,15 @@ class Nick(val nick: String, val short: bool) {
     // error: 36: fix: use a copy (`.clone()`): `override fun toString() = if (short) nick.clone() else "anonymous"`
     // not: 36: pass a reference
 }
+
+// an element taken out of a list: rustc suggests `<String as Clone>::clone(&...)`
+class Shelf(val items: Vec<String>) {
+    fun first(): String = items[0]
+    // error: 43: fix: use a copy (`.clone()`): `fun first(): String = items[0].clone()`
+    // not: 43: as Clone
+
+    fun last(): String {
+        return this.items[items.len() - 1]
+        // error: 48: fix: use a copy (`.clone()`): `return this.items[items.len() - 1].clone()`
+    }
+}

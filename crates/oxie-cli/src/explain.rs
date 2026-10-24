@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::cargo::{Edit, Fix, Label, MappedDiag};
+use crate::cargo::{Edit, Fix, Label, MappedDiag, Suggestion};
 use crate::sources::Sources;
 use oxie_compiler::ast::{Block, Cond, Expr, ExprKind, File, FunBody, FunDecl, Item, ItemKind, Pat, Stmt, Type, TypeDecl, UnOp};
 use oxie_compiler::diag::Span;
@@ -1558,14 +1558,56 @@ fn rustc_fixes(d: &mut MappedDiag, lines: &[&str]) {
     // one that edits several places (`Box::new(` and `)`), when each part reads as Oxie: its note
     // can't show the code in one piece, so it becomes the fix's title
     for m in d.multipart.clone() {
+        let same_place = |d: &MappedDiag, edits: &[Edit]| d.fixes.iter().any(|f| f.edits.iter().any(|x| edits.iter().any(|e| (x.line, x.col) == (e.line, e.col))));
+        if let Some(edits) = clone_call(&m.parts, lines) {
+            if !same_place(d, &edits) {
+                d.fixes.push(Fix { title: "use a copy (`.clone()`)".into(), edits });
+            }
+            continue;
+        }
         let edits: Option<Vec<Edit>> = m.parts.iter().map(|p| Some(Edit { file: None, line: p.line, col: p.col, end_line: p.end_line, end_col: p.end_col, text: oxie_code(&p.replacement)? })).collect();
         let Some(edits) = edits else { continue };
-        if d.fixes.iter().any(|f| f.edits.iter().any(|x| edits.iter().any(|e| (x.line, x.col) == (e.line, e.col)))) {
+        if same_place(d, &edits) {
             continue;
         }
         d.notes.retain(|n| n.strip_prefix("help: ") != Some(m.message.as_str()));
         d.fixes.push(Fix { title: oxie_terms(&m.message), edits });
     }
+}
+
+/// rustc's `<String as Clone>::clone(&` and `)` around a value, in Oxie: `.clone()` after the
+/// value, which is put in parentheses unless the call applies to all of it (`items[0]`).
+fn clone_call(parts: &[Suggestion], lines: &[&str]) -> Option<Vec<Edit>> {
+    let [open, close] = parts else { return None };
+    if !(open.replacement.starts_with('<') && open.replacement.ends_with(" as Clone>::clone(&") && close.replacement == ")" && open.line == close.line) {
+        return None;
+    }
+    let line = lines.get(open.line as usize)?;
+    let value: String = line.chars().skip(open.end_col as usize).take(close.col.checked_sub(open.end_col)? as usize).collect();
+    if value.is_empty() {
+        return None;
+    }
+    Some(if postfix_ok(&value) {
+        vec![edit(close.line, close.col, close.end_col, ".clone()")]
+    } else {
+        vec![edit(open.line, open.col, open.end_col, "("), edit(close.line, close.col, close.end_col, ").clone()")]
+    })
+}
+
+/// Does a method call after this code apply to all of it: a name, field, index, call or
+/// parenthesized value (`this.items[i + 1]`, `(a + b)`), not `*x` or `a + b`?
+fn postfix_ok(code: &str) -> bool {
+    let mut depth = 0;
+    for c in code.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            _ if depth > 0 => {}
+            c if is_ident_char(c) || c == '.' => {}
+            _ => return false,
+        }
+    }
+    depth == 0
 }
 
 /// A part of a rustc suggestion as Oxie, when it reads the same apart from paths through a type
@@ -2202,6 +2244,16 @@ mod tests {
         assert_eq!(oxie_code("let value = name.clone();\n"), None);
         assert_eq!(oxie_terms("store this in the heap by calling `Box::new`"), "store this in the heap by calling `Box.new`");
         assert_eq!(oxie_terms("to call the trait object stored in `run`, surround the field access with parentheses"), "to call the function stored in `run`, surround the field access with parentheses");
+    }
+
+    #[test]
+    fn qualified_clone_is_a_clone_call() {
+        let part = |col: u32, text: &str| Suggestion { line: 0, col, end_line: 0, end_col: col, replacement: text.into() };
+        let fix = |line: &str, start: u32, end: u32| clone_call(&[part(start, "<String as Clone>::clone(&"), part(end, ")")], &[line]);
+        assert_eq!(fix("    return items[i + 1]", 11, 23), Some(vec![edit(0, 23, 23, ".clone()")]));
+        assert_eq!(fix("    return (a + b)", 11, 18), Some(vec![edit(0, 18, 18, ".clone()")]));
+        assert_eq!(fix("    return *r", 11, 13), Some(vec![edit(0, 11, 11, "("), edit(0, 13, 13, ").clone()")]));
+        assert_eq!(clone_call(&[part(4, "Box::new("), part(9, ")")], &["val x = value"]), None);
     }
 
     #[test]

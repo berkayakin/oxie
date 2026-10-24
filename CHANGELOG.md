@@ -173,7 +173,9 @@
   which doesn't compile.
 * A field of `this` that can't be moved out (`return name` in a method that returns a `String`)
   gets rustc's `.clone()` as a quick fix: `return name.clone()`. It used to be only a note,
-  because the end of the generated `self.name` didn't map onto `name` (or onto `this.name`).
+  because the end of the generated `self.name` didn't map onto `name` (or onto `this.name`). An
+  element taken out of a list (`fun first(): String = items[0]`) gets `items[0].clone()` too,
+  where rustc suggests `<String as Clone>::clone(&...)`, which isn't Oxie.
 * A labeled block (`'found: { ... }`) gets the declared type of what it initializes, as a plain
   block does, so its value is converted: `"text"` to a `String`, a value to `T?`.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix
