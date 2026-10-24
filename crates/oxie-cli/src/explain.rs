@@ -1032,7 +1032,11 @@ fn no_method(d: &mut MappedDiag, sources: &Sources, lines: &[&str], method: &str
     if d.notes.iter().any(|n| n.contains("`ListOps` defines an item")) {
         let ty = ticks(&d.message).get(1).cloned().unwrap_or_default();
         d.notes.retain(|n| !n.contains("`ListOps` defines an item") && !n.contains("items from traits can only be used if"));
-        d.notes.push(help(&format!("`{}()` is one of Oxie's list operations: lists, arrays and slices have it, but `{}` doesn't.", method, ty)));
+        if is_iterator(&ty) {
+            list_op_on_iterator(d, sources, method, &ty);
+        } else {
+            d.notes.push(help(&format!("`{}()` is one of Oxie's list operations: lists, arrays and slices have it, but `{}` doesn't.", method, ty)));
+        }
     }
     opposite_name(d, sources, method);
     let rust = KOTLIN_METHODS.iter().find(|(k, _)| *k == method).map(|(_, r)| r.to_string()).or_else(|| {
@@ -1051,6 +1055,83 @@ fn no_method(d: &mut MappedDiag, sources: &Sources, lines: &[&str], method: &str
         }
     }
     imports(d, lines);
+}
+
+/// Iterator types of std, by the name rustc gives them in messages (`std::str::Split<'a, P>`,
+/// `Map<I, F>`).
+const ITERATORS: &[&str] = &[
+    "Iter", "IterMut", "IntoIter", "Drain", "Keys", "Values", "ValuesMut", "IntoKeys", "IntoValues", "Chars", "CharIndices", "Bytes", "Lines",
+    "Split", "SplitN", "RSplit", "RSplitN", "SplitTerminator", "SplitInclusive", "SplitWhitespace", "SplitAsciiWhitespace", "Matches",
+    "MatchIndices", "Windows", "Chunks", "ChunksExact", "Range", "RangeInclusive", "RangeFrom", "Map", "Filter", "FilterMap", "FlatMap",
+    "Flatten", "Enumerate", "Rev", "Zip", "Chain", "Take", "Skip", "TakeWhile", "SkipWhile", "MapWhile", "StepBy", "Peekable", "Cloned",
+    "Copied", "Inspect", "Scan", "Fuse", "Cycle", "Args",
+];
+
+/// Is a type that rustc names in a message an iterator: one of std's (`Chars<'a>`), or
+/// `impl Iterator<Item = i32>` or `Box<dyn Iterator<Item = i32>>`?
+fn is_iterator(ty: &str) -> bool {
+    let path = ty.split('<').next().unwrap_or(ty);
+    let std = !path.contains("::") || ["std::", "core::", "alloc::"].iter().any(|p| path.starts_with(p));
+    ty.contains("Iterator<") || std && ITERATORS.contains(&last_segment(path))
+}
+
+/// Iterators of std whose items aren't references into a list (`chars()`, `split(' ')`, ranges,
+/// `into_iter()`): collected into a list, its elements are what the iterator's items are.
+fn values_iterator(ty: &str) -> bool {
+    let path = ty.split('<').next().unwrap_or(ty);
+    path.starts_with("std::str::") || ["std::ops::Range", "std::ops::RangeInclusive", "std::vec::IntoIter", "Chars", "CharIndices", "SplitWhitespace", "SplitAsciiWhitespace"].contains(&path)
+}
+
+/// One of Oxie's list operations called on an iterator (`xs.iter().map_indexed { }`,
+/// `s.chars().join_to_string("")`): lists have it, so it is called on the list, or on the
+/// iterator collected into one. The similar names rustc suggests do something else (`is_sorted`
+/// for `sorted`).
+fn list_op_on_iterator(d: &mut MappedDiag, sources: &Sources, method: &str, ty: &str) {
+    if let Some(other) = d.notes.iter().find(|n| n.contains(" with a similar name")).and_then(|n| ticks(n).first().cloned()) {
+        d.notes.retain(|n| !n.contains(" with a similar name"));
+        d.suggestions.retain(|s| s.replacement != other);
+    }
+    // rustc's "method `sorted` is available on `std::slice::Iter<'_, i32>`" for an earlier
+    // receiver of the chain, an iterator too
+    d.secondary.retain(|s| !s.text.starts_with(&format!("method `{}` is available on", method)));
+    d.notes.push(help(&format!(
+        "`{m}()` is one of Oxie's list operations: lists, arrays and slices have it, but `{ty}` is an iterator. Call it on the list (`xs.{m}()` rather than `xs.iter().{m}()`), or collect the iterator into a list first (`.collect::<Vec<_>>().{m}()`).",
+        m = method,
+        ty = ty
+    )));
+    let Some(here) = sources.file(&d.file) else { return };
+    let src = here.text.as_str();
+    let at = byte_offset(src, d.line, d.col);
+    if !src[at..].starts_with(method) {
+        return;
+    }
+    // where the call's receiver ends, and where the list ends when the receiver is `list.iter()`
+    let mut found = None;
+    oxie_compiler::visit::walk_items(&here.ast().items, &mut |e| {
+        if let ExprKind::MethodCall { recv, name, safe: false, .. } = &e.kind {
+            if name == method && src.get(recv.span.end as usize..at).is_some_and(|t| t.trim() == ".") {
+                let list = match &recv.kind {
+                    ExprKind::MethodCall { recv: list, name, generics: None, args, safe: false } if name == "iter" && args.is_empty() => Some(list.span.end),
+                    _ => None,
+                };
+                found = Some((recv.span.end, list));
+            }
+        }
+        found.is_none()
+    });
+    let Some((end, list)) = found else { return };
+    match list {
+        // `iter()` of a list, array or slice: the operation's lambdas get the same `&T` on the list
+        Some(list) if ty.starts_with("std::slice::Iter<") => {
+            d.fixes.push(Fix { title: format!("call `{}()` on the list", method), edits: vec![span_edit(src, Span::new(list as usize, end as usize), "")] });
+        }
+        // a list collected from it is a temporary, which the operations that return a reference
+        // into the list would outlive
+        _ if values_iterator(ty) && !["find", "find_last", "max_by_key", "min_by_key"].contains(&method) => {
+            d.fixes.push(Fix { title: "collect the iterator into a list first".into(), edits: vec![span_edit(src, Span::new(end as usize, end as usize), ".collect::<Vec<_>>()")] });
+        }
+        _ => {}
+    }
 }
 
 /// Words of method names that mean the opposite of each other.
@@ -2393,6 +2474,19 @@ mod tests {
         assert!(neg("filter_not", "filter") && !is_predicate(&words("filter")));
         // typos and other similar names
         assert!(!opp("is_emty", "is_empty") && !opp("lenght", "len") && !opp("push_str", "push") && !opp("to_owned", "to_string"));
+    }
+
+    #[test]
+    fn iterators_by_the_names_rustc_gives_them() {
+        for ty in ["std::slice::Iter<'a, T>", "Chars<'a>", "Map<I, F>", "std::ops::Range<Idx>", "impl Iterator<Item = i32>", "Box<dyn Iterator<Item = i32>>", "std::collections::hash_map::Keys<'a, K, V>"] {
+            assert!(is_iterator(ty), "{}", ty);
+        }
+        for ty in ["&str", "String", "std::option::Option<T>", "std::collections::HashMap<K, V, S>", "geometry::Map"] {
+            assert!(!is_iterator(ty), "{}", ty);
+        }
+        // collected, the items are the list's elements, not references to them
+        assert!(values_iterator("std::str::Split<'a, P>") && values_iterator("Chars<'a>") && values_iterator("std::vec::IntoIter<T, A>"));
+        assert!(!values_iterator("std::slice::Iter<'a, T>") && !values_iterator("Map<I, F>") && !values_iterator("std::ops::RangeFrom<Idx>"));
     }
 
     #[test]

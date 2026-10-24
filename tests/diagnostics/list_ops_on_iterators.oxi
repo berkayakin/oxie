@@ -1,0 +1,41 @@
+// Oxie's list operations exist on lists, arrays and slices, not on iterators: the explanation
+// says to call them on the list or to collect the iterator first, and offers either as a fix
+// when it compiles.
+
+fun numbered(names: &[String]): String = names.iter().map_indexed { i, n -> "$i. $n" }.join_to_string(", ")
+// error: 5: is an iterator. Call it on the list
+// error: 5: fix: call `map_indexed()` on the list: `fun numbered(names: &[String]): String = names.map_indexed { i, n -> "$i. $n" }.join_to_string(", ")`
+
+fun main() {
+    val xs = vec[3, 1, 2]
+    val shifted = xs.iter().map_indexed { i, x -> i as i32 + x }
+    // error: 11: fix: call `map_indexed()` on the list: `val shifted = xs.map_indexed { i, x -> i as i32 + x }`
+    // not: 11: fix: collect
+    if (xs.iter().is_not_empty()) println("$shifted")
+    // error: 14: fix: call `is_not_empty()` on the list: `if (xs.is_not_empty()) println("$shifted")`
+    // rustc suggests `is_sorted`, which returns whether it is sorted
+    val words = "pear apple fig".split(' ').sorted()
+    // error: 17: `std::str::Split<'a, P>` is an iterator
+    // error: 17: fix: collect the iterator into a list first: `val words = "pear apple fig".split(' ').collect::<Vec<_>>().sorted()`
+    // not: 17: is_sorted
+    val text = "abc"
+    val spaced = text.chars().join_to_string(" ")
+    // error: 22: fix: collect the iterator into a list first: `val spaced = text.chars().collect::<Vec<_>>().join_to_string(" ")`
+    val small = xs.clone().into_iter().filter_not { it > 2 }
+    // error: 24: fix: collect the iterator into a list first: `val small = xs.clone().into_iter().collect::<Vec<_>>().filter_not { it > 2 }`
+    // not: 24: means the opposite
+    // the items of `map` aren't known, and rustc says the `iter()` before it would have `sorted`
+    val doubled = xs.iter().map { it * 2 }.sorted()
+    // error: 28: is an iterator. Call it on the list (`xs.sorted()` rather than `xs.iter().sorted()`), or collect the iterator into a list first
+    // not: 28: fix:
+    // not: 28: is available on
+    // `find_last` returns a reference into the list, which a collected one wouldn't outlive
+    val last = text.chars().find_last { it != 'c' }
+    // error: 33: is an iterator
+    // not: 33: fix:
+    // text isn't an iterator
+    val letters = text.sorted()
+    // error: 37: `sorted()` is one of Oxie's list operations: lists, arrays and slices have it, but `&str` doesn't.
+    // not: 37: is an iterator
+    println("$words $spaced $small $doubled $last $letters ${numbered(&vec["a".to_string()])}")
+}

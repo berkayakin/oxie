@@ -87,7 +87,10 @@
   means the opposite is no longer a fix: `value.is_not_empty()` or `value.isNotEmpty()` on text
   got `value.is_empty()`, which turns the condition around, and now gets `!value.is_empty()`. A
   list operation called on text or an iterator says so, instead of suggesting to implement
-  Oxie's runtime trait `ListOps`.
+  Oxie's runtime trait `ListOps`. On an iterator it says to call the operation on the list or to
+  collect the iterator first, with the fix `xs.map_indexed { }` for `xs.iter().map_indexed { }`
+  and `s.chars().collect::<Vec<_>>().join_to_string("")` for `s.chars().join_to_string("")`,
+  instead of rustc's similar name, which gave `"b a".split(' ').sorted()` the fix `is_sorted()`.
 * A value used after a `move` lambda took it is explained as taken by the lambda. The error
   used to say it moved into the call around its use inside the lambda (`println`), and to
   suggest letting that function borrow it. It now points at the lambda and suggests giving the
