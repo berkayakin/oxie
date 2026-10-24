@@ -42,7 +42,10 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
                 rewrite(d, format!("can't take {} out of {}", element, list));
                 format!("{} keeps its elements, and indexing only reaches one where it is, so it can't be moved out.", list)
             } else {
-                rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
+                let written: String = lines.get(d.line as usize).map(|l| l.chars().skip(d.col as usize).collect()).unwrap_or_default();
+                let place = oxie_place(&first, &written);
+                d.label = d.label.take().map(|l| l.replace(&format!("`{}`", first), &format!("`{}`", place)));
+                rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&place)));
                 "the value belongs to something you only borrowed, so it can't be moved out.".to_string()
             };
             d.notes.retain(|n| !n.contains("`mut "));
@@ -1705,6 +1708,20 @@ fn span_edit(src: &str, span: Span, text: &str) -> Edit {
     Edit { file: None, line: l as u32, col: c as u32, end_line: el as u32, end_col: ec as u32, text: text.to_string() }
 }
 
+/// A place as rustc names it (`self.name`, `*self`) in the words of the Oxie code `written` at
+/// the error: a field of `this` is `name`, or `this.name` where the code spells out `this`.
+fn oxie_place(place: &str, written: &str) -> String {
+    let place = place.trim_start_matches('*');
+    // `init` blocks build the object as `__self`
+    let Some(rest) = place.strip_prefix("self").or_else(|| place.strip_prefix("__self")) else { return place.to_string() };
+    match rest.strip_prefix('.') {
+        _ if rest.is_empty() => "this".into(),
+        Some(field) if !written.starts_with("this.") => field.to_string(),
+        Some(_) => format!("this{}", rest),
+        None => place.to_string(),
+    }
+}
+
 fn describe(path: &str) -> String {
     if path.is_empty() {
         "a value".into()
@@ -2273,6 +2290,17 @@ mod tests {
         assert_eq!(oxie_code("let value = name.clone();\n"), None);
         assert_eq!(oxie_terms("store this in the heap by calling `Box::new`"), "store this in the heap by calling `Box.new`");
         assert_eq!(oxie_terms("to call the trait object stored in `run`, surround the field access with parentheses"), "to call the function stored in `run`, surround the field access with parentheses");
+    }
+
+    #[test]
+    fn rust_places_in_oxie_words() {
+        assert_eq!(oxie_place("self.name", "name"), "name");
+        assert_eq!(oxie_place("self.name", "this.name"), "this.name");
+        assert_eq!(oxie_place("self.address.city", "address.city"), "address.city");
+        assert_eq!(oxie_place("*self", "this"), "this");
+        assert_eq!(oxie_place("__self.items", "items"), "items");
+        assert_eq!(oxie_place("selfie.name", "selfie.name"), "selfie.name");
+        assert_eq!(oxie_place("p.name", "p.name"), "p.name");
     }
 
     #[test]

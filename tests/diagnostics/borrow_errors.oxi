@@ -60,3 +60,12 @@ fun first_word() {
     // not: 58: only borrowed
     println("$w ${words.len()}")
 }
+
+// a field is named as the code writes it: `name`, or `this.name`
+class Pet(val name: String) {
+    fun called(): String = name
+    // error: 66: can't take `name` out of a value that is only borrowed
+    // error: 66: move occurs because `name` has type `String`
+    fun spelled(): String = this.name
+    // error: 69: can't take `this.name` out of a value that is only borrowed
+}
