@@ -1,0 +1,44 @@
+// A parameter of an Oxie class or `Box<T>` that a function only reads becomes `&T`, so the caller
+// keeps its value: `describe(ada)` lends `ada`, which `is_adult(ada)` and `shout(ada)` use again.
+// A function that stores the value or takes a field out of it keeps it owned.
+
+data class User(val name: String, val age: i32) {
+    fun greeting(): String = "hi $name"
+}
+
+data class Address(val city: String, val zip: String)
+
+data class Customer(val user: User, val address: Address)
+
+class Node(val label: String)
+
+data class Point(val x: i32, val y: i32)
+
+fun describe(u: User): String = "${u.name} (${u.age}) ${u.greeting()}"
+fun is_adult(u: User): Boolean = u.age >= 18
+fun shout(u: User) = println(u.name.to_uppercase())
+// a field of a field
+fun city_of(c: Customer): String = c.address.city.to_uppercase()
+fun label_of(n: Box<Node>): String = "<${n.label}>"
+// a `Copy` value is copied: nothing to lend
+fun norm(p: Point): i32 = p.x + p.y
+// keeps it: stores it
+fun register(u: User, all: &mut Vec<User>) = all.push(u)
+// keeps it: takes a field out
+fun name_of(u: User): String = u.name
+
+fun main() {
+    val ada = User("Ada", 36)
+    println(describe(ada))
+    println(is_adult(ada))
+    shout(ada)
+    val c = Customer(User("Bob", 5), Address("Oslo", "0150"))
+    println("${city_of(c)} ${c.address.zip} ${c.user.name}")
+    val node = Box::new(Node("root"))
+    println("${label_of(node)} ${label_of(node)}")
+    println(norm(Point(1, 2)))
+    println(name_of(User("Cy", 7)))
+    var all: Vec<User> = vec[]
+    register(ada, all)
+    println(all.len())
+}

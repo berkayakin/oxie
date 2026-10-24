@@ -136,13 +136,14 @@ pub fn compile(inputs: Vec<Input>, opts: &Options) -> Output {
         sema::collect(&units, &opts.crate_name, opts.extern_crates.clone(), has_lib)
     };
     let mut k = collect(&parsed);
-    // methods that take only the fields they use (which needs the receivers), then the receivers
-    // again for their callers
+    // what takes the receivers: methods that take only the fields they use, and class and `Box`
+    // parameters to lend. Then sema again, for the new signatures.
     let field_notes = crate::fields::take_fields(&mut parsed.iter_mut().map(|p| (p.module.as_slice(), &mut p.file)).collect::<Vec<_>>(), &k);
-    if !field_notes.is_empty() {
+    let class_notes = crate::params::borrow_class_params(&mut parsed.iter_mut().map(|p| (p.module.as_slice(), &mut p.file)).collect::<Vec<_>>(), &k);
+    if !field_notes.is_empty() || class_notes.iter().any(|n| n.borrowed) {
         k = collect(&parsed);
     }
-    let param_notes: Vec<crate::params::ParamNote> = param_notes.into_iter().chain(field_notes).collect();
+    let param_notes: Vec<crate::params::ParamNote> = param_notes.into_iter().chain(field_notes).chain(class_notes).collect();
 
     let mut out = Output::default();
     // module tree: path -> generated file

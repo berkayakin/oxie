@@ -138,6 +138,12 @@ Notable translations:
   Oxie can't see into, type parameters and `Rc`/`Arc` (whose counts can be observed) keep it
   owned, and the note names the element type as the cause. `kept_reason` reports the
   first use that keeps a parameter owned ("it returns `v`"), for the explanation of E0382.
+  Parameters of Oxie classes and `Box<T>` go through the same analysis after receiver inference
+  (`borrow_class_params`, `Stage::Types`), since what reads them takes the classes: their
+  methods that take `&self`, and field chains (`chain_type` follows the fields' types) that are
+  formatted, compared, indexed, lent on, `Copy`, or the receiver of a method that only reads
+  their type. `Copy` and `shared` classes, classes with lifetimes, and functions whose result
+  is a reference are left out. The pass runs next to `fields.rs`, before sema collects again.
 * **Methods that take only the fields they use** (`fields.rs`, after receiver inference): a
   `&mut self` method that a method of its class calls inside a loop over another field (or a
   lambda passed to a method of one) becomes `static`, with the fields it uses as parameters.

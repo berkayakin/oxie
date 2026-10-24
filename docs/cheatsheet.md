@@ -46,7 +46,7 @@ These come from Rust and are what makes Oxie as fast as Rust.
 **Values have one owner.** Assigning a `String`, `Vec` or class instance *moves* it; the old
 variable can't be used afterwards. A function that only needs to read or change a value takes
 a reference (`&T` or `&mut T`); Oxie lends the argument for you (`show(names)` passes
-`&names`). A function that only reads a `String` or `Vec` parameter borrows it, and a `for`
+`&names`). A function that only reads a `String`, `Vec`, class or `Box` parameter borrows it, and a `for`
 loop over a list you use again afterwards borrows it too. Call `.clone()` when you really want
 a copy.
 

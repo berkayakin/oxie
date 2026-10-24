@@ -102,7 +102,9 @@
 * Borrowed parameters: a `String` or `Vec<T>` parameter of a top-level non-`pub` function that
   the body only reads becomes `&str` or `&[T]`, so `greet(name)` no longer uses up `name`. A
   `Vec<T>` is lent only when dropping a `T` just frees memory, so a function given mutex guards
-  or values with a `Drop` implementation still drops them when it returns.
+  or values with a `Drop` implementation still drops them when it returns. A parameter of an
+  Oxie class or `Box<T>` becomes `&T` the same way when the body only reads it (its fields, its
+  methods that take `&self`, formatting), so `describe(ada)` no longer uses up `ada`.
   Arguments for `&str` and `&[T]` parameters are lent whatever they are
   (`greet(name.to_uppercase())` used to be a type error). When a function keeps the value, the
   move error no longer suggests borrowing it.

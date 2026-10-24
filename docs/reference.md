@@ -102,6 +102,13 @@ fun short(x: i32) = x * 2
   don't implement `Drop`). A `Vec` of mutex guards, files, `Rc`s or a type parameter stays
   owned, so the function drops it when it returns, as in Rust: a guard unlocks there, not at
   the end of the caller.
+  A parameter of an Oxie class or `Box<T>` becomes `&T` the same way when the body only reads
+  it: calls its methods that take `&self` (or `clone`, `to_string`, `copy(...)`), formats it, or
+  reads its fields (`u.name.len()`, `u.age > 18`, `"${u.address.city}"`, a `Copy` field
+  anywhere). Comparing the value itself (`u == other`), taking a field out (`val n = u.name`),
+  changing it or calling a method that does keeps it owned. So do `Copy` classes (a copy is
+  passed) and `shared` classes (a handle is), and functions whose result is a reference. The drop
+  rule of `Vec<T>` applies to the whole value.
   Arguments that already are references (`&v`, reference-typed variables, `self`, string
   literals) are passed as they are. Passing a field to a `&mut` parameter makes the method
   `&mut self`.

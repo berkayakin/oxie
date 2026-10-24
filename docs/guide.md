@@ -477,7 +477,8 @@ What Oxie removes is the bookkeeping around it:
 * a `String` or `Vec<T>` parameter that a function only reads becomes `&str` or `&[T]`, so
   `greet(name)` lends `name` instead of giving it away (for functions that aren't `pub`, and for
   a `Vec` only when dropping its elements just frees memory: a `Vec` of mutex guards is still
-  dropped, and unlocked, when the function returns);
+  dropped, and unlocked, when the function returns), and a class or `Box<T>` parameter becomes
+  `&T` the same way (below);
 * lifetimes are filled in when Rust can't infer them (a function returning a reference gets one
   lifetime tied to its reference parameters, and a class holding a `&str` gets a lifetime
   parameter);
@@ -489,6 +490,22 @@ What Oxie removes is the bookkeeping around it:
 * a loop over one field can call a method that changes other fields (below);
 * trait bounds on type parameters are inferred from the body: `fun show<T>(x: T) = "<$x>"`
   becomes `fn show<T>(x: T) -> String where T: Display`.
+
+A function that only reads a value of a class, through its fields and methods that take
+`&self`, borrows it, so the caller can go on using it:
+
+```oxie
+data class User(val name: String, val age: i32)
+
+// fn describe(u: &User) -> String, called as describe(&ada)
+fun describe(u: User): String = "${u.name} (${u.age})"
+
+fun main() {
+    val ada = User("Ada", 36)
+    println(describe(ada))
+    println(ada.name)    // still `ada`'s: `describe` only borrowed it
+}
+```
 
 Rust rejects `self.items.push(self.next_id())` when `next_id` changes `self`: it borrows
 `items` for the call before it runs the argument. Oxie computes such an argument first, as you

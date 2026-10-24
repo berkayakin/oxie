@@ -1,0 +1,21 @@
+// A parameter of an Oxie class or `Box<T>` that a function only reads is lent as `&T`.
+
+data class User(val name: String, val age: i32) {
+    fun greeting(): String = "hi $name"
+}
+
+class Node(val label: String)
+
+fun describe(u: User): String = "${u.name} (${u.age}) ${u.greeting()}"
+fun label_of(n: Box<Node>): String = "<${n.label}>"
+// stores it: stays owned
+fun register(u: User, all: &mut Vec<User>) = all.push(u)
+
+fun main() {
+    val ada = User("Ada", 36)
+    println(describe(ada))
+    println(label_of(Box::new(Node("root"))))
+    var all: Vec<User> = vec[]
+    register(ada, all)
+    println(all.len())
+}

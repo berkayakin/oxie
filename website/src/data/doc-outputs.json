@@ -136,6 +136,11 @@
   },
   {
     "file": "docs/guide.md",
+    "output": "Ada (36)\nAda\n",
+    "source": "data class User(val name: String, val age: i32)\n\n// fn describe(u: &User) -> String, called as describe(&ada)\nfun describe(u: User): String = \"${u.name} (${u.age})\"\n\nfun main() {\n    val ada = User(\"Ada\", 36)\n    println(describe(ada))\n    println(ada.name)    // still `ada`'s: `describe` only borrowed it\n}\n"
+  },
+  {
+    "file": "docs/guide.md",
     "output": "[1, 2]\n",
     "source": "class Ids {\n    var items: Vec<usize> = vec[]\n    var next: usize = 0\n\n    fun next_id(): usize {\n        next += 1\n        return next\n    }\n\n    // let next_id = self.next_id(); self.items.push(next_id);\n    fun add() = items.push(next_id())\n}\n\nfun main() {\n    var ids = Ids()\n    ids.add()\n    ids.add()\n    println(\"${ids.items:?}\")\n}\n"
   },

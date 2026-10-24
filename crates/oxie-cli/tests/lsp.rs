@@ -313,7 +313,7 @@ fun main() {
 
 const PROJECT_TEXT: &str = r##"fun keep(v: Vec<i32>): Vec<i32> = v
 data class Tag(name: String)
-fun describe(t: Tag): String = "#${t.name}"
+pub fun describe(t: Tag): String = "#${t.name}"
 "##;
 
 /// In a project, an explanation can point at another file (where a function keeps the value
@@ -350,12 +350,13 @@ fn explanations_and_fixes_reach_other_files_of_the_project() {
     assert_eq!(kept["location"]["range"]["start"], json!({"line": 0, "character": 34}), "{moved}");
     assert!(kept["message"].as_str().unwrap().contains("it returns `v`"), "{moved}");
 
-    // `tag` moved into `describe`: the fix changes the parameter in text.oxi
+    // `tag` moved into `describe` (`pub`, so Oxie keeps its signature): the fix changes the
+    // parameter in text.oxi
     let moved = at_line(8);
     let actions = c.request("textDocument/codeAction", json!({"textDocument": {"uri": uri}, "range": moved["range"], "context": {"diagnostics": [moved]}}));
     let borrow = actions.as_array().unwrap().iter().find(|a| a["title"] == "Let `describe` borrow it (parameter type `&Tag`)").unwrap_or_else(|| panic!("{actions}"));
     let edit = &borrow["edit"]["changes"][&text_uri][0];
-    assert_eq!(edit["range"]["start"], json!({"line": 2, "character": 16}), "{borrow}");
+    assert_eq!(edit["range"]["start"], json!({"line": 2, "character": 20}), "{borrow}");
     assert_eq!(edit["newText"], "&Tag", "{borrow}");
     assert!(borrow["edit"]["changes"].get(&uri).is_none(), "{borrow}");
 

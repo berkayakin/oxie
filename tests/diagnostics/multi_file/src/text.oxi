@@ -4,7 +4,8 @@ fun keep(v: Vec<i32>): Vec<i32> = v
 // error: 3: `keep` keeps it: it returns `v`
 
 data class Tag(name: String)
-fun describe(t: Tag): String = "#${t.name}"
+// `pub`: its signature stays as written, so the move error and its fix stay
+pub fun describe(t: Tag): String = "#${t.name}"
 
 data class Total(sum: i32)
 
@@ -12,5 +13,5 @@ fun first_word(text: &str, sep: &str): &str = text.split(sep).next().unwrap_or(t
 
 class Counter(var hits: Vec<i32> = vec[]) {
     fun hit() { hits.push(1) }
-    // error: 14: `hit` changes its object here, so it takes `&mut self`
+    // error: 15: `hit` changes its object here, so it takes `&mut self`
 }

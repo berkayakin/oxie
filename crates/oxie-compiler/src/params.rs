@@ -3,11 +3,17 @@
 //! away). Applied to non-`pub` top-level functions, whose callers are all in the crate. A `Vec<T>`
 //! is lent only when dropping a `T` just frees memory: lending moves the drop to the caller, and
 //! a `MutexGuard` would unlock later.
+//!
+//! A parameter of an Oxie class or `Box<T>` becomes `&T` the same way, after receiver inference
+//! (`borrow_class_params`): whether `u.name.len()` or `u.greeting()` only reads `u` takes the
+//! class's fields and methods.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::Span;
+use crate::lower::infer_field_type;
+use crate::sema::{is_copy_simple, ClassInfo, Crate, Recv, MUTATING_METHODS};
 use crate::symbols::type_text;
 use crate::visit::{walk_block, walk_expr};
 
@@ -32,10 +38,74 @@ pub(crate) const VEC_READS: &[&str] = &[
 /// Formatting macros, which take their arguments by reference.
 const PRINTS: &[&str] = &["println", "print", "eprintln", "eprint", "format", "panic", "assert", "assert_eq", "assert_ne", "debug_assert", "debug_assert_eq", "debug_assert_ne"];
 
+/// Methods that only read a value of any class: derived and std ones, and a data class's `copy`.
+const CLASS_READS: &[&str] = &["clone", "to_string", "eq", "ne", "cmp", "partial_cmp", "hash", "fmt", "copy"];
+
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Str,
     Vec,
+    /// an Oxie class that is neither `Copy` nor `shared`, lent as `&T`
+    Class,
+    /// `Box<T>`, lent as `&T`
+    Boxed,
+}
+
+/// What the analysis knows. Before receiver inference, the source, which tells what reads a
+/// `String` or `Vec<T>` (`Text`); after it, the crate's classes (`Types`), whose fields and
+/// methods tell what reads a class or `Box<T>` (and only those are candidates then).
+enum Stage<'a> {
+    Text,
+    Types { k: &'a Crate, copy: HashSet<String> },
+}
+
+/// What a parameter of type `ty`, in a function of `module`, is at this stage, and the class of
+/// the value it lends (the class, or a box's `T`). None when it isn't a candidate.
+fn kind_in<'a>(ty: &Type, stage: &Stage<'a>, module: &[String]) -> Option<(Kind, Option<&'a ClassInfo>)> {
+    let Stage::Types { k, copy } = stage else { return kind_of(ty).map(|kind| (kind, None)) };
+    let Type::Path { segs, .. } = ty else { return None };
+    let [s] = segs.as_slice() else { return None };
+    // a `Copy` class is copied, and a `shared` one copies its handle: nothing to lend. One with
+    // lifetimes would get one more for the reference.
+    let class = |n: &str| k.class_in(n, module).filter(|c| !c.is_shared && c.lifetimes == 0 && !copy.contains(&k.decl_key(&c.module, &c.name)));
+    match (s.name.as_str(), s.generics.as_deref()) {
+        (n, _) if k.class_in(n, module).is_some() => class(n).map(|c| (Kind::Class, Some(c))),
+        ("Box", Some([GenericArg::Type(t)])) => Some((Kind::Boxed, t.single_name().and_then(class))),
+        _ => None,
+    }
+}
+
+/// The span start of the parameter `name` that a field chain like `u.address.city` starts from.
+fn chain_root(e: &Expr, name: &str) -> Option<u32> {
+    let ExprKind::Field { recv, safe: false, .. } = &e.kind else { return None };
+    let mut cur: &Expr = recv;
+    while let ExprKind::Field { recv, safe: false, .. } = &cur.kind {
+        cur = recv;
+    }
+    (cur.ident() == Some(name)).then_some(cur.span.start)
+}
+
+/// `u.address.city`, for a field chain.
+fn chain_text(e: &Expr) -> String {
+    match &e.kind {
+        ExprKind::Field { recv, name, .. } => format!("{}.{}", chain_text(recv), name),
+        _ => e.ident().unwrap_or("this").to_string(),
+    }
+}
+
+/// Does the type hold a reference or a lifetime?
+fn has_ref(t: &Type) -> bool {
+    match t {
+        Type::Ref { .. } | Type::Lifetime(_) => true,
+        Type::Path { segs, .. } => segs.iter().flat_map(|s| s.generics.iter().flatten()).any(|g| match g {
+            GenericArg::Lifetime(_) => true,
+            GenericArg::Type(t) | GenericArg::Binding(_, t) => has_ref(t),
+            GenericArg::Const(_) => false,
+        }),
+        Type::Tuple(v) => v.iter().any(has_ref),
+        Type::Array(t, _) | Type::Slice(t) | Type::Option(t) => has_ref(t),
+        _ => false,
+    }
 }
 
 fn kind_of(t: &Type) -> Option<Kind> {
@@ -172,11 +242,16 @@ impl<'a> Types<'a> {
         }
     }
 
-    /// For a `Vec<T>` parameter `name` of the function `f` whose elements may do more than free
-    /// memory when dropped: the element type, and why the parameter stays owned.
-    fn kept_for_drop(&self, ty: &Type, name: &str, f: &FunDecl) -> Option<(Span, String)> {
+    /// For a parameter `name` of the function `f` whose value may do more than free memory when
+    /// dropped: the type that does, and why the parameter stays owned. For a `Vec<T>` that is
+    /// `T` (`whole` false), else the parameter's type.
+    fn kept_for_drop(&self, ty: &Type, name: &str, f: &FunDecl, whole: bool) -> Option<(Span, String)> {
         let Type::Path { segs, span, .. } = ty else { return None };
-        let Some([GenericArg::Type(elem)]) = segs.last()?.generics.as_deref() else { return None };
+        let elem = match segs.last()?.generics.as_deref() {
+            _ if whole => ty,
+            Some([GenericArg::Type(elem)]) => elem,
+            _ => return None,
+        };
         // the function's type parameters can be anything, even when one is named like a type
         let params: HashMap<&str, bool> = f.generics.params.iter().filter_map(|g| if let GenericParam::Type { name, .. } = g { Some((name.as_str(), false)) } else { None }).collect();
         if self.drop_free(elem, &params, &mut Vec::new()) {
@@ -187,11 +262,12 @@ impl<'a> Types<'a> {
     }
 }
 
-fn top_level_funs<'a>(items: &'a [Item], out: &mut Vec<(&'a Item, &'a FunDecl)>) {
+/// The top-level functions of the items, with the module inside the file that declares each.
+fn top_level_funs<'a>(items: &'a [Item], module: &[String], out: &mut Vec<(Vec<String>, &'a Item, &'a FunDecl)>) {
     for it in items {
         match &it.kind {
-            ItemKind::Fun(f) => out.push((it, f)),
-            ItemKind::Mod { items, .. } => top_level_funs(items, out),
+            ItemKind::Fun(f) => out.push((module.to_vec(), it, f)),
+            ItemKind::Mod { name, items } => top_level_funs(items, &[module, std::slice::from_ref(name)].concat(), out),
             _ => {}
         }
     }
@@ -299,8 +375,8 @@ fn rebinds(body: &Block, name: &str) -> bool {
     found
 }
 
-/// A `String` or `Vec<T>` parameter that may be borrowed: its function (and the index of the
-/// file declaring it), position, kind and name, and the function's body.
+/// A parameter that may be borrowed: its function (and the index of the file declaring it),
+/// position, kind and name, and the function's body.
 struct Cand<'a> {
     file: usize,
     fun: &'a FunDecl,
@@ -308,8 +384,10 @@ struct Cand<'a> {
     kind: Kind,
     name: &'a str,
     body: Block,
-    /// For a `Vec` whose elements may do more than free memory when dropped, which keeps it
-    /// owned whatever the body does: the element type and why.
+    /// The class of the value a class or `Box` parameter lends, when it is an Oxie class.
+    class: Option<&'a ClassInfo>,
+    /// For a value that may do more than free memory when dropped (a `Vec`'s elements, a class
+    /// or `Box`), which keeps it owned whatever the body does: the type that does and why.
     drops: Option<(Span, String)>,
 }
 
@@ -318,27 +396,30 @@ struct Analysis<'a> {
     decls: HashMap<&'a str, &'a FunDecl>,
     cands: Vec<Cand<'a>>,
     alive: HashSet<(String, usize)>,
+    stage: Stage<'a>,
 }
 
 impl<'a> Analysis<'a> {
-    fn new(files: &[&'a File]) -> Analysis<'a> {
-        // (file index, item, function)
+    /// The candidates of `stage` in `files` (each with its module).
+    fn new(files: &[(&'a [String], &'a File)], stage: Stage<'a>) -> Analysis<'a> {
+        // (file index, module, item, function)
         let mut funs = Vec::new();
-        for (i, f) in files.iter().enumerate() {
+        for (i, (module, f)) in files.iter().enumerate() {
             let mut here = Vec::new();
-            top_level_funs(&f.items, &mut here);
-            funs.extend(here.into_iter().map(|(it, d)| (i, it, d)));
+            top_level_funs(&f.items, module, &mut here);
+            funs.extend(here.into_iter().map(|(m, it, d)| (i, m, it, d)));
         }
+        let files: Vec<&File> = files.iter().map(|(_, f)| *f).collect();
         let mut count: HashMap<&str, usize> = HashMap::new();
-        for (_, _, f) in &funs {
+        for (.., f) in &funs {
             *count.entry(f.name.as_str()).or_default() += 1;
         }
-        let decls: HashMap<&str, &FunDecl> = funs.iter().filter(|(_, _, f)| count[f.name.as_str()] == 1).map(|(_, _, f)| (f.name.as_str(), *f)).collect();
+        let decls: HashMap<&str, &FunDecl> = funs.iter().filter(|(.., f)| count[f.name.as_str()] == 1).map(|(.., f)| (f.name.as_str(), *f)).collect();
 
         // functions used as values (`xs.map(greet)`) or called through a path (`util.greet(x)`, whose
         // arguments this analysis doesn't follow) keep their signature
         let mut as_value: HashSet<String> = HashSet::new();
-        for f in files {
+        for f in &files {
             each_body(&f.items, &mut |b| {
                 let mut callees = HashSet::new();
                 walk_block(b, &mut |e| {
@@ -355,10 +436,10 @@ impl<'a> Analysis<'a> {
             });
         }
 
-        let types = Types::new(files);
+        let types = Types::new(&files);
         let mut cands = Vec::new();
         let mut alive = HashSet::new();
-        for &(file, it, f) in &funs {
+        for (file, module, it, f) in &funs {
             let eligible = it.vis != Vis::Public
                 && decls.contains_key(f.name.as_str())
                 && !as_value.contains(&f.name)
@@ -372,19 +453,28 @@ impl<'a> Analysis<'a> {
                 Some(FunBody::Expr(e)) if eligible => Block { stmts: vec![Stmt::Expr { expr: e.clone(), semi: false }], span: e.span },
                 _ => continue,
             };
+            // with one more reference parameter, a result that borrows would borrow from it too
+            if matches!(stage, Stage::Types { .. }) && f.ret.as_ref().is_some_and(has_ref) {
+                continue;
+            }
             for (i, p) in f.params.iter().enumerate() {
-                let (Some(kind), Pat::Ident { name, mutable: false, by_ref: false, sub: None, .. }) = (kind_of(&p.ty), &p.pat) else { continue };
+                let Pat::Ident { name, mutable: false, by_ref: false, sub: None, .. } = &p.pat else { continue };
+                let Some((kind, class)) = kind_in(&p.ty, &stage, module) else { continue };
                 if rebinds(&body, name) {
                     continue;
                 }
-                let drops = if kind == Kind::Vec { types.kept_for_drop(&p.ty, name, f) } else { None };
+                let drops = match kind {
+                    Kind::Str => None,
+                    Kind::Vec => types.kept_for_drop(&p.ty, name, f, false),
+                    Kind::Class | Kind::Boxed => types.kept_for_drop(&p.ty, name, f, true),
+                };
                 if drops.is_none() {
                     alive.insert((f.name.clone(), i));
                 }
-                cands.push(Cand { file, fun: f, index: i, kind, name: name.as_str(), body: body.clone(), drops });
+                cands.push(Cand { file: *file, fun: f, index: i, kind, name: name.as_str(), body: body.clone(), class, drops });
             }
         }
-        let mut a = Analysis { decls, cands, alive };
+        let mut a = Analysis { decls, cands, alive, stage };
         loop {
             let dead: Vec<(String, usize)> = a
                 .cands
@@ -424,49 +514,66 @@ impl<'a> Analysis<'a> {
     /// isn't a read, or a `move` lambda or async block capturing it (which would hold a borrow
     /// past the call).
     fn first_owned_use(&self, c: &Cand) -> Option<u32> {
-        let (name, reads) = (c.name, if c.kind == Kind::Str { STR_READS } else { VEC_READS });
+        let name = c.name;
+        let reads: &[&str] = match c.kind {
+            Kind::Str => STR_READS,
+            Kind::Vec => VEC_READS,
+            Kind::Class | Kind::Boxed => &[],
+        };
+        // a class or `Box` compared whole would compare a reference with a value
+        let whole_compares = matches!(c.kind, Kind::Str | Kind::Vec);
         let mut ok: HashSet<u32> = HashSet::new();
         let mut uses: Vec<u32> = Vec::new();
         let mut captured: Vec<u32> = Vec::new();
         walk_block(&c.body, &mut |e| {
             let is_p = |x: &Expr| x.ident() == Some(name);
+            // the parameter, or a field chain of it (`u.address.city`), read where it is
+            let read_at = |x: &Expr, whole: bool| if whole && is_p(x) { Some(x.span.start) } else { chain_root(x, name) };
             match &e.kind {
                 ExprKind::Path { .. } if is_p(e) => uses.push(e.span.start),
-                ExprKind::MethodCall { recv, name: m, .. } if is_p(recv) && reads.contains(&m.as_str()) => {
+                ExprKind::MethodCall { recv, name: m, .. } if is_p(recv) && (reads.contains(&m.as_str()) || self.reads_value(c, m)) => {
                     ok.insert(recv.span.start);
+                }
+                ExprKind::MethodCall { recv, name: m, .. } => {
+                    if let Some(at) = chain_root(recv, name).filter(|_| self.chain_type(c, recv).is_some_and(|t| self.reads_type(&t, c, m))) {
+                        ok.insert(at);
+                    }
+                }
+                // a field chain of a `Copy` type is copied out, whatever it is used for
+                ExprKind::Field { .. } => {
+                    if let Some(at) = chain_root(e, name).filter(|_| self.chain_type(c, e).is_some_and(|t| self.is_copy(&t))) {
+                        ok.insert(at);
+                    }
                 }
                 ExprKind::Template(parts) => {
                     for part in parts {
                         if let TemplatePart::Expr(x, _) = part {
-                            if is_p(x) {
-                                ok.insert(x.span.start);
-                            }
+                            ok.extend(read_at(x, true));
                         }
                     }
                 }
                 ExprKind::BuiltinMacro { name: m, args } if PRINTS.contains(&m.as_str()) => {
-                    args.iter().filter(|a| is_p(&a.value)).for_each(|a| {
-                        ok.insert(a.value.span.start);
-                    });
+                    for a in args {
+                        ok.extend(read_at(&a.value, true));
+                    }
                 }
                 ExprKind::Binary(BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, a, b) => {
                     for x in [a, b] {
-                        if is_p(x) {
-                            ok.insert(x.span.start);
-                        }
+                        ok.extend(read_at(x, whole_compares));
                     }
                 }
-                ExprKind::In { coll, .. } if is_p(coll) => {
-                    ok.insert(coll.span.start);
+                ExprKind::In { coll, item, .. } => {
+                    ok.extend(read_at(coll, whole_compares));
+                    ok.extend(chain_root(item, name));
                 }
-                ExprKind::Index(a, _) if is_p(a) => {
-                    ok.insert(a.span.start);
+                ExprKind::Index(a, _) => {
+                    ok.extend(read_at(a, whole_compares));
                 }
                 ExprKind::Call { callee, args } => {
                     if let Some(f) = callee.ident() {
                         for (pos, a) in args.iter().enumerate() {
-                            if is_p(&a.value) && self.lends(f, pos, a) {
-                                ok.insert(a.value.span.start);
+                            if self.lends(f, pos, a) {
+                                ok.extend(read_at(&a.value, true));
                             }
                         }
                     }
@@ -492,6 +599,57 @@ impl<'a> Analysis<'a> {
             true
         });
         uses.into_iter().filter(|u| !ok.contains(u)).chain(captured).min()
+    }
+
+    /// Does calling `m` on a class or `Box` parameter only read it: a method of its class that
+    /// takes `&self`, or a read every class has? For a `Box` not `clone`, which copies the box.
+    fn reads_value(&self, c: &Cand, m: &str) -> bool {
+        let own = c.class.and_then(|cl| cl.methods.get(m)).is_some_and(|mi| mi.recv == Recv::Ref);
+        match c.kind {
+            Kind::Class => own || CLASS_READS.contains(&m),
+            Kind::Boxed => own || matches!(m, "to_string" | "fmt"),
+            Kind::Str | Kind::Vec => false,
+        }
+    }
+
+    /// The type of a field chain of a class or `Box` parameter (`u.address.city`), when the
+    /// classes on the way say.
+    fn chain_type(&self, c: &Cand, e: &Expr) -> Option<Type> {
+        let Stage::Types { k, .. } = &self.stage else { return None };
+        let mut fields = Vec::new();
+        let mut cur = e;
+        while let ExprKind::Field { recv, name, .. } = &cur.kind {
+            fields.push(name.as_str());
+            cur = recv;
+        }
+        let mut class = c.class?;
+        let mut ty: Option<Type> = None;
+        for f in fields.iter().rev() {
+            if let Some(t) = &ty {
+                class = k.class_in(t.single_name()?, &class.module)?;
+            }
+            let info = class.fields.iter().find(|x| x.name == *f)?;
+            ty = Some(if info.ty == Type::Infer { info.default.as_ref().and_then(infer_field_type)? } else { info.ty.clone() });
+        }
+        ty
+    }
+
+    fn is_copy(&self, t: &Type) -> bool {
+        matches!(&self.stage, Stage::Types { copy, .. } if is_copy_simple(t, copy))
+    }
+
+    /// Does calling `m` on a field of type `t` (of the candidate's value) only read it?
+    fn reads_type(&self, t: &Type, c: &Cand, m: &str) -> bool {
+        let Stage::Types { k, .. } = &self.stage else { return false };
+        if self.is_copy(t) {
+            return !MUTATING_METHODS.contains(&m);
+        }
+        match t.single_name() {
+            Some("String") => m == "clone" || STR_READS.contains(&m),
+            Some("Vec") => m == "clone" || VEC_READS.contains(&m),
+            Some(n) => c.class.and_then(|cl| k.class_in(n, &cl.module)).is_some_and(|cl| CLASS_READS.contains(&m) || cl.methods.get(m).is_some_and(|mi| mi.recv == Recv::Ref)),
+            None => false,
+        }
     }
 
     /// Why a candidate stays owned: the first use that needs the owned value, and what that use
@@ -526,7 +684,8 @@ pub struct ParamNote {
 /// owned value (or the element type, for a `Vec` kept for its drop), and why ("it returns
 /// `v`"). None when the parameter is borrowed or isn't a candidate.
 pub fn kept_reason(files: &[&File], fun: &str, index: usize) -> Option<(usize, Span, String)> {
-    let a = Analysis::new(files);
+    let views: Vec<(&[String], &File)> = files.iter().map(|f| (&[][..], *f)).collect();
+    let a = Analysis::new(&views, Stage::Text);
     let c = a.cands.iter().find(|c| c.fun.name == fun && c.index == index)?;
     let (span, why) = a.kept_why(c)?;
     Some((c.file, span, why))
@@ -556,7 +715,14 @@ fn kept_use(c: &Cand, at: u32) -> (Span, String) {
                 Some(f) => Some(format!("it passes `{}` to `{}`, which takes it by value", name, f)),
                 None => Some(format!("it passes `{}` to a function that takes it by value", name)),
             },
-            ExprKind::MethodCall { recv, name: m, .. } if is_at(recv) => Some(format!("it calls `.{}()` on `{}`, which needs the value itself", m, name)),
+            ExprKind::MethodCall { recv, name: m, .. } if is_at(recv) => match c.class.and_then(|cl| cl.methods.get(m)) {
+                Some(mi) if mi.recv == Recv::RefMut => Some(format!("it calls `.{}()` on `{}`, which changes it", m, name)),
+                _ => Some(format!("it calls `.{}()` on `{}`, which needs the value itself", m, name)),
+            },
+            // a field chain of the parameter: changed, given a method that may change it, or taken out
+            ExprKind::Assign(_, target, _) if chain_root(target, name) == Some(at) => Some(format!("it changes `{}`", chain_text(target))),
+            ExprKind::MethodCall { recv, name: m, .. } if chain_root(recv, name) == Some(at) => Some(format!("it calls `.{}()` on `{}`", m, chain_text(recv))),
+            ExprKind::Field { .. } if chain_root(e, name) == Some(at) => Some(format!("it uses `{}` by value", chain_text(e))),
             ExprKind::MethodCall { args, name: m, .. } if args.iter().any(|a| is_at(&a.value)) => Some(format!("it passes `{}` to `.{}()`", name, m)),
             ExprKind::Assign(_, _, rhs) if is_at(rhs) => Some(format!("it stores `{}`", name)),
             ExprKind::StructLit { fields, .. } if fields.iter().any(|(_, v)| v.as_ref().is_some_and(is_at)) => Some(format!("it stores `{}` in a struct", name)),
@@ -572,55 +738,85 @@ fn kept_use(c: &Cand, at: u32) -> (Span, String) {
 /// dropping its elements just frees memory), and says what happened to each one that could
 /// have been lent.
 pub fn borrow_params(files: &mut [&mut File]) -> Vec<ParamNote> {
-    let notes: Vec<ParamNote> = {
-        let views: Vec<&File> = files.iter().map(|f| &**f).collect();
-        let a = Analysis::new(&views);
-        a.cands
+    let mut with_modules: Vec<(&[String], &mut File)> = files.iter_mut().map(|f| (&[][..], &mut **f)).collect();
+    lend(&mut with_modules, Stage::Text)
+}
+
+/// Lends the parameters of Oxie classes and `Box<T>` that functions only read, like
+/// `borrow_params` does for `String` and `Vec<T>`, and says what happened to each one that could
+/// have been lent. Runs after receiver inference (`k`), since reading through a method takes its
+/// receiver; `files` come with their modules.
+pub fn borrow_class_params(files: &mut [(&[String], &mut File)], k: &Crate) -> Vec<ParamNote> {
+    let copy: HashSet<String> = k.derives.iter().filter(|(_, d)| d.iter().any(|x| x == "Copy")).map(|(n, _)| n.clone()).collect();
+    lend(files, Stage::Types { k, copy })
+}
+
+/// Runs the analysis of `stage` on `files`, changes the type of each parameter it lends, and says
+/// what happened to each candidate.
+fn lend(files: &mut [(&[String], &mut File)], stage: Stage) -> Vec<ParamNote> {
+    // the notes, and the type each lent parameter gets, by (function, parameter index)
+    let (notes, lent): (Vec<ParamNote>, HashMap<(String, usize), Type>) = {
+        let views: Vec<(&[String], &File)> = files.iter().map(|(m, f)| (*m, &**f)).collect();
+        let a = Analysis::new(&views, stage);
+        let mut lent = HashMap::new();
+        let notes = a
+            .cands
             .iter()
             .map(|c| {
                 let kept = a.kept_why(c);
                 let borrowed = kept.is_none();
+                if borrowed {
+                    lent.insert((c.fun.name.clone(), c.index), lent_type(&c.fun.params[c.index].ty, c.kind));
+                }
                 let (cause, why) = match kept {
                     Some((span, why)) => (Some(span), why),
                     None => (None, format!("it only reads `{}`", c.name)),
                 };
                 ParamNote { file: c.file, fun: c.fun.name.clone(), fun_span: c.fun.name_span, index: c.index, borrowed, why, cause }
             })
-            .collect()
+            .collect();
+        (notes, lent)
     };
-    let alive: HashSet<(String, usize)> = notes.iter().filter(|n| n.borrowed).map(|n| (n.fun.clone(), n.index)).collect();
-    if alive.is_empty() {
-        return notes;
-    }
-    fn apply(items: &mut [Item], alive: &HashSet<(String, usize)>) {
+    fn apply(items: &mut [Item], lent: &HashMap<(String, usize), Type>) {
         for it in items {
             match &mut it.kind {
                 ItemKind::Fun(f) => {
                     for (i, p) in f.params.iter_mut().enumerate() {
-                        if !alive.contains(&(f.name.clone(), i)) {
-                            continue;
+                        if let Some(t) = lent.get(&(f.name.clone(), i)) {
+                            p.ty = t.clone();
                         }
-                        let inner = match kind_of(&p.ty) {
-                            Some(Kind::Str) => Type::simple("str"),
-                            Some(Kind::Vec) => {
-                                let Type::Path { segs, .. } = &p.ty else { unreachable!() };
-                                let Some([GenericArg::Type(t)]) = segs[0].generics.as_deref() else { unreachable!() };
-                                Type::Slice(Box::new(t.clone()))
-                            }
-                            None => continue,
-                        };
-                        p.ty = Type::Ref { lifetime: None, mutable: false, inner: Box::new(inner) };
                     }
                 }
-                ItemKind::Mod { items, .. } => apply(items, alive),
+                ItemKind::Mod { items, .. } => apply(items, lent),
                 _ => {}
             }
         }
     }
-    for f in files.iter_mut() {
-        apply(&mut f.items, &alive);
+    if !lent.is_empty() {
+        for (_, f) in files.iter_mut() {
+            apply(&mut f.items, &lent);
+        }
     }
     notes
+}
+
+/// The type a parameter of type `ty` gets when it is lent: `&str`, `&[T]`, `&Class`, or `&T` for
+/// a `Box<T>`.
+fn lent_type(ty: &Type, kind: Kind) -> Type {
+    let arg = || match ty {
+        Type::Path { segs, .. } => match segs[0].generics.as_deref() {
+            Some([GenericArg::Type(t)]) => t.clone(),
+            _ => ty.clone(),
+        },
+        _ => ty.clone(),
+    };
+    let inner = match kind {
+        Kind::Str => Type::simple("str"),
+        Kind::Vec => Type::Slice(Box::new(arg())),
+        Kind::Boxed => arg(),
+        Kind::Class => ty.clone(),
+    };
+    Type::Ref { lifetime: None, mutable: false, inner: Box::new(inner) }
 }
 
 #[cfg(test)]
@@ -724,5 +920,51 @@ class Tree(val children: Vec<Tree>, val label: String?) {
         for f in ["points", "nested", "trees", "boxes", "refs"] {
             assert_eq!(note(f), lent, "{}", f);
         }
+    }
+
+    #[test]
+    fn class_and_box_parameters_that_are_only_read_are_lent() {
+        let src = r#"
+data class User(val name: String, val age: i32) {
+    fun greeting(): String = "hi $name"
+}
+class Node(val label: String, var hits: i32 = 0) {
+    fun bump() { hits += 1 }
+}
+class Noisy(val n: i32)
+impl Drop for Noisy { mut fun drop() {} }
+data class Point(val x: i32, val y: i32)
+shared class Account(var balance: i32 = 0)
+fun reads(u: User): String = "${u.name.len()} ${u.age > 3} ${u.greeting()}"
+fun boxed(b: Box<Node>): String = b.label.clone()
+fun compares(u: User, v: User): Boolean = u == v
+fun changes(n: Node) { n.bump() }
+fun takes(u: User): String = u.name
+fun noisy(b: Box<Noisy>) = println(b.n)
+fun copied(p: Point): i32 = p.x
+fun handle(a: Account) = println(a.balance)
+"#;
+        let (mut file, diags) = crate::parser::parse_file(src);
+        assert!(diags.is_empty(), "{:?}", diags);
+        let module: Vec<String> = Vec::new();
+        let k = {
+            let units = [crate::sema::SourceUnit { module: module.clone(), file: &file }];
+            crate::sema::collect(&units, "t", HashSet::new(), false)
+        };
+        let notes = borrow_class_params(&mut [(&module[..], &mut file)], &k);
+        let note = |f: &str, i: usize| notes.iter().find(|n| n.fun == f && n.index == i).map(|n| (n.borrowed, n.why.clone()));
+        let lent = |p: &str| Some((true, format!("it only reads `{}`", p)));
+        assert_eq!(note("reads", 0), lent("u"));
+        assert_eq!(note("boxed", 0), lent("b"));
+        // `&User == User` doesn't compile
+        assert_eq!(note("compares", 0), Some((false, "it uses `u` by value".into())));
+        assert_eq!(note("changes", 0), Some((false, "it calls `.bump()` on `n`, which changes it".into())));
+        assert_eq!(note("takes", 0), Some((false, "it uses `u.name` by value".into())));
+        assert_eq!(note("noisy", 0), Some((false, "it drops `b` when it returns, and dropping a `Box<Noisy>` can do more than free memory".into())));
+        // a `Copy` class is copied and a `shared` one copies its handle: nothing to lend
+        assert_eq!(note("copied", 0), None);
+        assert_eq!(note("handle", 0), None);
+        let ty = |f: &str| file.items.iter().find_map(|it| if let ItemKind::Fun(d) = &it.kind { (d.name == f).then(|| type_text(&d.params[0].ty)) } else { None });
+        assert_eq!((ty("reads"), ty("boxed"), ty("takes")), (Some("&User".into()), Some("&Node".into()), Some("User".into())));
     }
 }
