@@ -54,6 +54,11 @@ fun main() {
 
 When you assign the result instead (`val r = check(5)`), you get the `Result` to inspect.
 
+The same goes for Rust calls known to return a `Result`, such as `fs.write(path, text)` or
+`out.flush()`: as a statement in a throwing function, their error is passed on rather than
+dropped. In a function that doesn't throw, such a statement drops the error, and the compiler
+warns about it.
+
 ## Error types
 
 `error enum` declares an error type with a message per case. Oxie implements `Display`,

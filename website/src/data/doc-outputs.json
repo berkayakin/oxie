@@ -117,7 +117,7 @@
   {
     "file": "docs/guide.md",
     "output": "Dog says woof\nTom says meow\n",
-    "source": "interface Animal {\n    fun name(): String\n    fun sound(): String\n    fun speak(): String = \"${name()} says ${sound()}\"    // default method\n}\n\nclass Dog : Animal {\n    override fun name() = \"Dog\"\n    override fun sound() = \"woof\"\n}\n\nclass Cat(name: String) : Animal {\n    override fun name() = name.clone()\n    override fun sound() = \"meow\"\n}\n\nfun introduce(a: &Animal) = println(a.speak())           // `&dyn Animal`\n\nfun main() {\n    val zoo: Vec<Box<Animal>> = vec[Box.new(Dog()), Box.new(Cat(\"Tom\".to_string()))]\n    for (a in &zoo) introduce(a.as_ref())\n}\n"
+    "source": "interface Animal {\n    fun name(): String\n    fun sound(): String\n    fun speak(): String = \"${name()} says ${sound()}\"    // default method\n}\n\nclass Dog : Animal {\n    override fun name() = \"Dog\"\n    override fun sound() = \"woof\"\n}\n\nclass Cat(name: String) : Animal {\n    override fun name() = name.clone()\n    override fun sound() = \"meow\"\n}\n\nfun introduce(a: &Animal) = println(a.speak())           // `&dyn Animal`\n\nfun main() {\n    val zoo: Vec<Box<Animal>> = vec[Box.new(Dog()), Box.new(Cat(\"Tom\".to_string()))]\n    for (a in &zoo) introduce(a)                          // lends the boxed value\n}\n"
   },
   {
     "file": "docs/guide.md",

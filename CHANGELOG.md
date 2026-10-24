@@ -204,6 +204,22 @@
   generated code, so an older Rust gets a clear error instead of a failed build.
 * Homebrew: `brew install oxie-lang/tap/oxie` installs the prebuilt `oxie` on macOS and Linux.
   Each release updates the formula.
+* `println(x)` (and `print`, `format`, `assert_eq`, ...) with a value counts as reading it, as
+  `println("$x")` already did: a `String` or `Vec` parameter that is only printed is borrowed,
+  and a type parameter that is printed gets its `Display` bound. Before, `fun show(s: String) =
+  println(s)` took its argument away from the caller.
+* `key in map` looks up a key (`contains_key`), and `'e' in text` a character; both were Rust
+  errors before.
+* In a throwing function, a Rust call that returns a `Result` used as a statement
+  (`fs.write(path, text)`, `out.flush()`) passes its error on, as a throwing Oxie function does.
+  Before, the error was dropped with a warning and the function went on. In a function that
+  doesn't throw, the warning now says so in Oxie terms and offers `throws` and `.unwrap()`.
+* `?` on an optional value in a throwing function, and on a `Result` in a function that returns
+  `T?`, are explained as such, with `.ok_or(...)?` and `.ok()?` fixes. Before, both said the
+  function doesn't declare `throws`, and the help always named `main`.
+* An element of a `Vec<Shape>`, a loop variable over one and an interface-typed field can be
+  passed to an `&Shape` parameter; before, they needed `.as_ref()`.
+* The reference's `join_with` example compiles.
 
 ## 0.1.0 - 2026-10-23
 

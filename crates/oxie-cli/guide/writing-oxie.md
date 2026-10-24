@@ -87,7 +87,7 @@ fun main() {
 | `object O { }`, `companion object { }`, `static fun` | namespace; static functions |
 | `{ it * 2 }`, `{ a, b -> a + b }`, `(a, b) => a + b`, `xs.map { }` | lambdas; a last lambda argument goes outside the parentheses |
 | `vec[1, 2]`, `listOf(1, 2)`, `mutableListOf<i32>()`, `mapOf("a" to 1)`, `setOf(1)` | `Vec`, `Vec`, `Vec::new()`, `HashMap`, `HashSet` |
-| `x in xs`, `x !in xs`, `x is Some(_)`, `a to b` | `contains`, `matches!`, a tuple `(a, b)` |
+| `x in xs`, `x !in xs`, `x is Some(_)`, `a to b` | `contains` (`contains_key` for a map), `matches!`, a tuple `(a, b)` |
 | `Type.function()`, `Enum.Variant`, `module.item`, `HashMap()` | `::` paths; a constructor call `Type::new()` |
 | `import std::fs`, `import std.collections.HashMap`, `import { A, B } from module` | `use` |
 | `test "adds" { assert_eq(add(1, 1), 2) }` | a `#[test]` function |
@@ -141,8 +141,9 @@ fun main() {
   (no `val`/`var` needed), there are no getters or setters, and `this.` is only needed when a
   parameter has the field's name.
 * **No exceptions.** `throws`, `throw`, `try`/`catch` and `?` work on `Result` values, and a
-  function that can fail says so in its signature. Calling a throwing function as a statement
-  inside another throwing function passes its error on; anywhere else you get the `Result` and
+  function that can fail says so in its signature. Calling a throwing function (or a Rust call
+  that returns a `Result`, like `fs.write(path, text)`) as a statement inside another throwing
+  function passes its error on; anywhere else you get the `Result` and
   handle it: `when (val r = f()) { Ok(v) -> ...; Err(e) -> ... }`, `f() ?: default`,
   `if (val Err(e) = f())`, or `.unwrap()`.
 * **`null` is `Option`.** A `T?` must be unwrapped before use: there are no smart casts, so
@@ -282,12 +283,14 @@ fun describe(s: &Shape) = println("${s.name()}: ${s.area():.2}")
 fun main() {
     var shapes: Vec<Shape> = vec[Square(2.0), Circle(1.0)]    // each value is boxed for you
     shapes.sort_by { a, b -> a.area().total_cmp(&b.area()) }
-    for (s in &shapes) describe(s.as_ref())
+    for (s in &shapes) describe(s)
+    describe(shapes[0])
 }
 ```
 
 A list typed `Vec<Shape>` boxes the values you put in it; with `Vec<Box<Shape>>` you write
-`Box.new(...)` yourself. `sorted_by` needs `Clone`, which a box of an interface isn't, so sort
+`Box.new(...)` yourself. Its elements, and interface-typed fields, are lent to an `&Shape`
+parameter as they are: no `.as_ref()` needed. `sorted_by` needs `Clone`, which a box of an interface isn't, so sort
 such a list in place with `sort_by`.
 
 **Shared objects.**

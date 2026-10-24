@@ -1,0 +1,23 @@
+// `?` in the wrong kind of function says which function and what to write instead.
+
+rust { pub fn lookup(k: &str) -> Option<String> { if k == "a" { Some("x".into()) } else { None } } }
+
+fun size(k: &str): usize throws {
+    val n: usize = "1".parse()?
+    val l = lookup(k)?.len() // error: 7:22: fix: fail with an error when the value is missing: `val l = lookup(k).ok_or("missing value")?.len()`
+    l + n
+}
+
+fun first_number(text: &str): i32? {
+    val n: i32 = text.parse()? // error: 12: fix: give `null` when it fails: `val n: i32 = text.parse().ok()?`
+    Some(n)
+}
+
+fun count(text: &str): usize {
+    val n: usize = text.parse()? // error: 17: add `throws` to `count` so errors can be passed on
+    n
+}
+
+fun main() {
+    println("${size("a"):?} ${first_number("1"):?} ${count("2")}")
+}

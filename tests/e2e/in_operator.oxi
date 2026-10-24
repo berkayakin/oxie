@@ -1,0 +1,39 @@
+// `in` looks up a map's keys, takes a `char` by value in text, and borrows elsewhere
+import std::collections::{BTreeMap, HashMap}
+
+fun has_vowel(word: &str): bool {
+    for (c in word.chars()) {
+        if (c in "aeiou") return true
+    }
+    false
+}
+
+fun kind(c: char): &str = when (c) {
+    in "aeiou" -> "vowel"
+    in 'a'..='z' -> "consonant"
+    else -> "other"
+}
+
+fun known(stock: &HashMap<String, i32>, item: &str): bool = item in stock
+
+fun main() {
+    val ages = mapOf("ada" to 36, "bob" to 7)
+    println("${"ada" in ages} ${"eve" in ages} ${"eve" !in ages}")
+
+    var sorted = BTreeMap()
+    sorted.insert(3, "three")
+    println("${3 in sorted} ${4 in sorted}")
+
+    var stock = HashMap()
+    stock.insert("pen".to_string(), 4)
+    println("${known(&stock, "pen")} ${known(&stock, "ink")}")
+
+    val text = "hello"
+    val letter = 'l'
+    println("${'e' in text} ${'z' in text} ${letter in text} ${'z' !in text} ${"ell" in text}")
+    println("${has_vowel("sky")} ${has_vowel("tree")}")
+    println("${kind('e')} ${kind('x')} ${kind('3')}")
+
+    val letters = vec['a', 'b']
+    println("${'a' in letters} ${'c' in letters}")
+}

@@ -162,6 +162,10 @@ fun short(x: i32) = x * 2
 | `&T`, `&mut T`, `[T]`, `[T; N]`, `(A, B)`, `Vec<T>`, `dyn T`, `impl T`, `*const T` | same |
 | `std.io.Error` | `std::io::Error` (dots or `::` in paths) |
 
+An element of a `Vec<Shape>` (or `Vec<Box<Shape>>`), a loop variable over one and an
+interface-typed field are lent to an `&Shape` parameter as the value inside the box
+(`describe(shapes[0])` → `describe(&*shapes[0])`).
+
 The standard traits used as types the same way are `Display`, `Debug`, `Error`, `Iterator`,
 `IntoIterator`, `Read`, `Write`, `BufRead`, `Future`, `Any`, `ToString` and every interface
 declared in Oxie.
@@ -328,6 +332,8 @@ the right-hand side (`impl Mul<f64> for Vec2` for `operator fun times(k: f64)`).
 |---|---|
 | `a == b`, `a < b`, `a && b`, `a + b`, ... | same (Rust precedence) |
 | `x in coll` / `x !in coll` | `coll.contains(&x)` / `!coll.contains(&x)` |
+| `key in map` | `map.contains_key(key)` (`HashMap`, `BTreeMap`) |
+| `c in text` (a `char`) | `text.contains(c)` |
 | `x in a..b` | `a <= x && x < b` |
 | `x is Pattern` / `x !is Pattern` | `matches!(x, Pattern)` / `!matches!(..)` |
 | `a to b` | `(a, b)` |
@@ -390,7 +396,8 @@ the declared type of a variable, field, parameter or return value:
 * When the left side is a `Result` (a call to a `throws` function, `.await`, `parse()`,
   `File::open(...)`, ...), `a?.b` is Rust's `?` followed by `.b`: the error is propagated.
   For a left side of unknown type, `?.` propagates errors inside functions that return
-  `Result` and navigates otherwise.
+  `Result` and navigates otherwise. To navigate an optional value of unknown type there,
+  declare its type first: `val v: String? = lookup(k)`, then `v?.len()`.
 * `a ?: b` — `a` if present (`Some`/`Ok`), else `b`, evaluated only when needed. `b` may be
   `return`, `throw`, `break`, `continue` or `panic(...)`. For a literal `b`, `Option<&T> ?: 0`
   yields `T`, `Option<String> ?: "text"` yields `String` and `Option<&String> ?: "text"` yields
@@ -413,6 +420,7 @@ See [Error handling](errors.md) for the full guide.
 | `return v` / tail `v` in a throwing function | `return Ok(v)` / `Ok(v)` |
 | `throw e` | `return Err(e.into())` |
 | calling a throwing Oxie function as a statement or result | adds `?` |
+| a Rust call that returns a `Result` (`fs.write(path, text)`) as a statement | adds `?` |
 | `try { a()?; b } catch (e: E) { c }` | labeled block; `?`/`throw` inside break out with `Err` |
 | `error enum E { V(f: T) = "msg $f" }` | enum + `Display` + `Error` (+ `source`) + `From` |
 | `error class E(f: T) = "msg $f"` | struct + `Display` + `Error` |
@@ -525,7 +533,7 @@ Each one is the iterator chain you would write by hand; the element is passed by
 | `xs.group_by { key }` | `HashMap<K, Vec<T>>` | |
 | `xs.associate_by { key }` | `HashMap<K, T>` | |
 | `xs.partition { }` | `(Vec<T>, Vec<T>)` | |
-| `xs.join_to_string(", ")`, `join_with(", ") { it.name }` | `String` | |
+| `xs.join_to_string(", ")`, `join_with(", ") { it.name.as_str() }` | `String` | |
 | `xs.is_not_empty()` | `bool` | `!xs.is_empty()` |
 
 Inherent Rust methods win over these (arrays keep Rust's by-value `map`), and Rust's iterator

@@ -602,8 +602,6 @@ pub enum ExprKind {
     StructLit { path: Vec<String>, generics: Option<Vec<GenericArg>>, fields: Vec<(String, Option<Expr>)>, base: Option<Box<Expr>> },
     /// Raw macro call `name!(...)` - text passed through.
     Macro { path: String, text: String },
-    /// `println(...)` etc. without `!`
-    BuiltinMacro { name: String, args: Vec<Arg> },
     TryCatch { body: Block, catch: Option<Box<Catch>> },
     /// `'label: { ... }` (a block that `break 'label value` can leave)
     LabeledBlock { label: String, block: Block },
@@ -677,7 +675,6 @@ impl Expr {
     pub fn diverges(&self) -> bool {
         match &self.kind {
             ExprKind::Return(_) | ExprKind::Break { .. } | ExprKind::Continue(_) | ExprKind::Throw(_) => true,
-            ExprKind::BuiltinMacro { name, .. } => matches!(name.as_str(), "panic" | "todo" | "unimplemented" | "unreachable"),
             ExprKind::Macro { path, .. } => matches!(path.as_str(), "panic" | "todo" | "unimplemented" | "unreachable"),
             ExprKind::Call { callee, .. } => matches!(callee.ident(), Some("exit") | Some("panic") | Some("todo") | Some("unimplemented") | Some("unreachable")),
             _ => false,

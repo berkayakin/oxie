@@ -118,6 +118,7 @@ fixes:
 | not thread-safe (E0277 `Send`/`Sync`, a future held across `await`) | declare the `shared class` `@sync` |
 | lambda may outlive (E0373) | make it a `move` lambda |
 | `?` without `Result` (E0277) | add `throws` to the function |
+| `?` on an optional value in a throwing function, or on a `Result` in a function returning `T?` (E0277) | which it is; `.ok_or("missing value")?` or `.ok()?` |
 | no `Display` (E0277) | print with `:?`, or add `toString` |
 | missing trait bound (E0277) | `require T: Bound` |
 | no method `size`, `toUpperCase`, ... (E0599) | the Rust name (`len`, `to_uppercase`) |
@@ -126,6 +127,7 @@ fixes:
 | a list operation on an iterator (E0599) | call it on the list (`xs.map_indexed { }` for `xs.iter().map_indexed { }`), or collect the iterator into a list first (`s.chars().collect::<Vec<_>>().join_to_string("")`) when its items aren't references into a list; never rustc's similar name (`is_sorted` for `sorted`) |
 | trait / type not imported (E0599, E0433, E0412) | `import` the suggested path |
 | unused `var` | declare it with `val` |
+| an ignored error, from a call that can fail used as a statement in a function that doesn't throw | add `throws` to the function, or `.unwrap()` |
 
 rustc's own suggestions are kept as fixes when they map exactly onto the `.oxi` source, in
 Oxie terms. One that edits several places is a fix only as a whole, titled with rustc's help:

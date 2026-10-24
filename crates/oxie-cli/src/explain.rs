@@ -86,6 +86,7 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
     match d.code.as_deref() {
         Some("unused_mut") => unused_mut(d, &lines),
         Some("unused_variables") => unused_variable(d, &lines, &first),
+        Some("unused_must_use") if d.message.contains("unused `Result`") => unused_result(d, &lines),
         _ => {}
     }
     rustc_fixes(d, &lines);
@@ -1283,9 +1284,46 @@ fn trait_missing(d: &mut MappedDiag, sources: &Sources, lines: &[&str], names: &
         return;
     }
     if msg.contains("the `?` operator can only be used") {
-        rewrite(d, "`?` passes errors on, but this function doesn't declare `throws`".into());
         d.notes.retain(|n| !n.contains("FromResidual") && !n.contains("consider adding return type"));
-        d.notes.push(help("add `throws` to the function so errors can be passed on: `fun main() throws { ... }`."));
+        let text = lines.get(d.line as usize).copied().unwrap_or("");
+        // the `?` at or after the reported column (which can point at the start of the call)
+        let from = text.char_indices().nth(d.col as usize).map(|(i, _)| i).unwrap_or(text.len());
+        let q = text[from..].find('?').map(|i| from + i);
+        let question_dot = q.is_some_and(|i| text[i..].starts_with("?."));
+        let q_col = q.map(|i| text[..i].chars().count() as u32);
+        if let Some(c) = q_col.filter(|_| msg.contains("not `Option`s") || msg.contains("not `Result`s")) {
+            (d.col, d.end_line, d.end_col) = (c, d.line, c + 1);
+        }
+        // an optional value in a function that `throws`: there is no error to pass on
+        if msg.contains("not `Option`s") {
+            rewrite(d, "this value is optional (`T?`), so `?` has no error to pass on".into());
+            d.label = Some("`?` on an optional value".into());
+            if question_dot {
+                d.notes.push(help("Oxie can't tell the type of the value before `?.`, and in a function that `throws` it reads `?.` on such a value as passing an error on. To get an optional result instead, declare the value's type first (`val v: String? = ...`, then `v?.len()`); to fail when it is missing, turn it into an error."));
+            } else {
+                d.notes.push(help("turn a missing value into an error that `?` can pass on: `.ok_or(\"...\")?`."));
+            }
+            if let Some(c) = q_col {
+                d.fixes.push(Fix { title: "fail with an error when the value is missing".into(), edits: vec![edit(d.line, c, c + 1, ".ok_or(\"missing value\")?")] });
+            }
+            return;
+        }
+        // a `Result` in a function that returns an optional value
+        if msg.contains("not `Result`s") {
+            rewrite(d, "`?` passes an error on, but this function returns an optional value (`T?`), which can't hold it".into());
+            d.label = Some("`?` on a value that can fail".into());
+            d.notes.push(help("drop the error and give `null` instead with `.ok()?`, or declare the function `throws`."));
+            if let Some(c) = q_col {
+                d.fixes.push(Fix { title: "give `null` when it fails".into(), edits: vec![edit(d.line, c, c + 1, ".ok()?")] });
+            }
+            return;
+        }
+        rewrite(d, "`?` passes errors on, but this function doesn't declare `throws`".into());
+        let name = enclosing_fun(lines, d.line).and_then(|(_, t)| t.split_once("fun ")).map(|(_, rest)| rest.chars().take_while(|c| is_ident_char(*c)).collect::<String>());
+        match name.filter(|n| !n.is_empty()) {
+            Some(n) => d.notes.push(help(&format!("add `throws` to `{}` so errors can be passed on: `fun {}(...) throws {{ ... }}`.", n, n))),
+            None => d.notes.push(help("add `throws` to the function so errors can be passed on.")),
+        }
         if let Some((l, c)) = enclosing_fun_brace(lines, d.line) {
             d.fixes.push(Fix { title: "add `throws` to the function".into(), edits: vec![edit(l, c, c, " throws")] });
         }
@@ -1765,6 +1803,26 @@ fn unused_mut(d: &mut MappedDiag, lines: &[&str]) {
     d.label = None;
     d.notes.retain(|n| !n.contains("remove this `mut`") && !n.contains("#[warn(unused_mut)]"));
     d.fixes.push(Fix { title: format!("declare `{}` with `val`", name), edits: vec![edit(d.line, c, c + 3, "val")] });
+}
+
+/// A call that can fail, used as a statement in a function that doesn't `throw`: its error is
+/// dropped, and the program goes on.
+fn unused_result(d: &mut MappedDiag, lines: &[&str]) {
+    rewrite(d, "this call can fail, and its error is ignored".into());
+    d.label = Some("the error this returns is dropped".into());
+    d.notes.retain(|n| !n.contains("#[warn(") && !n.contains("let _ =") && !n.contains("should be handled"));
+    let name = enclosing_fun(lines, d.line).and_then(|(_, t)| t.split_once("fun ")).map(|(_, rest)| rest.chars().take_while(|c| is_ident_char(*c)).collect::<String>()).filter(|n| !n.is_empty());
+    let pass_on = match &name {
+        Some(n) => format!("declare `fun {}() throws` to pass it on", n),
+        None => "declare the function `throws` to pass it on".into(),
+    };
+    d.notes.push(help(&format!("{}, add `.unwrap()` to stop the program when it fails, or write `val _ = ...` to ignore it on purpose.", pass_on)));
+    if let Some((l, c)) = enclosing_fun_brace(lines, d.line) {
+        d.fixes.push(Fix { title: "add `throws` to the function".into(), edits: vec![edit(l, c, c, " throws")] });
+    }
+    if d.line == d.end_line {
+        d.fixes.push(Fix { title: "stop the program when it fails".into(), edits: vec![edit(d.end_line, d.end_col, d.end_col, ".unwrap()")] });
+    }
 }
 
 fn unused_variable(d: &mut MappedDiag, lines: &[&str], name: &str) {
@@ -2514,6 +2572,20 @@ mod tests {
         assert_eq!(fixed("if (!value.is_not_empty()) g()"), "if (value.is_empty()) g()");
         assert_eq!(fixed("val n = value.is_not_empty().then { 1 }"), "val n = (!value.is_empty()).then { 1 }");
         assert_eq!(fixed(r#"println("${value.is_not_empty()}")"#), r#"println("${!value.is_empty()}")"#);
+    }
+
+    #[test]
+    fn an_ignored_error_is_explained_in_oxie_terms() {
+        let src = "fun check(x: i32) throws { if (x < 0) throw \"negative\" }\nfun main() {\n    check(-1)\n}\n";
+        let mut d = diag("/crate/main.oxi", "unused_must_use", "unused `Result` that must be used", 2, 4, 13);
+        d.level = "warning".into();
+        d.notes.push("help: use `let _ = ...` to ignore the resulting value: `let _ = `".into());
+        explain(&mut d, &Sources::from_texts(&[("/crate/main.oxi", src)]));
+        assert_eq!(d.message, "this call can fail, and its error is ignored");
+        assert!(d.notes.iter().all(|n| !n.contains("let _")), "{:?}", d.notes);
+        assert!(d.notes.iter().any(|n| n.contains("`fun main() throws`")), "{:?}", d.notes);
+        let texts: Vec<&str> = d.fixes.iter().flat_map(|f| f.edits.iter().map(|e| e.text.as_str())).collect();
+        assert_eq!(texts, [" throws", ".unwrap()"]);
     }
 
     #[test]

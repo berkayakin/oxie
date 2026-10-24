@@ -1,0 +1,33 @@
+// In a throwing function, a Rust call that returns a `Result` used as a statement passes its
+// error on, as a throwing Oxie function does, instead of dropping it.
+import std::fs
+import std::io::Write
+
+class Config(path: String) {
+    static fun open(path: &str): Config = Config(path.to_string())
+    fun read(): String = "config at $path"
+}
+
+fun save(path: &str) throws {
+    fs.write(path, "data")
+    println("wrote ${path.len() > 0}")
+}
+
+fun save_all(dir: &str) throws {
+    std.fs.create_dir_all(dir)
+    save("$dir/a.txt")
+    fs::remove_file("$dir/a.txt")
+    var out = std::io::stdout()
+    out.flush()
+    val c = Config.open(dir)
+    println(c.read().len() > 0)
+}
+
+fun main() {
+    val dir = std::env::temp_dir().join("oxie-rust-errors").to_string_lossy().to_string()
+    println("${save_all(&dir).is_ok()}")
+    when (val r = save("/nonexistent-oxie-dir/x.txt")) {
+        Ok(_) -> println("saved")
+        Err(_) -> println("save failed, and the error was passed on")
+    }
+}

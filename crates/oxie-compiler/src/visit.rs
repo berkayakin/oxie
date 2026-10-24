@@ -39,11 +39,6 @@ pub fn walk_expr(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) {
                 walk_expr(&a.value, f);
             }
         }
-        BuiltinMacro { args, .. } => {
-            for a in args {
-                walk_expr(&a.value, f);
-            }
-        }
         If { cond, then, else_ } => {
             walk_cond(cond, f);
             walk_block(then, f);
@@ -181,11 +176,6 @@ pub fn walk_expr_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
         }
         MethodCall { recv, args, .. } => {
             walk_expr_mut(recv, f);
-            for a in args {
-                walk_expr_mut(&mut a.value, f);
-            }
-        }
-        BuiltinMacro { args, .. } => {
             for a in args {
                 walk_expr_mut(&mut a.value, f);
             }

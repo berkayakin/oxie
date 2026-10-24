@@ -51,6 +51,14 @@ fn is_scalar_literal(e: &Expr) -> bool {
     }
 }
 
+/// What `x in coll` looks in: a map's keys, text, or another collection's elements.
+#[derive(PartialEq)]
+enum Contains {
+    Key,
+    Text,
+    Value,
+}
+
 fn is_string_lit(e: &Expr) -> bool {
     matches!(e.kind, ExprKind::Str(_) | ExprKind::Template(_))
 }
@@ -186,7 +194,7 @@ impl<'a> Lowerer<'a> {
                     return;
                 }
                 self.e.mark(expr.span);
-                if self.in_throwing_fn() && self.is_throwing_call(expr) {
+                if self.in_throwing_fn() && (self.is_throwing_call(expr) || self.is_rust_result_call(expr)) {
                     self.expr(expr, P_POSTFIX);
                     self.e.w("?;");
                     return;
@@ -757,6 +765,17 @@ impl<'a> Lowerer<'a> {
             }
             return;
         }
+        // a boxed interface value for an `&Shape` parameter: `&*shapes[0]`, `&**s`
+        if let Type::Ref { mutable, inner, .. } = ty {
+            if pos == TyPos::Param && inner.single_name().is_some_and(|n| self.is_trait_name(n)) {
+                if let Some(stars) = self.box_derefs(e) {
+                    self.e.w(if *mutable { "&mut " } else { "&" });
+                    self.e.w(stars);
+                    self.expr(e, P_UNARY);
+                    return;
+                }
+            }
+        }
         match ty {
             Type::Ref { mutable, inner, .. } if pos == TyPos::Param && (self.auto_borrow(e, *mutable) || !mutable && self.lend_to_slice(e, inner)) => {
                 self.e.mark(e.span);
@@ -930,6 +949,34 @@ impl<'a> Lowerer<'a> {
                 owner.and_then(|o| self.class_at(&o).and_then(|c| c.methods.get(name)).cloned()).is_some_and(|m| m.throws)
             }
             ExprKind::Await(x) => self.is_throwing_call(x),
+            _ => false,
+        }
+    }
+
+    /// A call of Rust code that returns a `Result` (`fs.write(path, text)`, `out.flush()`): as a
+    /// statement in a throwing function it passes its error on, as a throwing Oxie function does,
+    /// instead of dropping it. Methods of Oxie classes say themselves whether they throw, and an
+    /// `.await` of unknown type may not be a `Result`.
+    fn is_rust_result_call(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::MethodCall { recv, name, safe: false, .. } => {
+                // `Config.open()`, `util.read(x)`
+                if let Some((mut p, _)) = self.as_path(recv) {
+                    if self.class_at(&p).is_some() || p.last().is_some_and(|s| s == "Self") {
+                        return false;
+                    }
+                    p.push(name.clone());
+                    if self.fun_at(&p).is_some() {
+                        return false;
+                    }
+                }
+                let oxie_class = matches!(recv.kind, ExprKind::SelfValue) || self.infer_type(recv).and_then(|t| self.type_owner(&t)).is_some_and(|o| self.class_at(&o).is_some());
+                !oxie_class && self.is_result_expr(e)
+            }
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Path { segs, .. } if self.fun_at(segs).is_some() => false,
+                _ => self.is_result_expr(e),
+            },
             _ => false,
         }
     }
@@ -1250,8 +1297,16 @@ impl<'a> Lowerer<'a> {
                     self.e.w("!");
                 }
                 self.expr(coll, P_POSTFIX);
-                self.e.w(".contains(");
-                if !is_string_lit(coll) {
+                let kind = self.contains_kind(coll);
+                self.e.w(if kind == Contains::Key { ".contains_key(" } else { ".contains(" });
+                // a key that already is a reference (`"ada"`, a `&str`) is looked up as it is, so it
+                // works for `String` keys too
+                let lend = match kind {
+                    Contains::Key => self.auto_borrow(item, false),
+                    Contains::Text => !is_string_lit(coll) && !self.is_char(item),
+                    Contains::Value => true,
+                };
+                if lend {
                     self.e.w("&");
                     self.expr(item, P_UNARY);
                 } else {
@@ -1381,7 +1436,21 @@ impl<'a> Lowerer<'a> {
                     self.e.w(&format!("'{}: ", l));
                 }
                 let p = self.pat(pat);
-                match self.loop_borrow(iter) {
+                let borrows = self.loop_borrow(iter);
+                // an element of a list of interface values is a box: `Box<dyn Shape>`, or a
+                // reference to one when the loop borrows the list
+                let boxed = match pat {
+                    Pat::Ident { name, by_ref: false, sub: None, .. } => {
+                        let (coll, by_ref) = match &strip_paren(iter).kind {
+                            Unary(UnOp::Ref, x) => (&**x, true),
+                            MethodCall { recv, name, args, .. } if args.is_empty() && matches!(name.as_str(), "iter" | "iter_mut") => (&**recv, true),
+                            _ => (iter.as_ref(), borrows.is_some()),
+                        };
+                        self.elem_type(coll).and_then(|t| self.boxed_iface(&t)).map(|b| (name.clone(), if by_ref { Type::Ref { lifetime: None, mutable: false, inner: Box::new(b) } } else { b }))
+                    }
+                    _ => None,
+                };
+                match borrows {
                     // a collection used again after the loop is borrowed, not consumed
                     Some(copy) => {
                         let plain = |p: &Pat| matches!(p, Pat::Ident { by_ref: false, mutable: false, sub: None, .. } | Pat::Wild);
@@ -1409,6 +1478,9 @@ impl<'a> Lowerer<'a> {
                 self.e.w(" ");
                 self.push_scope();
                 self.bind_pat(pat, None);
+                if let Some((name, t)) = boxed {
+                    self.bind_name(&name, Some(t));
+                }
                 self.loops.push(LoopCtx { dowhile_label: None });
                 self.block_stmt(body);
                 self.loops.pop();
@@ -1516,7 +1588,6 @@ impl<'a> Lowerer<'a> {
                 self.e.w(&format!("{}!", path));
                 self.e.raw_lines(text);
             }
-            BuiltinMacro { name, args } => self.macro_call(name, args, e.span),
             TryCatch { body, catch } => {
                 let t = Target::none();
                 self.try_catch(body, catch.as_deref(), Some(&t));
@@ -1942,6 +2013,79 @@ impl<'a> Lowerer<'a> {
 
     pub(crate) fn is_builtin_call(&self, name: &str) -> bool {
         !self.is_local(name) && !self.k.is_fun_name(name) && self.class.as_ref().is_none_or(|c| !c.methods.contains_key(name))
+    }
+
+    /// The element type of a list, array or slice expression.
+    fn elem_type(&self, coll: &Expr) -> Option<Type> {
+        let mut t = self.infer_type(coll)?;
+        while let Type::Ref { inner, .. } = t {
+            t = *inner;
+        }
+        match t {
+            Type::Slice(inner) | Type::Array(inner, _) => Some(*inner),
+            Type::Path { segs, .. } if segs.len() == 1 && matches!(segs[0].name.as_str(), "Vec" | "VecDeque") => match segs[0].generics.as_deref() {
+                Some([GenericArg::Type(inner)]) => Some(inner.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `Box<Shape>` for an interface value stored in a field or collection (`Shape`, which is
+    /// boxed there, or `Box<Shape>`).
+    fn boxed_iface(&self, t: &Type) -> Option<Type> {
+        let iface = |t: &Type| t.single_name().is_some_and(|n| self.is_trait_name(n)) && matches!(t, Type::Path { segs, .. } if segs[0].generics.is_none());
+        if iface(t) {
+            return Some(Type::Path { global: false, segs: vec![PathSeg { name: "Box".into(), generics: Some(vec![GenericArg::Type(t.clone())]), fn_sugar: None }], span: Default::default() });
+        }
+        match t {
+            Type::Path { segs, .. } if segs.len() == 1 && segs[0].name == "Box" => match segs[0].generics.as_deref() {
+                Some([GenericArg::Type(inner)]) if iface(inner) => Some(t.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `*`s that reach the interface value inside a box, for an argument of an `&Shape`
+    /// parameter: Rust doesn't turn `&Box<dyn Shape>` into `&dyn Shape` by itself.
+    fn box_derefs(&self, e: &Expr) -> Option<&'static str> {
+        match &e.kind {
+            ExprKind::Paren(x) => self.box_derefs(x),
+            _ if e.ident().is_some() => {
+                let n = e.ident().unwrap();
+                match self.local(n) {
+                    Some(Some(Type::Ref { inner, .. })) => self.boxed_iface(inner).filter(|_| inner.single_name() == Some("Box")).map(|_| "**"),
+                    Some(Some(t)) => self.boxed_iface(t).filter(|_| t.single_name() == Some("Box")).map(|_| "*"),
+                    Some(None) => None,
+                    // a field of this class: an interface value is boxed there
+                    None => self.class.as_ref().and_then(|c| c.fields.get(n)).and_then(|t| self.boxed_iface(t)).map(|_| "*"),
+                }
+            }
+            ExprKind::Index(..) | ExprKind::Field { .. } => self.infer_type(e).and_then(|t| self.boxed_iface(&t)).map(|_| "*"),
+            _ => None,
+        }
+    }
+
+    fn contains_kind(&self, coll: &Expr) -> Contains {
+        if is_string_lit(coll) {
+            return Contains::Text;
+        }
+        let t = self.infer_type(coll);
+        let mut t = t.as_ref();
+        while let Some(Type::Ref { inner, .. }) = t {
+            t = Some(inner);
+        }
+        match t.and_then(|t| t.last_name()) {
+            Some("HashMap" | "BTreeMap") => Contains::Key,
+            Some("str" | "String") => Contains::Text,
+            _ => Contains::Value,
+        }
+    }
+
+    /// A `char`, which text's `contains` takes by value (`'e' in s` → `s.contains('e')`).
+    fn is_char(&self, e: &Expr) -> bool {
+        matches!(&e.kind, ExprKind::Char(c) if !c.starts_with('b')) || self.infer_type(e).is_some_and(|t| t.single_name() == Some("char"))
     }
 
     fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) {
@@ -2773,7 +2917,11 @@ impl<'a> Lowerer<'a> {
             "bind", "json", "text", "bytes", "context", "with_context", "map_err", "ok_or", "ok_or_else", "send_timeout", "recv_timeout",
             "try_recv", "elapsed", "duration_since", "read_line_to", "remove_file", "create_dir_all", "copy", "rename",
         ];
-        const RESULT_FNS: &[&str] = &["read_to_string", "read", "write", "open", "create", "from_str", "from_slice", "from_reader", "to_string_pretty", "var", "read_dir", "metadata"];
+        const RESULT_FNS: &[&str] = &[
+            "read_to_string", "read", "write", "open", "create", "from_str", "from_slice", "from_reader", "to_string_pretty", "var", "read_dir", "metadata",
+            "remove_file", "remove_dir", "remove_dir_all", "create_dir", "create_dir_all", "copy", "rename", "canonicalize", "read_link", "hard_link",
+            "set_permissions",
+        ];
         if self.is_throwing_call(e) {
             return true;
         }
@@ -3199,7 +3347,12 @@ impl<'a> Lowerer<'a> {
                                             self.e.w("!");
                                         }
                                         self.expr(expr, P_POSTFIX);
-                                        self.e.w(&format!(".contains({})", w));
+                                        // `w` is a reference to the subject
+                                        match self.contains_kind(expr) {
+                                            Contains::Key => self.e.w(&format!(".contains_key({})", w)),
+                                            Contains::Text if subject.is_some_and(|s| self.is_char(s)) => self.e.w(&format!(".contains(*{})", w)),
+                                            _ => self.e.w(&format!(".contains({})", w)),
+                                        }
                                     }
                                 }
                                 WhenCond::Pat(p) => {

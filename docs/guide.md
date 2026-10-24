@@ -378,7 +378,7 @@ fun introduce(a: &Animal) = println(a.speak())           // `&dyn Animal`
 
 fun main() {
     val zoo: Vec<Box<Animal>> = vec[Box.new(Dog()), Box.new(Cat("Tom".to_string()))]
-    for (a in &zoo) introduce(a.as_ref())
+    for (a in &zoo) introduce(a)                          // lends the boxed value
 }
 ```
 

@@ -9,7 +9,7 @@ fun release(guards: Vec<MutexGuard<i32>>) = println("releasing ${guards.len()}")
 
 class Token(val text: String)
 
-fun show(t: Token) = println(t.text)
+pub fun show(t: Token) = println(t.text)                 // `pub`: keeps its parameter type
 
 fun main() {
     val m = Mutex::new(0)

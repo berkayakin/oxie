@@ -1,0 +1,27 @@
+// Passing a value to `println` and the other printing macros reads it: a parameter that is only
+// printed is borrowed, and a type parameter that is printed gets its `Display` bound.
+data class User(name: String)
+
+fun show(s: String) = println(s)
+fun show_all(xs: Vec<i32>) = println("{:?}", xs)
+fun shout(s: String) { print(s); println("!") }
+fun pair(a: String, b: String) = println(a, b)
+fun check(s: String) = assert_eq(s, "ada")
+fun greet(u: User) = println("{}", u.name)
+fun <T> show_any(x: T) = println(x)
+fun <T> show_both(a: T, b: T) = println(a, b)
+
+fun main() {
+    val name = "ada".to_string()
+    val nums = vec[1, 2, 3]
+    val user = User("bob".to_string())
+    show(name)
+    show_all(nums)
+    shout(name)
+    pair(name, name)
+    check(name)
+    greet(user)
+    show_any(42)
+    show_both("x", "y")
+    println("$name ${nums.len()} ${user.name}")
+}

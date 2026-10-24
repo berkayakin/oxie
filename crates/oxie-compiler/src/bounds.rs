@@ -256,7 +256,8 @@ fn scan(e: &Expr, names: &Names, sets: &HashSet<String>, found: &mut Found) {
                     }
                 }
             }
-            BuiltinMacro { name, args } if matches!(name.as_str(), "println" | "print" | "eprintln" | "eprint") && !args.is_empty() => {
+            // `println(x)` is a call until lowering makes it a macro
+            Call { callee, args } if matches!(callee.ident(), Some("println" | "print" | "eprintln" | "eprint")) && !args.is_empty() => {
                 if !matches!(args[0].value.kind, Str(_) | RawStr(_)) {
                     for a in args {
                         if let Some(t) = elem(&a.value, names) {

@@ -1533,11 +1533,6 @@ impl<'a> Walker<'a> {
                     self.expr(b);
                 }
             }
-            BuiltinMacro { args, .. } => {
-                for a in args {
-                    self.expr(&a.value);
-                }
-            }
             Macro { text, .. } | Raw(text) => {
                 if contains_word(text, "self") {
                     self.facts.uses_self = true;

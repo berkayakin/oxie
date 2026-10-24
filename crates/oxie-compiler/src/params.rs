@@ -552,7 +552,7 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
-                ExprKind::BuiltinMacro { name: m, args } if PRINTS.contains(&m.as_str()) => {
+                ExprKind::Call { callee, args } if callee.ident().is_some_and(|f| PRINTS.contains(&f) && !self.decls.contains_key(f)) => {
                     for a in args {
                         ok.extend(read_at(&a.value, true));
                     }

@@ -1,0 +1,44 @@
+// An interface value from a list or field (a `Box<dyn Shape>`) is lent to an `&Shape` parameter.
+interface Shape {
+    fun area(): f64
+    fun name(): String
+}
+
+class Square(side: f64) : Shape {
+    override fun area() = side * side
+    override fun name() = "square"
+}
+
+class Circle(r: f64) : Shape {
+    override fun area() = 3.0 * r * r
+    override fun name() = "circle"
+}
+
+class Scene(main: Shape, extras: Vec<Box<Shape>>) {
+    fun describe_all() {
+        describe(main)
+        for (s in &extras) describe(s)
+    }
+}
+
+fun describe(s: &Shape) = println("${s.name()}: ${s.area():.1}")
+
+fun total(shapes: &[Shape]): f64 {
+    var sum = 0.0
+    for (s in shapes) sum += s.area()
+    sum
+}
+
+fun main() {
+    val shapes: Vec<Shape> = vec[Square(2.0), Circle(1.0)]
+    for (s in &shapes) describe(s)
+    for (s in shapes.iter()) describe(s)
+    describe(shapes[1])
+    describe(Square(3.0))
+    println("total ${total(&shapes):.1}, still have ${shapes.len()}")
+    for (s in shapes) describe(s)
+
+    val scene = Scene(Circle(2.0), vec[Box.new(Square(1.0))])
+    scene.describe_all()
+    describe(scene.main)
+}
