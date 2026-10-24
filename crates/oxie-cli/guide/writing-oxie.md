@@ -168,8 +168,7 @@ Rust habits compile, but they skip what Oxie infers and don't read as Oxie. Writ
 * A class instead of a struct and an `impl` block. Leave out `self` parameters (`&self` or
   `&mut self` is inferred from what the method does) and `self.` in front of fields. Implement
   an interface with `: Name` and `override fun`, and `Display` with
-  `override fun toString() = "..."`. A `toString` with a block body must end with its text:
-  `return` inside it doesn't compile in this version.
+  `override fun toString() = "..."`.
 * Construct with `Point(1.0, 2.0)`, not `Point::new` or a struct literal; `HashMap()` calls
   `HashMap::new()`. Use `.` in paths: `Color.Red`, `std.mem.swap(a, b)`, `Duration.from_secs(1)`.
 * No `&` or `&mut` at call sites of Oxie functions: `total(items)` lends `items` when the
@@ -259,8 +258,6 @@ fun main() {
   (`T??`); use `.and_then { }` instead.
 * The right side of `?:` can be `return`, `throw`, `continue` or `break`:
   `val v = map.get(key) ?: return`.
-* A value is wrapped in `Some` where a `T?` is expected, except an enum variant without
-  fields: write `Some(Status.Done)`, in a `when` arm too.
 
 **Interfaces as values.**
 

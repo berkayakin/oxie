@@ -27,6 +27,14 @@ pub struct Decision {
     pub cause: Option<Span>,
 }
 
+/// A place in the text written so far, to `insert` at later.
+#[derive(Clone, Copy)]
+pub struct Pos {
+    offset: usize,
+    line: u32,
+    col: u32,
+}
+
 #[derive(Default)]
 pub struct Emitter {
     pub buf: String,
@@ -106,6 +114,26 @@ impl Emitter {
 
     pub fn line(&self) -> u32 {
         self.line
+    }
+
+    /// Where the next text goes, on a line already started.
+    pub fn pos(&self) -> Pos {
+        Pos { offset: self.buf.len(), line: self.line, col: self.col }
+    }
+
+    /// Inserts `s` (without newlines) at `at`, keeping the marks and decisions after it in place.
+    pub fn insert(&mut self, at: Pos, s: &str) {
+        self.buf.insert_str(at.offset, s);
+        let n = s.chars().count() as u32;
+        for m in self.marks.iter_mut().filter(|m| m.gen_line == at.line && m.gen_col >= at.col) {
+            m.gen_col += n;
+        }
+        for d in self.decisions.iter_mut().filter(|d| d.gen_line == at.line && d.gen_col >= at.col) {
+            d.gen_col += n;
+        }
+        if self.line == at.line {
+            self.col += n;
+        }
     }
 
     /// Records a decision whose result was just written.

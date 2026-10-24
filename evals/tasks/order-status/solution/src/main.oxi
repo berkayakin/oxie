@@ -28,7 +28,7 @@ fun next(status: &Status, event: &Event): Status? = when ((status, event)) {
     (Status.Pending, Event.Cancel(reason)) -> Status.Cancelled(reason.clone())
     (Status.Paid(_), Event.Ship(tracking)) -> Status.Shipped(tracking.clone())
     (Status.Paid(_), Event.Cancel(reason)) -> Status.Cancelled("refund: $reason")
-    (Status.Shipped(_), Event.Deliver) -> Some(Status.Delivered)
+    (Status.Shipped(_), Event.Deliver) -> Status.Delivered
     else -> null
 }
 

@@ -144,6 +144,17 @@
   becomes `struct Parser<'a> { input: &'a str }`. Functions taking or returning such types get
   their lifetimes filled in as for references, and `data class`es holding `&str` derive `Copy`,
   `Eq` and `Hash` when their other fields allow.
+* An enum variant without fields is wrapped in `Some` where a `T?` is expected, as one with
+  fields already was: `fun f(): Status? = Status.Done`, `return Status.Done`,
+  `val s: Status? = Status.Done`, `if (go) Status.Done else null` and a `when` arm
+  `-> Status.Done` used to fail with "expected `Status?`, found `Status`". Where an interface is
+  expected, such a variant is boxed like any constructed value.
+* `return` in a `toString` with a block body gives the text. It used to return from the
+  generated `fmt`, which rustc rejected (expected `Result<(), std::fmt::Error>`, found
+  `String`). A `return` at the end is just the value; one before it breaks out of the block
+  that computes the text.
+* A labeled block (`'found: { ... }`) gets the declared type of what it initializes, as a plain
+  block does, so its value is converted: `"text"` to a `String`, a value to `T?`.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix
   written into `Cargo.toml` and build scripts, which Cargo rejected ("invalid path url").
 * `oxie init` in a crate that already has `[build-dependencies]` adds `oxie-build` to that

@@ -1,0 +1,88 @@
+// `return` in a `toString` with a block body gives the text.
+
+class History(val entries: Vec<String>) {
+    override fun toString(): String {
+        val joined = entries.join("; ")
+        return "${entries.len()} entries: $joined"
+    }
+}
+
+class Report(val title: String, val items: Vec<String>) {
+    override fun toString(): String {
+        if (items.is_empty()) return "$title: empty"
+        for (item in &items) {
+            if (item == "stop") return "$title: stopped"
+        }
+        val total = items.iter().map { it.len() }.sum::<usize>()
+        return "$title: ${items.len()} items, $total letters"
+    }
+}
+
+class Grade(val score: i32) {
+    override fun toString(): String {
+        if (score >= 90) {
+            return "A"
+        } else if (score >= 80) {
+            return "B"
+        }
+        val word = when {
+            score >= 50 -> "pass"
+            else -> return "fail ($score)"
+        }
+        return "$word ($score)"
+    }
+}
+
+class Point(val x: i32, val y: i32) {
+    override fun toString(): String {
+        return "($x, $y)"
+    }
+}
+
+class Parity(val n: i32) {
+    // a `return` in a lambda still leaves the lambda
+    override fun toString(): String {
+        val words: Vec<&str> = (0..n).map { i ->
+            if (i % 2 == 0) return "even"
+            "odd"
+        }.collect()
+        words.join(" ")
+    }
+}
+
+enum Shape {
+    Circle(radius: f64)
+    Dot
+
+    override fun toString(): String {
+        when (this) {
+            Circle(r) -> {
+                if (*r == 0.0) return "empty circle"
+                return "circle of radius $r"
+            }
+            Dot -> return "dot"
+        }
+    }
+}
+
+shared class Counter(var n: i32) {
+    override fun toString(): String {
+        if (n == 0) return "zero"
+        return "n = $n"
+    }
+}
+
+fun main() {
+    println(History(vec["add 1".to_string(), "add 2".to_string()]))
+    println(Report("empty".to_string(), vec[]))
+    println(Report("halted".to_string(), vec["go".to_string(), "stop".to_string()]))
+    println(Report("words".to_string(), vec["one".to_string(), "three".to_string()]))
+    for (score in vec[95, 85, 60, 10]) println(Grade(score))
+    println(Point(1, 2))
+    println(Parity(3))
+    println("${Shape.Circle(0.0)}, ${Shape.Circle(2.5)}, ${Shape.Dot}")
+    val c = Counter(0)
+    println(c)
+    c.n = 3
+    println(c.to_string())
+}

@@ -742,7 +742,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn coerce(&mut self, e: &Expr, ty: &Type, pos: TyPos) {
         // a block ending in a lambda (`{ [a] -> ... }`) for an `impl Fn` parameter stays unboxed
         let unboxed_fn = matches!(ty, Type::Fn { .. }) && !matches!(pos, TyPos::Field | TyPos::Generic | TyPos::Local);
-        if matches!(e.kind, ExprKind::If { .. } | ExprKind::When { .. } | ExprKind::Block(_)) && !matches!(&e.kind, ExprKind::If { else_: None, .. }) && !unboxed_fn {
+        if matches!(e.kind, ExprKind::If { .. } | ExprKind::When { .. } | ExprKind::Block(_) | ExprKind::LabeledBlock { .. }) && !matches!(&e.kind, ExprKind::If { else_: None, .. }) && !unboxed_fn {
             self.tail(e, &Target::ty(ty));
             return;
         }
@@ -950,7 +950,8 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Constructor calls: `Point(1, 2)`, `Shape.Circle(1.0)`, `Point { .. }`.
+    /// Constructor calls: `Point(1, 2)`, `Shape.Circle(1.0)`, `Point { .. }`, and variants
+    /// without fields: `Status.Done`.
     fn is_constructed_value(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::StructLit { .. } => true,
@@ -964,8 +965,36 @@ impl<'a> Lowerer<'a> {
             ExprKind::MethodCall { recv, name, .. } => {
                 is_type_like(name) && matches!(self.as_path(recv), Some((_, PathKind::Type)))
             }
+            ExprKind::Path { .. } | ExprKind::Field { .. } => self.is_unit_variant(e),
             _ => false,
         }
+    }
+
+    /// A variant without fields: `Status.Done`, `Self.Done`, `shapes.Status.Done`, or `Done`
+    /// alone when only one enum has it.
+    fn is_unit_variant(&self, e: &Expr) -> bool {
+        let path = match &e.kind {
+            // resolved as in `path_expr`
+            ExprKind::Path { segs, generics: None, global: false } if segs.len() == 1 => {
+                let n = &segs[0];
+                if self.is_local(n) || self.implicit_field(n).is_some() || self.k.is_class_name(n) || self.k.is_fun_name(n) {
+                    return false;
+                }
+                return self.k.variant_enum_in(n, Some(&self.module)).and_then(|en| en.variant(n)).is_some_and(|v| matches!(v, VariantShape::Unit));
+            }
+            ExprKind::Path { segs, generics: None, .. } => segs.clone(),
+            ExprKind::Field { .. } => match self.as_path(e) {
+                Some((p, PathKind::Value)) => p,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        let Some((name, owner)) = path.split_last() else { return false };
+        let owner = match (owner, &self.class) {
+            ([s], Some(c)) if s == "Self" => vec![c.name.clone()],
+            _ => owner.to_vec(),
+        };
+        self.enum_at(&owner).and_then(|en| en.variant(name)).is_some_and(|v| matches!(v, VariantShape::Unit))
     }
 
     pub(crate) fn is_place(&self, e: &Expr) -> bool {
@@ -1255,7 +1284,7 @@ impl<'a> Lowerer<'a> {
             }
             Async { is_move, block } => {
                 self.e.w(if *is_move { "async move " } else { "async " });
-                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: true, tries: Vec::new() });
+                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: true, tries: Vec::new(), text_break: None });
                 let saved = std::mem::take(&mut self.loops);
                 self.block_value(block, &Target::none());
                 self.loops = saved;
@@ -2960,7 +2989,14 @@ impl<'a> Lowerer<'a> {
 
     fn return_expr(&mut self, v: Option<&Expr>) {
         let ctx = self.fns.last().cloned();
-        self.e.w("return");
+        match self.fns.last_mut() {
+            // in a `toString` body, `return` leaves the block that computes the text
+            Some(f) if f.text_break.is_some() => {
+                f.text_break = Some(true);
+                self.e.w(&format!("break '{}", TEXT_LABEL));
+            }
+            _ => self.e.w("return"),
+        }
         match ctx {
             Some(f) if !f.is_lambda => {
                 let wrap = f.throws && !v.is_some_and(is_ok_err_call) && !v.is_some_and(|x| x.diverges());
@@ -3440,7 +3476,7 @@ impl<'a> Lowerer<'a> {
         self.e.w(&format!("|{}|", ps.join(", ")));
         let ret = ret.clone().or_else(|| ret_ty.cloned().filter(|t| !t.is_unit()));
         let explicit_ret = matches!(&e.kind, ExprKind::Lambda { ret: Some(_), .. });
-        self.fns.push(FnCtx { throws: false, ret: ret.clone(), is_lambda: true, tries: Vec::new() });
+        self.fns.push(FnCtx { throws: false, ret: ret.clone(), is_lambda: true, tries: Vec::new(), text_break: None });
         let saved_loops = std::mem::take(&mut self.loops);
         let target = Target { ty: ret.clone(), wrap: None, fn_result: false };
         // `{ items.push(next_id()) }`: in a block, so the calls that change `this` can go first

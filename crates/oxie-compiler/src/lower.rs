@@ -187,7 +187,14 @@ pub(crate) struct FnCtx {
     pub(crate) ret: Option<Type>,
     pub(crate) is_lambda: bool,
     pub(crate) tries: Vec<String>,
+    /// `Some` in a `toString` with a block body, whose text `Display` computes in a block:
+    /// `return` breaks out of the block (labeled `TEXT_LABEL`), and this is `Some(true)` once
+    /// one has, so the block gets its label.
+    pub(crate) text_break: Option<bool>,
 }
+
+/// The label of the block that computes the text of a `toString` with a block body.
+pub(crate) const TEXT_LABEL: &str = "__oxie_text";
 
 #[derive(Clone)]
 pub(crate) struct LoopCtx {
@@ -540,7 +547,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 self.e.w(&format!("{}fn {}() ", asyncs, name));
             }
-            self.fns.push(FnCtx { throws: t.throws, ret: None, is_lambda: false, tries: Vec::new() });
+            self.fns.push(FnCtx { throws: t.throws, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
             self.push_scope();
             self.fn_block(&t.body, None, t.throws);
             self.pop_scope();
@@ -1422,7 +1429,7 @@ impl<'a> Lowerer<'a> {
     fn fun_body(&mut self, f: &FunDecl, body: &FunBody) {
         let throws = !matches!(f.throws, Throws::No);
         let ret = f.ret.clone().filter(|t| !t.is_unit());
-        self.fns.push(FnCtx { throws, ret: ret.clone(), is_lambda: false, tries: Vec::new() });
+        self.fns.push(FnCtx { throws, ret: ret.clone(), is_lambda: false, tries: Vec::new(), text_break: None });
         let by_value = std::mem::replace(&mut self.self_by_value, matches!(f.self_param, Some(SelfParam::Value { .. })));
         match body {
             FunBody::Block(b) => self.fn_block(b, ret.as_ref(), throws),
@@ -1922,7 +1929,7 @@ impl<'a> Lowerer<'a> {
                 // constructor params shadow fields inside init
                 let _ = f;
             }
-            self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new() });
+            self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
             let init = t.init.as_ref().unwrap();
             self.stmts_with_tail(&init.stmts, None);
             self.fns.pop();
@@ -2021,10 +2028,12 @@ impl<'a> Lowerer<'a> {
         self.e.nl();
         self.push_scope();
         self.bind_name("f", None);
-        self.fns.push(FnCtx { throws: false, ret: Some(Type::simple("String")), is_lambda: false, tries: Vec::new() });
+        let text_break = matches!(f.body, Some(FunBody::Block(_))).then_some(false);
+        self.fns.push(FnCtx { throws: false, ret: Some(Type::simple("String")), is_lambda: false, tries: Vec::new(), text_break });
         let single = match &f.body {
             Some(FunBody::Expr(e)) => Some(e.clone()),
             Some(FunBody::Block(b)) if b.stmts.len() == 1 => match &b.stmts[0] {
+                Stmt::Expr { expr: Expr { kind: ExprKind::Return(Some(v)), .. }, .. } => Some((**v).clone()),
                 Stmt::Expr { expr, semi: false } => Some(expr.clone()),
                 _ => None,
             },
@@ -2044,13 +2053,18 @@ impl<'a> Lowerer<'a> {
                 match &f.body {
                     Some(FunBody::Expr(e)) => self.coerce(e, &Type::simple("String"), TyPos::Local),
                     Some(FunBody::Block(b)) => {
-                        let target = Target::ty(&Type::simple("String"));
+                        // `return x` at the end is just `x`; one before it breaks out of the block
+                        let target = Target { ty: Some(Type::simple("String")), wrap: None, fn_result: true };
+                        let at = self.e.pos();
                         self.e.w("{");
                         self.e.indent();
                         self.stmts_with_tail(&b.stmts, Some(&target));
                         self.e.dedent();
                         self.e.nl();
                         self.e.w("}");
+                        if self.fns.last().and_then(|c| c.text_break) == Some(true) {
+                            self.e.insert(at, &format!("'{}: ", TEXT_LABEL));
+                        }
                     }
                     None => self.e.w("String::new()"),
                 }
@@ -2114,7 +2128,7 @@ impl<'a> Lowerer<'a> {
         self.push_scope();
         match &t.message {
             Some(msg) => {
-                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new() });
+                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
                 self.write_message(msg);
                 self.fns.pop();
             }
@@ -2306,7 +2320,7 @@ impl<'a> Lowerer<'a> {
             match &v.message {
                 Some(m) => {
                     let m2 = rewrite_positional(m);
-                    self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new() });
+                    self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
                     self.write_message(&m2);
                     self.fns.pop();
                 }
