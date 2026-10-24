@@ -39,6 +39,9 @@ pub struct MappedDiag {
     /// rustc's suggestions whose spans map exactly onto the .oxi source (not the parts of a
     /// suggestion that edits several places).
     pub suggestions: Vec<Suggestion>,
+    /// rustc's suggestions that edit several places, whose parts all map exactly onto the .oxi
+    /// source.
+    pub multipart: Vec<Multipart>,
     /// rustc suggestions as plain text (for `use` paths and the like).
     pub raw_suggestions: Vec<String>,
     /// rustc's own message when the explanation replaced it.
@@ -71,6 +74,15 @@ pub struct Suggestion {
     pub end_line: u32,
     pub end_col: u32,
     pub replacement: String,
+}
+
+/// A rustc suggestion that edits several places (`Box::new(` and `)` around a value); its parts
+/// only work together.
+#[derive(Clone, Debug)]
+pub struct Multipart {
+    /// rustc's help message.
+    pub message: String,
+    pub parts: Vec<Suggestion>,
 }
 
 /// A text replacement in a source file (zero-based lines, character columns).
@@ -217,6 +229,7 @@ impl Mapper {
             from_oxie: true,
             secondary: Vec::new(),
             suggestions: Vec::new(),
+            multipart: Vec::new(),
             raw_suggestions: Vec::new(),
             rust_message: None,
             gen_text: None,
@@ -288,6 +301,7 @@ impl Mapper {
         }
         let mut notes = Vec::new();
         let mut suggestions = Vec::new();
+        let mut multipart_suggestions = Vec::new();
         let mut raw_suggestions = Vec::new();
         if let Some(children) = msg.get("children").and_then(|c| c.as_array()) {
             for c in children {
@@ -298,29 +312,37 @@ impl Mapper {
                 }
                 let mut text = format!("{}: {}", lvl, m);
                 let child_spans = c.get("spans").and_then(|s| s.as_array()).cloned().unwrap_or_default();
-                if let Some(sp) = child_spans.first() {
+                // replacements at different places are parts of one suggestion, which only work
+                // together (alternatives replace the same span)
+                let range = |sp: &Value| ["file_name", "byte_start", "byte_end"].map(|k| sp.get(k).cloned());
+                let parts: Vec<&Value> = child_spans.iter().filter(|sp| sp.get("suggested_replacement").is_some_and(|s| s.is_string())).collect();
+                let multipart = parts.windows(2).any(|w| range(w[0]) != range(w[1]));
+                // the code of a suggestion with several parts isn't one piece of text
+                if let Some(sp) = child_spans.first().filter(|_| !multipart) {
                     if let Some(sugg) = sp.get("suggested_replacement").and_then(|s| s.as_str()) {
                         if !sugg.is_empty() && sugg.len() < 80 && !sugg.contains('\n') {
                             text.push_str(&format!(": `{}`", sugg));
                         }
                     }
                 }
-                // replacements at different places are parts of one suggestion, which only work
-                // together (alternatives replace the same span)
-                let range = |sp: &Value| ["file_name", "byte_start", "byte_end"].map(|k| sp.get(k).cloned());
-                let parts: Vec<&Value> = child_spans.iter().filter(|sp| sp.get("suggested_replacement").is_some_and(|s| s.is_string())).collect();
-                let multipart = parts.windows(2).any(|w| range(w[0]) != range(w[1]));
-                for sp in &child_spans {
-                    let Some(sugg) = sp.get("suggested_replacement").and_then(|s| s.as_str()) else { continue };
+                let mut mapped = Vec::new();
+                for sp in &parts {
+                    let sugg = sp.get("suggested_replacement").and_then(|s| s.as_str()).unwrap_or("");
                     raw_suggestions.push(sugg.to_string());
-                    if multipart {
-                        continue;
-                    }
                     if let Some((f, l, c, el, ec)) = self.map_span_exact(root, sp) {
                         if f == file {
-                            suggestions.push(Suggestion { line: l, col: c, end_line: el, end_col: ec, replacement: sugg.to_string() });
+                            mapped.push(Suggestion { line: l, col: c, end_line: el, end_col: ec, replacement: sugg.to_string() });
                         }
                     }
+                }
+                // a suggestion with several parts (not alternatives that each have several) is kept
+                // when they map in order onto one line: a part can map exactly onto another line, as
+                // the `)` after a default argument does onto the parameter's declaration
+                let one_line = mapped.iter().all(|s| s.line == mapped[0].line && s.end_line == s.line) && mapped.windows(2).all(|w| w[0].end_col <= w[1].col);
+                if !multipart {
+                    suggestions.extend(mapped);
+                } else if mapped.len() == parts.len() && parts.windows(2).all(|w| follows(w[0], w[1])) && one_line {
+                    multipart_suggestions.push(Multipart { message: m.to_string(), parts: mapped });
                 }
                 notes.push(text);
             }
@@ -339,6 +361,7 @@ impl Mapper {
             from_oxie,
             secondary,
             suggestions,
+            multipart: multipart_suggestions,
             raw_suggestions,
             rust_message: None,
             gen_text,
@@ -368,6 +391,14 @@ impl Mapper {
 fn has_verbatim_rust(src: &str) -> bool {
     let b = src.as_bytes();
     src.contains("rust {") || src.contains("rust{") || (1..b.len().saturating_sub(1)).any(|i| b[i] == b'!' && matches!(b[i + 1], b'(' | b'[' | b'{') && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
+}
+
+/// Does the replacement `sp` come after `prev` in the same file, as the next part of a
+/// suggestion that edits several places?
+fn follows(prev: &Value, sp: &Value) -> bool {
+    let range = |v: &Value| ["byte_start", "byte_end"].map(|k| v.get(k).and_then(|b| b.as_u64()));
+    let ([start, _], [_, prev_end]) = (range(sp), range(prev));
+    sp.get("file_name") == prev.get("file_name") && start >= prev_end && range(sp) != range(prev)
 }
 
 fn expansion_site(span: &Value) -> &Value {
@@ -675,6 +706,39 @@ mod tests {
         assert!(!d.message.contains("a bug in Oxie"), "{}", d.message);
         assert!(has_verbatim_rust("val v = my_macro!(1)") && !has_verbatim_rust("if (!(a && b)) x != y"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A suggestion that edits several places is one fix, in Oxie terms, when its parts map onto
+    /// one line of the source, and its note doesn't show the first part alone.
+    #[test]
+    fn suggestions_with_several_parts_are_whole() {
+        // `vec![Circle::new(1.5)]` generated from `src` with these marks, and rustc's suggestion to
+        // put `Box::new(` and `)` around the value
+        let boxed = |name: &str, src: &str, marks: &str| {
+            let dir = std::env::temp_dir().join(format!("oxie-parts-{}-{}", std::process::id(), name));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("app.oxi"), src).unwrap();
+            std::fs::write(dir.join("main.rs"), "fn main() {\n    let v = vec![Circle::new(1.5)];\n}\n").unwrap();
+            std::fs::write(dir.join("main.rs.map"), format!("oxie-sourcemap 1\n{}\n{}", dir.join("app.oxi").display(), marks)).unwrap();
+            let main = dir.join("main.rs").display().to_string();
+            let span = |start: u32, end: u32, text: Option<&str>| {
+                serde_json::json!({"file_name": main, "line_start": 2, "line_end": 2, "column_start": start, "column_end": end, "byte_start": 11 + start, "byte_end": 11 + end, "is_primary": true, "label": null, "expansion": null, "suggested_replacement": text})
+            };
+            let help = serde_json::json!({"level": "help", "message": "store this in the heap by calling `Box::new`", "spans": [span(18, 18, Some("Box::new(")), span(34, 34, Some(")"))]});
+            let msg = serde_json::json!({"level": "error", "message": "mismatched types", "code": {"code": "E0308"}, "spans": [span(18, 34, None)], "children": [help]});
+            let d = Mapper::default().map_message(&dir, &msg).unwrap();
+            std::fs::remove_dir_all(&dir).unwrap();
+            d
+        };
+        let d = boxed("call", "fun main() {\n    val v = vec[Circle(1.5)]\n}\n", "1 4 1 4\n1 17 1 16\n1 29 1 23\n");
+        assert!(!d.notes.iter().any(|n| n.contains("Box::new")), "{:?}", d.notes);
+        let fix = d.fixes.iter().find(|f| f.title == "store this in the heap by calling `Box.new`").unwrap_or_else(|| panic!("{:?}", d.fixes));
+        let edits: Vec<(u32, u32, &str)> = fix.edits.iter().map(|e| (e.line, e.col, e.text.as_str())).collect();
+        assert_eq!(edits, vec![(1, 16, "Box.new("), (1, 27, ")")]);
+        // the `1.5` of `Circle()` is a default argument, so the `)` after it maps onto the declaration
+        let d = boxed("default", "class Circle(r: f64 = 1.5)\n\nfun main() {\n    val v = vec[Circle()]\n}\n", "1 4 3 4\n1 17 3 16\n1 29 0 22\n");
+        assert!(d.fixes.is_empty(), "{:?}", d.fixes);
+        assert!(d.notes.iter().any(|n| n == "help: store this in the heap by calling `Box::new`"), "{:?}", d.notes);
     }
 
     #[test]

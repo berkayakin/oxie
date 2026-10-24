@@ -1,0 +1,44 @@
+// rustc's suggestions become fixes in Oxie terms: whole when they edit several places, and
+// never a method name that means the opposite of the one called.
+
+interface Shape {
+    fun area(): f64
+}
+
+class Circle(r: f64 = 1.0) : Shape {
+    override fun area() = 3.14159 * r * r
+}
+
+class Step(name: String, run: (i32) -> i32)
+
+// `is_not_empty()` is a list operation; for text, rustc suggests `is_empty`, which turns the
+// condition around
+fun greet(name: &str) {
+    if (name.is_not_empty()) println("hi $name")
+    // error: 17: fix: use `!name.is_empty()`: `if (!name.is_empty()) println("hi $name")`
+    // not: 17: use `is_empty`
+    if (!name.is_not_empty()) println("nobody")
+    // error: 20: fix: use `name.is_empty()`: `if (name.is_empty()) println("nobody")`
+    if (name.isNotEmpty()) println("again")
+    // error: 22: fix: use `!name.is_empty()`: `if (!name.is_empty()) println("again")`
+    // not: 22: use `is_empty`
+}
+
+fun main() {
+    // `Box::new(` and `)` around the value
+    val shapes: Vec<Box<Shape>> = vec[Circle(1.5)]
+    // error: 29: fix: store this in the heap by calling `Box.new`: `val shapes: Vec<Box<Shape>> = vec[Box.new(Circle(1.5))]`
+    // not: 29: `Box::new(`
+    // the same around `Circle()`, whose `1.0` comes from the declaration, so the `)` after it
+    // doesn't map onto this line: no fix, and no part of one
+    val more: Vec<Box<Shape>> = vec[Circle()]
+    // error: 34: store this in the heap by calling
+    // not: 34: `Box::new(`
+    // `(` and `)` around the field
+    val s = Step("double", { it * 2 })
+    println(s.run(3))
+    // error: 39: fix: to call the function stored in `run`, surround the field access with parentheses: `println((s.run)(3))`
+    // not: 39: `(`
+    greet("ada")
+    println("${shapes.len()} ${more.len()}")
+}
