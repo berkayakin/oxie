@@ -1,0 +1,13 @@
+// A loop that changes its elements through a class's own method gets a fix to loop over `&mut`.
+class Item(var qty: i32) {
+    fun bump() {
+        qty += 1
+    }
+}
+
+fun main() {
+    var items = vec[Item(1)]
+    for (it in items) it.bump() // error: 10: fix: loop over `&mut items`: `for (it in &mut items) it.bump()`
+    for (it in items.iter()) it.qty += 1 // error: 11: fix: use `iter_mut()`: `for (it in items.iter_mut()) it.qty += 1`
+    println(items.len())
+}

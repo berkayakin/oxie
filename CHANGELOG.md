@@ -232,6 +232,32 @@
 * `oxie <command> --help` describes the command. Before, most commands took `--help` as an
   argument: `oxie init --help` set up the current directory, `oxie fmt --help` formatted it, and
   `oxie run --help` ran the project. `oxie test file.oxi` (tests of a script) is in the help.
+* A function returning an interface (`fun pick(): Shape`) compiles: it returns `impl Shape`
+  without boxing, or `Box<dyn Shape>` when its branches build different classes. Before, its
+  value was boxed for an `impl Shape` return type, which never compiled.
+* A loop that changes the elements of the list it borrows (`for (x in items) x.qty += 1`,
+  `x.tags.push(t)`) borrows the list mutably, and a method that loops over a field like that
+  takes `&mut self`. Before, it was an error whose hint was cut off ("use a mutable iterator
+  instead: `mut `"). A loop that changes elements through a class's own methods gets a fix to
+  loop over `&mut items` (or `iter_mut()`).
+* A `var` that rustc calls unused when changing it failed is no longer reported as "can be a
+  `val`": `unused_mut` warnings are shown only for builds without errors.
+* A method of `T` called on a `T?` is explained in Oxie terms: after `if (x != null)` the fix is
+  `if (val x = &x)`, after `if (x == null) return` it is `val x = x ?: return`. Before, rustc
+  said "method `len` is private" and suggested `.expect("REASON")`. A value moved out by
+  `if (val x = opt)` is named (rustc's message had no name) and gets the fix `&opt`.
+* `a?.b` on a `shared class` reads the field through its getter (and `a?.items.len()` through
+  one borrow), also deeper in a chain (`a.parent?.parent?.name`) and in statements
+  (`a.parent?.tags.push(t)`). Before, it was an error asking for `name()`.
+* A loop over one field can call a method with an expression body (`fun note(s: String) =
+  log.push(s)`) that changes another field, as it already could a method with a block body.
+* `when` on a `String` (or `&String`) with text arms matches it as `&str`; before, it was a
+  type error.
+* `m[k] = v` on a `HashMap` or `BTreeMap` is `m.insert(k, v)`. `m[k] += 1` is an Oxie error
+  that explains the choice: `*m.entry(k).or_default() += 1` or `*m.get_mut(&k).unwrap() += 1`.
+* `+` on text that Rust rejects (`first + last` with two `String`s, `a + b` with two `&str`)
+  joins with `format!`, as a `+` with a string literal already did; neither side is moved.
+  `s += t` with a `String` `t` appends `&t`.
 
 ## 0.1.0 - 2026-10-23
 

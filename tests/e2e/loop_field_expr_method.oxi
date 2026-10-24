@@ -1,0 +1,19 @@
+// A loop over one field can call a method that changes another, also one with an expression body
+class Game(var players: Vec<String>, var log: Vec<String> = vec[]) {
+    fun note(s: String) {
+        log.push(s)
+    }
+    fun note2(s: String) = log.push(s)
+    fun round() {
+        for (p in players) note("turn of $p")
+    }
+    fun round2() {
+        for (p in players) note2(p.clone())
+    }
+}
+fun main() {
+    var g = Game(vec["a".to_string(), "b".to_string()])
+    g.round()
+    g.round2()
+    println(g.log.len())
+}

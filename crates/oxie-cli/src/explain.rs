@@ -54,6 +54,12 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
             }
             d.notes.push(help(&format!("{} Take a copy with `.clone()`, or borrow it with `&`.", reason)));
         }
+        "E0594" if d.message.contains("behind a `&` reference") => {
+            let name = first.trim_start_matches('*').split(['.', '[']).next().unwrap_or("").to_string();
+            rewrite(d, format!("`{}` is a read-only reference (`&`), so it can't be changed through it", name));
+            d.notes.retain(|n| !n.contains("`mut "));
+            loop_over_mut(d, &lines, &name);
+        }
         "E0373" => lambda_outlives(d, &lines, &names),
         "E0597" => {
             rewrite(d, format!("`{}` is dropped while something still refers to it", first));
@@ -69,6 +75,7 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
         "E0106" => {
             d.notes.push(help("Oxie fills in lifetimes for functions and for classes that hold references, but not here; write them yourself (`fun f<'a>(x: &'a str): &'a str`), or hold owned values (`String` instead of `&str`) to avoid lifetimes altogether."));
         }
+        "E0599" | "E0624" if is_optional_receiver(d) => optional_receiver(d, &lines, &first),
         "E0599" => no_method(d, sources, &lines, &first),
         "E0433" | "E0412" | "E0425" | "E0422" | "E0423" | "E0531" | "E0532" => {
             if d.message.contains("undeclared") || d.message.starts_with("cannot find") {
@@ -138,6 +145,9 @@ fn generated_names(d: &mut MappedDiag) {
 // individual errors
 
 fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str) {
+    if moved_by_unwrap(d, lines, name) {
+        return;
+    }
     // a `move` lambda takes what it uses; rustc's "value moved into closure here" is at its start
     let into = |t: &str| t.contains("into closure");
     let at = if d.label.as_deref().is_some_and(into) { Some((d.line, d.col)) } else { d.secondary.iter().find(|s| into(&s.text)).map(|s| (s.line, s.col)) };
@@ -235,6 +245,51 @@ fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str
             d.fixes.push(Fix { title: format!("let `{}` borrow it (parameter type `{}`)", f, borrowed), edits: vec![Edit { file, ..edit(pl, pc, pe, &borrowed) }] });
         }
     }
+}
+
+/// `if (val x = opt)` (or `while`) takes the value out of `opt`; rustc may not even name it
+/// ("use of moved value"). Unwrapping a reference, `if (val x = &opt)`, keeps `opt`.
+fn moved_by_unwrap(d: &mut MappedDiag, lines: &[&str], name: &str) -> bool {
+    let unwrapped = |l: u32| -> Option<(u32, String)> {
+        let line = lines.get(l as usize).copied().unwrap_or("");
+        let mut from = 0;
+        while let Some(i) = line[from..].find("(val ") {
+            let rest = &line[from + i + 5..];
+            from += i + 5;
+            let Some((_, src)) = rest.split_once(" = ") else { continue };
+            let opt: String = src.chars().take_while(|c| is_ident_char(*c) || *c == '.').collect();
+            if !opt.is_empty() && (name.is_empty() || opt == name) && (src[opt.len()..].starts_with(')') || src[opt.len()..].starts_with(" &&")) {
+                let col = line[..line.len() - src.len()].chars().count() as u32;
+                return Some((col, opt));
+            }
+        }
+        None
+    };
+    let moved = d.secondary.iter().position(|s| s.text.contains("moved here") || s.text.contains("value moved"));
+    let Some((col, opt)) = moved.and_then(|i| unwrapped(d.secondary[i].line)) else { return false };
+    let site = moved.unwrap();
+    let line = d.secondary[site].line;
+    if name.is_empty() {
+        // the use is the same kind of unwrap, of the same value
+        if let Some((c, _)) = unwrapped(d.line) {
+            d.col = c;
+            d.end_col = c + opt.chars().count() as u32;
+        }
+    } else {
+        refine(d, lines, name);
+    }
+    let s = &mut d.secondary[site];
+    s.col = col;
+    s.end_col = col + opt.chars().count() as u32;
+    s.text = format!("`{}` moved here: its value is taken out", opt);
+    s.exact = true;
+    d.secondary.retain(|s| s.text.contains("moved here"));
+    d.label = Some("used here after the move".into());
+    rewrite(d, format!("`{}` was moved, so it can't be used anymore", opt));
+    d.notes.retain(|n| !n.contains("`ref `") && !n.starts_with("note: "));
+    d.notes.push(help(&format!("`val x = {}` in a condition moves the value out of `{}`. To keep `{}`, unwrap a reference: `val x = &{}`.", opt, opt, opt, opt)));
+    d.fixes.push(Fix { title: format!("unwrap a reference (`&{}`)", opt), edits: vec![edit(line, col, col, "&")] });
+    true
 }
 
 /// A lambda that took a value because it is `move` (written so, or with a capture list).
@@ -368,6 +423,9 @@ fn borrow_mut(d: &mut MappedDiag, sources: &Sources, lines: &[&str], first: &str
     if d.message.contains("behind a `&` reference") {
         rewrite(d, format!("`{}` is a read-only reference (`&`), so it can't be changed through it", name));
         d.notes.retain(|n| !n.contains("`mut") && !n.contains("mutable reference"));
+        if loop_over_mut(d, lines, &name) {
+            return;
+        }
         if let Some((pl, pc, fname, index)) = param_decl(lines, &name, d.line) {
             let line = lines[pl as usize];
             let rest: String = line.chars().skip(pc as usize).collect();
@@ -406,6 +464,41 @@ fn borrow_mut(d: &mut MappedDiag, sources: &Sources, lines: &[&str], first: &str
         mut_self_call(d, sources, d.line, d.col, &name);
         make_var(d, lines, &name);
     }
+}
+
+/// `name` is the variable of a loop that reads its list (`for (x in items)`): to change the
+/// elements, the loop goes over `&mut items`. Oxie does that itself when the body assigns to
+/// `x.field` or calls a list method like `push` on it; not for the methods of a class.
+fn loop_over_mut(d: &mut MappedDiag, lines: &[&str], name: &str) -> bool {
+    let header = format!("for ({} in ", name);
+    for l in (0..=d.line).rev() {
+        let line = lines.get(l as usize).copied().unwrap_or("");
+        let Some(at) = line.find(&header) else {
+            // the loop must be in the same function
+            if find_word(line, "fun", 0).is_some() {
+                return false;
+            }
+            continue;
+        };
+        let start = at + header.len();
+        let list: String = line[start..].chars().take_while(|c| is_ident_char(*c) || *c == '.').collect();
+        // `for (x in items.iter())`: `iter_mut()` lends the elements for changing
+        if let Some(recv) = list.strip_suffix(".iter").filter(|_| line[start + list.len()..].starts_with("())")) {
+            let col = line[..start + list.len()].chars().count() as u32;
+            d.notes.retain(|n| !n.contains("iter_mut()"));
+            d.notes.push(help(&format!("`iter()` reads the elements of `{}`; `iter_mut()` lets the loop change them.", recv)));
+            d.fixes.push(Fix { title: "use `iter_mut()`".into(), edits: vec![edit(l, col, col, "_mut")] });
+            return true;
+        }
+        if list.is_empty() || !line[start + list.len()..].starts_with(')') || list.ends_with('.') {
+            return false;
+        }
+        let col = line[..start].chars().count() as u32;
+        d.notes.push(help(&format!("the loop reads the elements of `{}`; to change them, loop over `&mut {}`.", list, list)));
+        d.fixes.push(Fix { title: format!("loop over `&mut {}`", list), edits: vec![edit(l, col, col, "&mut ")] });
+        return true;
+    }
+    false
 }
 
 /// The class of the variable `name` used at `line`: the type its `val`/`var` declares or the
@@ -1056,6 +1149,79 @@ fn no_method(d: &mut MappedDiag, sources: &Sources, lines: &[&str], method: &str
         }
     }
     imports(d, lines);
+}
+
+/// A method of `T` called on a `T?` (rustc: "no method named `trim` found for enum `Option<T>`",
+/// or "method `len` is private", which `Option` has too).
+fn is_optional_receiver(d: &MappedDiag) -> bool {
+    d.message.contains("`Option<") || d.notes.iter().any(|n| n.contains("Option::expect"))
+}
+
+/// Explains a method of `T` called on a `T?`. Kotlin's smart casts don't exist, so a value
+/// checked with `!= null` (or `== null` and `return`) is still optional: bind it with
+/// `if (val x = x)` or `val x = x ?: return`, or call through `?.`. rustc's `.expect("REASON")`
+/// would panic, and take the value.
+fn optional_receiver(d: &mut MappedDiag, lines: &[&str], method: &str) {
+    refine(d, lines, method);
+    let line = lines.get(d.line as usize).copied().unwrap_or("");
+    let before: String = line.chars().take(d.col as usize).collect();
+    let Some(before) = before.strip_suffix('.') else { return };
+    let recv: String = before.chars().rev().take_while(|c| is_ident_char(*c) || *c == '.').collect::<Vec<_>>().into_iter().rev().collect();
+    let recv = recv.trim_start_matches('.').to_string();
+    if recv.is_empty() {
+        return;
+    }
+    let ty = d.notes.iter().find_map(|n| between(n, "exists on the type `", "`")).map(|t| format!("`{}?`", t)).unwrap_or_else(|| "optional".into());
+    rewrite(d, format!("`{}` is {}, so it has no `{}()` until it is unwrapped", recv, if ty == "optional" { ty.clone() } else { format!("optional ({})", ty) }, method));
+    d.notes.retain(|n| !n.contains("Option::expect") && !n.contains("exists on the type"));
+    d.suggestions.retain(|s| !s.replacement.starts_with(".expect("));
+    let plain = recv.chars().all(is_ident_char);
+    let short = recv.rsplit('.').next().unwrap_or(&recv).to_string();
+    for l in (0..=d.line).rev().take(40) {
+        let text = lines.get(l as usize).copied().unwrap_or("");
+        let checked = format!("{} != null", recv);
+        if let Some(at) = text.find(&format!("if ({})", checked)) {
+            // borrowed when the value is used after the check, so it stays usable
+            let later = lines.iter().skip(l as usize + 1).take_while(|t| find_word(t, "fun", 0).is_none()).any(|t| find_word(t, &short, 0).is_some() || t.contains(&recv));
+            let bound = format!("val {} = {}{}", short, if later || !plain { "&" } else { "" }, recv);
+            d.notes.push(help(&format!("`{}` checks the value but doesn't unwrap it: Oxie has no smart casts. Unwrap it in the condition instead: `if ({})`{}.", checked, bound, if plain { String::new() } else { format!(", and use `{}`", short) })));
+            let col = text[..at + 4].chars().count() as u32;
+            let mut edits = vec![edit(l, col, col + checked.chars().count() as u32, &bound)];
+            // a field is renamed in the uses on the same line (`u.email` becomes `email`)
+            if !plain {
+                if l != d.line {
+                    return;
+                }
+                let code = &text[..text[at..].find("//").map_or(text.len(), |c| at + c)];
+                let mut from = at + 4 + checked.len();
+                while let Some(i) = code[from..].find(&recv) {
+                    let c = text[..from + i].chars().count() as u32;
+                    edits.push(edit(l, c, c + recv.chars().count() as u32, &short));
+                    from += i + recv.len();
+                }
+            }
+            d.fixes.push(Fix { title: format!("unwrap `{}` (`{}`)", recv, bound), edits });
+            return;
+        }
+        let early = format!("if ({} == null) ", recv);
+        if let Some(at) = text.find(&early) {
+            let exit = text[at + early.len()..].trim_end();
+            if ["return", "throw", "continue", "break"].iter().any(|k| exit.starts_with(k)) && !exit.contains("//") {
+                d.notes.push(help(&format!("after `if ({} == null) {}`, `{}` is still optional: Oxie has no smart casts. Unwrap it instead: `val {} = {} ?: {}`.", recv, exit, recv, short, recv, exit)));
+                if plain {
+                    let col = text[..at].chars().count() as u32;
+                    let end = text.trim_end().chars().count() as u32;
+                    d.fixes.push(Fix { title: format!("unwrap `{}` (`?: {}`)", recv, exit.split_whitespace().next().unwrap_or("return")), edits: vec![edit(l, col, end, &format!("val {} = {} ?: {}", recv, recv, exit))] });
+                }
+                return;
+            }
+        }
+        // the check must be in the same function
+        if find_word(text, "fun", 0).is_some() {
+            break;
+        }
+    }
+    d.notes.push(help(&format!("`{}?.{}()` calls it when there is a value (and gives an optional result); `if (val {} = {})` unwraps it for a block.", recv, method, short, recv)));
 }
 
 /// Iterator types of std, by the name rustc gives them in messages (`std::str::Split<'a, P>`,

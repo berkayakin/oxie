@@ -1,0 +1,26 @@
+// a function returning an interface returns `impl Animal`, or a box when its branches build different classes
+interface Animal { fun name(): String }
+class Dog : Animal { override fun name() = "dog" }
+class Cat : Animal { override fun name() = "cat" }
+fun pick(dog: bool): Animal = if (dog) Dog() else Cat()
+fun pick2(n: i32): Animal {
+    return when (n) {
+        0 -> Dog()
+        else -> Cat()
+    }
+}
+fun pick3(n: i32): Animal {
+    if (n > 0) return Dog()
+    Cat()
+}
+fun main() {
+    println("${pick(false).name()} ${pick2(0).name()} ${pick3(1).name()} ${one().name()} ${same(1).name()} ${maybe(0).unwrap().name()} ${DogMaker().make().name()}")
+}
+fun one(): Animal = Dog()
+fun same(n: i32): Animal = if (n > 0) Dog() else Dog()
+fun maybe(n: i32): Animal throws {
+    if (n < 0) throw "negative"
+    if (n > 0) Dog() else Cat()
+}
+interface Maker { fun make(): Animal }
+class DogMaker : Maker { override fun make(): Animal = Dog() }

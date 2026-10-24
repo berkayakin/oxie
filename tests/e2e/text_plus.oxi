@@ -1,0 +1,20 @@
+// `+` on text that Rust would reject (an owned String on the right, &str on the left) joins with format!, and `s += t` appends `&t`: neither side moves
+data class User(first: String, last: String)
+fun full(u: &User): String = u.first + " " + u.last
+fun join(a: &str, b: &str): String = a + b
+fun main() {
+    val a = "foo".to_string()
+    val b = "bar".to_string()
+    val c = a + b
+    println("$c $a $b")
+    val d = a.clone() + &b
+    println(d)
+    var s = "x".to_string()
+    s += b
+    s += "!"
+    println("$s $b ${join("p", "q")} ${full(&User("Ada", "L"))}")
+    val n = 1 + 2
+    val parts = vec["a".to_string(), "b".to_string()]
+    val e = parts[0] + parts[1]
+    println("$n $e ${parts:?}")
+}

@@ -101,7 +101,8 @@ fun main() {
 * **Collections are Rust's.** There is no `List`, `MutableList` or `Map` type: lists are
   `Vec<T>` (`listOf`, `vec[...]` and `mutableListOf()` all make one), maps `HashMap<K, V>`,
   sets `HashSet<T>`. A parameter that only reads a list is `&[T]`; one that only reads text
-  is `&str`.
+  is `&str`. `m[k] = v` puts a value in a map, but `m[k] += 1` is an error (the key may be
+  missing): write `*m.entry(k).or_default() += 1` to start a missing key at 0.
 * **Method names are Rust's**: `len()` (not `size` or `length`), `is_empty()`,
   `to_uppercase()`, `contains()`, `push()`, `insert()`, `remove()`, `to_string()`,
   `trim()`, `split(',')`, `chars()`, `parse::<i32>()` (it returns a `Result`). Lists also have
@@ -127,7 +128,8 @@ fun main() {
   instead (`&T` and `&mut T` parameters; Oxie writes the `&` at the call), or pass
   `.clone()` when the function really needs its own copy. A function that only reads a
   `String`, `Vec`, class or `Box` parameter borrows it without your help. A `for (x in xs)`
-  over a local list that is used afterwards borrows it, so `x` is a reference.
+  over a local list that is used afterwards borrows it, so `x` is a reference; when the body
+  changes `x` (`x.qty += 1`), it borrows the list mutably.
 * **Objects are not shared references.** `val b = a` moves or copies `a`; it doesn't alias it.
   When several places must see the same mutable object (accounts shared by customers, nodes
   of a graph, state shared between threads), declare it `shared class`, or
@@ -148,13 +150,17 @@ fun main() {
   handle it: `when (val r = f()) { Ok(v) -> ...; Err(e) -> ... }`, `f() ?: default`,
   `if (val Err(e) = f())`, or `.unwrap()`.
 * **`null` is `Option`.** A `T?` must be unwrapped before use: there are no smart casts, so
-  instead of `if (x != null) x.foo()` write `if (val x = x) x.foo()` or `x?.foo()`.
+  instead of `if (x != null) x.foo()` write `if (val x = x) x.foo()` or `x?.foo()`, and
+  instead of `if (x == null) return` write `val x = x ?: return`. `if (val x = x)` takes the
+  value out of `x`; to use `x` again afterwards, unwrap a reference: `if (val v = &x)`.
 * **Lambdas** are Rust closures. `return` in a lambda returns from the lambda, not from the
   enclosing function. In predicates (`filter`, `find`, `any`, `count`, ...) the element is a
   reference: comparing it with a literal reads through it (`filter { it > 2 }`), but to pass
   it on write `*it` or `it.clone()`. When the compiler can't tell a parameter's type
   ("type annotations needed", as with `trim_matches { }`), write it:
   `{ c: char -> !c.is_alphanumeric() }`.
+* **Text.** `a + b` joins text into a new `String` without moving either side, and
+  `s += t` appends; a `when` on a `String` matches its text arms (`"go" -> ...`).
 * **Printing.** `"$x"` needs `Display`: numbers, text and types with `toString()`. Lists,
   maps, options and other values print with `"${x:?}"`. A whole `f64` prints without
   decimals (`43`); write `"${x:.1}"` for a fixed number of decimals.
@@ -289,7 +295,8 @@ fun main() {
 }
 ```
 
-A list typed `Vec<Shape>` boxes the values you put in it; with `Vec<Box<Shape>>` you write
+A function returning an interface (`fun pick(): Shape`) returns its value as it is, or a box
+when its branches build different classes. A list typed `Vec<Shape>` boxes the values you put in it; with `Vec<Box<Shape>>` you write
 `Box.new(...)` yourself. Its elements, and interface-typed fields, are lent to an `&Shape`
 parameter as they are: no `.as_ref()` needed. `sorted_by` needs `Clone`, which a box of an interface isn't, so sort
 such a list in place with `sort_by`.

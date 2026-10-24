@@ -191,6 +191,8 @@ pub(crate) struct FnCtx {
     /// `return` breaks out of the block (labeled `TEXT_LABEL`), and this is `Some(true)` once
     /// one has, so the block gets its label.
     pub(crate) text_break: Option<bool>,
+    /// The function returns `impl Interface`: its values are returned as they are, not boxed.
+    pub(crate) unboxed_ret: bool,
 }
 
 /// The label of the block that computes the text of a `toString` with a block body.
@@ -547,7 +549,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 self.e.w(&format!("{}fn {}() ", asyncs, name));
             }
-            self.fns.push(FnCtx { throws: t.throws, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
+            self.fns.push(FnCtx { throws: t.throws, ret: None, is_lambda: false, tries: Vec::new(), text_break: None, unboxed_ret: false });
             self.push_scope();
             self.fn_block(&t.body, None, t.throws);
             self.pop_scope();
@@ -1257,6 +1259,8 @@ impl<'a> Lowerer<'a> {
     fn ret_type_inner(&self, f: &FunDecl, pos: TyPos) -> Option<String> {
         let value = f.ret.as_ref().filter(|t| !t.is_unit());
         match &f.throws {
+            // an interface returned from several branches as different classes is boxed
+            Throws::No if pos == TyPos::Ret && self.iface_ret(f) == Some(true) => value.map(|t| self.ty(t, TyPos::Field)),
             Throws::No => value.map(|t| self.ty(t, pos)),
             Throws::Any => Some(format!(
                 "::std::result::Result<{}, {}::AnyError>",
@@ -1429,7 +1433,8 @@ impl<'a> Lowerer<'a> {
     fn fun_body(&mut self, f: &FunDecl, body: &FunBody) {
         let throws = !matches!(f.throws, Throws::No);
         let ret = f.ret.clone().filter(|t| !t.is_unit());
-        self.fns.push(FnCtx { throws, ret: ret.clone(), is_lambda: false, tries: Vec::new(), text_break: None });
+        let unboxed_ret = !throws && self.iface_ret(f).is_some_and(|boxed| !boxed);
+        self.fns.push(FnCtx { throws, ret: ret.clone(), is_lambda: false, tries: Vec::new(), text_break: None, unboxed_ret });
         let by_value = std::mem::replace(&mut self.self_by_value, matches!(f.self_param, Some(SelfParam::Value { .. })));
         match body {
             FunBody::Block(b) => self.fn_block(b, ret.as_ref(), throws),
@@ -1942,7 +1947,7 @@ impl<'a> Lowerer<'a> {
                 // constructor params shadow fields inside init
                 let _ = f;
             }
-            self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
+            self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None, unboxed_ret: false });
             let init = t.init.as_ref().unwrap();
             self.stmts_with_tail(&init.stmts, None);
             self.fns.pop();
@@ -2042,7 +2047,7 @@ impl<'a> Lowerer<'a> {
         // the formatter `f` isn't bound: a field `f` of the class is still the field
         self.push_scope();
         let text_break = matches!(f.body, Some(FunBody::Block(_))).then_some(false);
-        self.fns.push(FnCtx { throws: false, ret: Some(Type::simple("String")), is_lambda: false, tries: Vec::new(), text_break });
+        self.fns.push(FnCtx { throws: false, ret: Some(Type::simple("String")), is_lambda: false, tries: Vec::new(), text_break, unboxed_ret: false });
         let single = match &f.body {
             Some(FunBody::Expr(e)) => Some(e.clone()),
             Some(FunBody::Block(b)) if b.stmts.len() == 1 => match &b.stmts[0] {
@@ -2147,7 +2152,7 @@ impl<'a> Lowerer<'a> {
         self.push_scope();
         match &t.message {
             Some(msg) => {
-                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
+                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None, unboxed_ret: false });
                 self.write_message(msg);
                 self.fns.pop();
             }
@@ -2344,7 +2349,7 @@ impl<'a> Lowerer<'a> {
                     if matches!(&v.fields, VariantFields::Named(fs) if fs.iter().any(|f| f.name == "f")) {
                         rename_ident(&mut m2, "f", "__f");
                     }
-                    self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
+                    self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None, unboxed_ret: false });
                     self.write_message(&m2);
                     self.fns.pop();
                 }

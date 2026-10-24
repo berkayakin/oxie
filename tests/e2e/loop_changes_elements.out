@@ -1,0 +1,5 @@
+a
+b
+[Item { name: "a", qty: 2, tags: ["seen"] }, Item { name: "b", qty: 3, tags: ["seen"] }] [Point { x: 10, y: 2 }] [[1, 0], [2, 0]]
+12
+2

@@ -1,0 +1,43 @@
+// `when` on a String (or &String) with text arms compares it as &str
+fun kind(s: String): i32 = when (s) {
+    "a", "b" -> 1
+    else -> 0
+}
+fun kind2(s: &String): i32 = when (s) {
+    "a" -> 1
+    else -> 0
+}
+fun kind3(s: &str): i32 = when (s) {
+    "a" -> 1
+    else -> 0
+}
+data class User(name: String, role: String)
+fun label(u: &User): String = when (u.role) {
+    "admin" -> "boss ${u.name}"
+    else -> u.name.clone()
+}
+class Cmd(text: String) {
+    fun run(): i32 = when (text) {
+        "go" -> 1
+        else -> 0
+    }
+}
+fun main() {
+    val t = "a".to_string()
+    println("${kind(t.clone())} ${kind2(&t)} ${kind3("a")}")
+    val owned = "b".to_string()
+    when (owned) {
+        "b" -> println("b!")
+        else -> println("?")
+    }
+    println(owned)
+    val n = when (t.trim()) { "a" -> 1; else -> 2 }
+    println(n)
+
+    val u = User("ada", "admin".to_string())
+    println("${label(&u)} ${Cmd("go".to_string()).run()}")
+    when (val r = u.role.clone()) {
+        "admin" -> println("admin $r")
+        else -> println("other")
+    }
+}

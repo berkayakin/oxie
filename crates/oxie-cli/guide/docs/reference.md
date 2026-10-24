@@ -160,9 +160,24 @@ fun short(x: i32) = x * 2
 | `Int`, `Long`, `Short`, `Byte`, `UInt`, `ULong`, `Double`, `Float`, `Boolean`, `Char`, `Unit` | `i32`, `i64`, `i16`, `i8`, `u32`, `u64`, `f64`, `f32`, `bool`, `char`, `()` |
 | `T?` | `Option<T>` (`&T?` is `Option<&T>`) |
 | `(A, B) -> R` | `impl FnMut(A, B) -> R`, `Box<dyn Fn(A, B) -> R>` or `dyn Fn(..)` depending on position |
-| `Shape` (an interface used as a type) | `impl Shape` (parameters, returns), `dyn Shape` (behind `&`, `Box`, `Rc`, `Arc`), `Box<dyn Shape>` (fields, collections) |
+| `Shape` (an interface used as a type) | `impl Shape` (parameters, returns), `dyn Shape` (behind `&`, `Box`, `Rc`, `Arc`), `Box<dyn Shape>` (fields, collections, and returns of different classes) |
 | `&T`, `&mut T`, `[T]`, `[T; N]`, `(A, B)`, `Vec<T>`, `dyn T`, `impl T`, `*const T` | same |
 | `std.io.Error` | `std::io::Error` (dots or `::` in paths) |
+
+A function that returns an interface returns its value unboxed (`impl Shape`), unless its
+branches build values of different classes: then it returns `Box<dyn Shape>`, and each value is
+boxed.
+
+```oxie
+interface Shape { fun area(): f64 }
+class Square(side: f64) : Shape { override fun area() = side * side }
+class Circle(r: f64) : Shape { override fun area() = 3.14 * r * r }
+
+fun unit(): Shape = Square(1.0)                                   // -> impl Shape
+fun pick(round: bool): Shape = if (round) Circle(1.0) else Square(2.0)   // -> Box<dyn Shape>
+
+fun main() = println("${unit().area()} ${pick(true).area()} ${pick(false).area()}")
+```
 
 An element of a `Vec<Shape>` (or `Vec<Box<Shape>>`), a loop variable over one and an
 interface-typed field are lent to an `&Shape` parameter as the value inside the box
@@ -356,7 +371,22 @@ the right-hand side (`impl Mul<f64> for Vec2` for `operator fun times(k: f64)`).
 | `if (c) a else b`, `when`, `try`, blocks | expressions with values |
 
 **Strings and `+`**: when an operand of a `+` chain is a string literal or template, the chain
-builds a `String` with `format!` (`"total: " + n` works for any `Display` value).
+builds a `String` with `format!` (`"total: " + n` works for any `Display` value). So does a `+`
+of text that Rust rejects: an owned `String` on the right (`first + last`) or borrowed text on
+the left (`a + b` for two `&str`). Neither side is moved. `s += t` appends `&t`. Rust's own
+`a + &b`, which moves `a` and reuses its buffer, stays as written.
+
+```oxie
+fun main() {
+    val first = "Ada".to_string()
+    val last = "Lovelace".to_string()
+    val full = first + " " + last      // format!("{} {}", first, last)
+    val joined = first + last          // format!("{}{}", first, last)
+    var log = "start".to_string()
+    log += last                        // log += &last
+    println("$full, $joined, $log, $first $last")
+}
+```
 
 **Implicit conversions** happen only where Rust would otherwise reject the code, and only to
 the declared type of a variable, field, parameter or return value:
@@ -459,12 +489,26 @@ val n = const { SIZE * 2 }                      // evaluated at compile time
 
 * A statement `when` on literals doesn't need `else` (Oxie adds `_ => {}`); a `when` used as a
   value must be exhaustive, as in Rust.
+* A `when` on a `String` (or `&String`) with text arms matches it as `&str`:
+  `when (cmd) { "go" -> ... }` is `match &*cmd` (`match cmd.as_str()` for a `&String`).
 * `if`/`for`/`while` bodies can be a single statement without braces.
 * `for (x in xs)` consumes `xs`, as in Rust, unless `xs` is a local collection (`Vec`, `VecDeque`,
   `HashMap`, `HashSet`, `BTreeMap`, ...) that is used after the loop or by the next round of an
   enclosing loop: then the loop borrows it (`for x in &xs`), and `x` is a reference to the element
   (`Copy` elements are bound by value: `for &n in &nums`). A loop over a collection field of the
-  class always borrows it, except in methods taking `self`.
+  class always borrows it, except in methods taking `self`. When the body changes the element
+  (`x.qty += 1`, `x.tags.push(t)`), the loop borrows the collection mutably
+  (`for x in &mut xs`), and a method that does this to a field changes `this`.
+
+```oxie
+data class Item(name: String, var qty: i32)
+
+fun main() {
+    var items = vec[Item("pen", 1), Item("ink", 2)]
+    for (item in items) item.qty += 10      // for item in &mut items
+    println("${items:?}")
+}
+```
 
 ## Lambdas
 
@@ -513,8 +557,24 @@ f(x) { trailing lambda }        // last argument outside the parentheses
 | `mapOf(k to v, ...)` | `HashMap::from([(k, v), ...])` |
 | `setOf(a, b)` | `HashSet::from([a, b])` |
 | `m[key]`, `v[i]`, `&v[1..3]` | indexing and slicing |
+| `m[key] = v` on a `HashMap` or `BTreeMap` | `m.insert(key, v)`: adds the key or replaces its value |
 
 All standard library types and methods are used with their Rust names.
+
+`m[key] += 1` on a map is an error: the key may be missing, and what that should mean is up to
+the program. `*m.entry(key).or_default() += 1` starts a missing key at its default value (0,
+`""`, an empty list), and `*m.get_mut(&key).unwrap() += 1` stops the program when it is missing.
+
+```oxie
+import std::collections::HashMap
+
+fun main() {
+    var stock: HashMap<String, i32> = HashMap()
+    stock["pen"] = 3                          // stock.insert(String::from("pen"), 3)
+    for (item in ["pen", "ink", "pen"]) *stock.entry(item.to_string()).or_default() += 1
+    println("${stock["pen"]} ${stock["ink"]}")
+}
+```
 
 ### Collection operations
 

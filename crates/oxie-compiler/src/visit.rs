@@ -394,6 +394,69 @@ pub fn calls_ident(b: &FunBody, name: &str) -> bool {
     found
 }
 
+/// The values a function body returns: the leaves of its tail expression (through `if`, `when`
+/// and blocks) and every `return x` outside lambdas.
+pub fn return_values(b: &FunBody) -> Vec<Expr> {
+    fn tail(e: &Expr, out: &mut Vec<Expr>) {
+        match &e.kind {
+            ExprKind::If { then, else_: Some(x), .. } => {
+                block_tail(then, out);
+                tail(x, out);
+            }
+            ExprKind::When { arms, .. } => arms.iter().for_each(|a| tail(&a.body, out)),
+            ExprKind::Block(b) => block_tail(b, out),
+            ExprKind::Paren(x) => tail(x, out),
+            ExprKind::Return(_) => {}
+            _ if e.diverges() => {}
+            _ => out.push(e.clone()),
+        }
+    }
+    fn block_tail(b: &Block, out: &mut Vec<Expr>) {
+        if let Some(Stmt::Expr { expr, semi: false }) = b.stmts.last() {
+            tail(expr, out);
+        }
+    }
+    let mut out = Vec::new();
+    let mut returns = |e: &Expr| {
+        if let ExprKind::Return(Some(v)) = &e.kind {
+            tail(v, &mut out);
+        }
+        !matches!(e.kind, ExprKind::Lambda { .. })
+    };
+    match b {
+        FunBody::Block(b) => {
+            walk_block(b, &mut returns);
+            block_tail(b, &mut out);
+        }
+        FunBody::Expr(e) => {
+            walk_expr(e, &mut returns);
+            tail(e, &mut out);
+        }
+    }
+    out
+}
+
+/// Does `body` change what the loop variable `name` refers to: assign to a place inside it
+/// (`x.qty += 1`, `x[0] = 1`) or call a mutating method on it (`x.tags.push(t)`)?
+pub fn writes_through(body: &Block, name: &str) -> bool {
+    fn root(e: &Expr) -> Option<&str> {
+        match &e.kind {
+            ExprKind::Field { recv, safe: false, .. } | ExprKind::Index(recv, _) | ExprKind::Paren(recv) | ExprKind::Unary(UnOp::Deref, recv) => root(recv),
+            _ => e.ident(),
+        }
+    }
+    let mut found = false;
+    walk_block(body, &mut |e| {
+        match &e.kind {
+            ExprKind::Assign(_, place, _) if place.ident().is_none() && root(place) == Some(name) => found = true,
+            ExprKind::MethodCall { recv, name: m, safe: false, .. } if crate::sema::MUTATING_METHODS.contains(&m.as_str()) && root(recv) == Some(name) => found = true,
+            _ => {}
+        }
+        !found
+    });
+    found
+}
+
 /// Identifiers referenced anywhere in an expression (for error message templates).
 pub fn idents_in(e: &Expr, out: &mut Vec<String>) {
     walk_expr(e, &mut |x| {

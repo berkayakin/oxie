@@ -1,0 +1,18 @@
+// A shared object's field read after `?.` goes through its getter, or one borrow for a longer chain
+shared class Node(name: String, var children: Vec<Node> = vec[], var parent: Node? = null, var tags: Vec<String> = vec[])
+@sync shared class Box2(var label: String, var next: Box2? = null)
+fun main() {
+    val root = Node("root")
+    val kid = Node("kid", parent = root)
+    root.children.push(kid)
+    val grandkid = Node("gk", parent = kid)
+    println("${root.children.len()} ${kid.parent?.name ?: "-"} ${root.parent?.name ?: "-"}")
+    val p: Node? = kid.parent
+    println(p?.name ?: "-")
+    println(grandkid.parent?.parent?.name ?: "-")
+    println(kid.parent?.children.len() ?: 0)
+    kid.parent?.tags.push("x".to_string())
+    println("${root.tags:?}")
+    val b = Box2("a", next = Box2("b"))
+    println(b.next?.label ?: "-")
+}

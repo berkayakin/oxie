@@ -539,6 +539,7 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
     let mut mapper = Mapper::default();
     let mut seen = HashSet::new();
     let mut covered = Covered::default();
+    let mut held = Vec::new();
     let mut result = BuildResult { success: false, executables: Vec::new(), errors: 0, warnings: 0 };
     for line in BufReader::new(stdout).lines() {
         let line = line?;
@@ -581,6 +582,12 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
                 if rendered.trim().is_empty() || !seen.insert(key) {
                     continue;
                 }
+                // rustc's borrow check calls a `var` unused when changing it failed: such
+                // warnings wait until the build turns out to have no errors
+                if is_unused_mut(&v) {
+                    held.push(rendered);
+                    continue;
+                }
                 match level {
                     "error" => result.errors += 1,
                     "warning" => result.warnings += 1,
@@ -599,9 +606,20 @@ pub fn cargo_json(root: &Path, args: &[String], quiet: bool) -> std::io::Result<
             _ => {}
         }
     }
+    if result.errors == 0 {
+        for rendered in held {
+            result.warnings += 1;
+            eprintln!("{}", rendered);
+        }
+    }
     let status = child.wait()?;
     result.success = result.success && status.success();
     Ok(result)
+}
+
+/// Is this cargo message rustc's `unused_mut` warning?
+fn is_unused_mut(v: &Value) -> bool {
+    v.pointer("/message/code/code").and_then(|c| c.as_str()) == Some("unused_mut")
 }
 
 /// Collects mapped diagnostics without printing (used by the language server).
@@ -633,6 +651,10 @@ pub fn check_collect(root: &Path, target_dir: Option<&Path>) -> std::io::Result<
                 }
             }
         }
+    }
+    // as in `cargo_json`: `unused_mut` only counts in a build without errors
+    if diags.iter().any(|d| d.level == "error") {
+        diags.retain(|d| d.code.as_deref() != Some("unused_mut"));
     }
     Ok(diags)
 }

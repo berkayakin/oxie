@@ -1,0 +1,34 @@
+// A loop that changes the elements of a list it borrows borrows it mutably: `&mut items`,
+// and a method that does that to a field of `this` changes `this`.
+data class Item(name: String, var qty: i32, var tags: Vec<String> = vec[])
+data class Point(var x: i32, var y: i32)
+
+class Store(var items: Vec<Item>) {
+    fun restock() {
+        for (it in items) it.qty += 10
+    }
+}
+
+shared class Team(var scores: Vec<Point> = vec[]) {
+    fun bump() {
+        for (p in scores) p.x += 1
+    }
+}
+
+fun main() {
+    var items = vec[Item("a", 1), Item("b", 2)]
+    for (it in items) it.qty += 1
+    for (it in items) it.tags.push("seen".to_string())
+    for (it in items) println(it.name)
+    var points = vec[Point(1, 2)]
+    for (p in points) p.x *= 10
+    var grid = vec[vec[1], vec[2]]
+    for (row in grid) row.push(0)
+    println("${items:?} ${points:?} ${grid:?}")
+    var store = Store(items)
+    store.restock()
+    println(store.items[0].qty)
+    val team = Team(vec[Point(1, 1)])
+    team.bump()
+    println(team.scores[0].x)
+}

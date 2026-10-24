@@ -1,0 +1,28 @@
+// `m[k] = v` on a map puts the value in (`insert`), in a statement or a lambda
+import std::collections::{HashMap, BTreeMap}
+interface Shape { fun area(): f64 }
+class Sq(s: f64) : Shape { override fun area() = s * s }
+class Registry(var names: HashMap<String, i32> = HashMap()) {
+    fun add(name: &str, n: i32) {
+        names[name.to_string()] = n
+    }
+}
+fun main() {
+    var m: HashMap<String, i32> = HashMap()
+    m["a"] = 1
+    m["a"] = 2
+    m["b"] = m["a"] + 1
+    val key = "c".to_string()
+    m[key.clone()] = 3
+    var sorted = BTreeMap()
+    sorted[2] = "two"
+    sorted[1] = "one"
+    var shapes: HashMap<String, Shape> = HashMap()
+    shapes["sq"] = Sq(2.0)
+    var r = Registry()
+    r.add("x", 9)
+    (0 until 3).for_each { sorted[it + 10] = "n" }
+    var v = vec[1, 2]
+    v[0] = 5
+    println("${m["a"]} ${m["b"]} ${m.len()} ${sorted:?} ${shapes["sq"].area()} ${r.names:?} ${v:?} $key")
+}

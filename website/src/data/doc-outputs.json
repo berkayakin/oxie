@@ -165,6 +165,26 @@
     "source": "macro_rules! square {\n    ($x:expr) => { $x * $x };\n}\n\nrust {\n    fn rust_only(x: u32) -> u32 {\n        x.rotate_left(3)\n    }\n}\n\nfun main() {\n    println(\"${square!(5)} ${rust_only(1)}\")\n    println!(\"plain Rust macro: {}\", 1 + 1)\n}\n"
   },
   {
+    "file": "docs/reference.md",
+    "output": "1 3.14 4\n",
+    "source": "interface Shape { fun area(): f64 }\nclass Square(side: f64) : Shape { override fun area() = side * side }\nclass Circle(r: f64) : Shape { override fun area() = 3.14 * r * r }\n\nfun unit(): Shape = Square(1.0)                                   // -> impl Shape\nfun pick(round: bool): Shape = if (round) Circle(1.0) else Square(2.0)   // -> Box<dyn Shape>\n\nfun main() = println(\"${unit().area()} ${pick(true).area()} ${pick(false).area()}\")\n"
+  },
+  {
+    "file": "docs/reference.md",
+    "output": "Ada Lovelace, AdaLovelace, startLovelace, Ada Lovelace\n",
+    "source": "fun main() {\n    val first = \"Ada\".to_string()\n    val last = \"Lovelace\".to_string()\n    val full = first + \" \" + last      // format!(\"{} {}\", first, last)\n    val joined = first + last          // format!(\"{}{}\", first, last)\n    var log = \"start\".to_string()\n    log += last                        // log += &last\n    println(\"$full, $joined, $log, $first $last\")\n}\n"
+  },
+  {
+    "file": "docs/reference.md",
+    "output": "[Item { name: \"pen\", qty: 11 }, Item { name: \"ink\", qty: 12 }]\n",
+    "source": "data class Item(name: String, var qty: i32)\n\nfun main() {\n    var items = vec[Item(\"pen\", 1), Item(\"ink\", 2)]\n    for (item in items) item.qty += 10      // for item in &mut items\n    println(\"${items:?}\")\n}\n"
+  },
+  {
+    "file": "docs/reference.md",
+    "output": "5 1\n",
+    "source": "import std::collections::HashMap\n\nfun main() {\n    var stock: HashMap<String, i32> = HashMap()\n    stock[\"pen\"] = 3                          // stock.insert(String::from(\"pen\"), 3)\n    for (item in [\"pen\", \"ink\", \"pen\"]) *stock.entry(item.to_string()).or_default() += 1\n    println(\"${stock[\"pen\"]} ${stock[\"ink\"]}\")\n}\n"
+  },
+  {
     "file": "docs/rust-interop.md",
     "output": "api on 8080\n{\"name\":\"api\",\"port\":9090,\"debug\":true}\n",
     "source": "// dep: serde = { version = \"1\", features = [\"derive\"] }\n// dep: serde_json = \"1\"\nimport serde::{Deserialize, Serialize}\n\n@derive(Serialize, Deserialize)\ndata class Config(name: String, port: u16, debug: bool = false)\n\nfun main() throws {\n    val c: Config = serde_json.from_str(\"\"\"{\"name\": \"api\", \"port\": 8080, \"debug\": true}\"\"\")?\n    println(\"${c.name} on ${c.port}\")\n    println(serde_json.to_string(&c.copy(port = 9090))?)\n}\n"

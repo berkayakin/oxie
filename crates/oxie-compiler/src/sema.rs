@@ -1488,6 +1488,16 @@ impl<'a> Walker<'a> {
                 self.expr(cond);
             }
             For { pat, iter, body, .. } => {
+                // `for (x in items) x.qty += 1` over a field borrows it mutably (see `lower_expr`)
+                let field = matches!(&iter.kind, Path { .. }) || matches!(&iter.kind, Field { recv, .. } if matches!(recv.kind, SelfValue));
+                if field && self.rooted_in_self(iter) {
+                    if let Pat::Ident { name, by_ref: false, mutable: false, sub: None, .. } = pat {
+                        if crate::visit::writes_through(body, name) {
+                            let why = format!("it changes the elements of `{}`", self.self_field(iter));
+                            self.mutates(iter.span, why);
+                        }
+                    }
+                }
                 self.expr(iter);
                 self.push();
                 self.bind(pat);

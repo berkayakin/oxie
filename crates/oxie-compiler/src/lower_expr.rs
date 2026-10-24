@@ -1,7 +1,7 @@
 //! Lowering of statements and expressions.
 
 use crate::ast::*;
-use crate::diag::Span;
+use crate::diag::{Diag, Span};
 use crate::lower::*;
 use crate::parser::is_type_like;
 use crate::sema::{ParamInfo, Recv, VariantShape};
@@ -633,6 +633,10 @@ impl<'a> Lowerer<'a> {
                 false
             }
             ExprKind::Paren(x) => self.stmt_expr_here(x),
+            ExprKind::Assign(None, target, value) if self.map_entry_types(target).is_some() => {
+                self.map_insert(target, value);
+                false
+            }
             ExprKind::Call { callee, args } if callee.ident() == Some("run") && self.is_builtin_call("run") && args.len() == 1 => {
                 if let ExprKind::Lambda { body, .. } = &args[0].value.kind {
                     match &body.kind {
@@ -733,6 +737,7 @@ impl<'a> Lowerer<'a> {
                     self.propagate(e);
                 } else {
                     match &t.ty {
+                        Some(_) if t.fn_result && self.returns_unboxed() => self.expr(e, P_LOWEST),
                         Some(ty) => self.coerce(e, ty, TyPos::Local),
                         None => self.expr(e, P_LOWEST),
                     }
@@ -1027,6 +1032,48 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// For a function that returns an interface (`fun pick(): Animal`), whether it returns a box
+    /// (`Box<dyn Animal>`): when it returns newly built values of different classes. Otherwise
+    /// it returns `impl Animal`, unboxed, as an `override` does (the interface declares
+    /// `impl Animal`). `None` for other functions.
+    pub(crate) fn iface_ret(&self, f: &FunDecl) -> Option<bool> {
+        let Some(Type::Path { segs, .. }) = &f.ret else { return None };
+        if segs.len() != 1 || segs[0].generics.is_some() || segs[0].fn_sugar.is_some() || !self.is_trait_name(&segs[0].name) {
+            return None;
+        }
+        let Some(body) = f.body.as_ref().filter(|_| !f.mods.is_override) else { return Some(false) };
+        let mut classes: Vec<String> = Vec::new();
+        for v in visit::return_values(body) {
+            if !self.is_constructed_value(&v) {
+                continue;
+            }
+            let class = match &v.kind {
+                ExprKind::Call { callee, .. } => match &callee.kind {
+                    ExprKind::Path { segs, .. } => segs.join("."),
+                    _ => continue,
+                },
+                ExprKind::StructLit { path, .. } => path.join("."),
+                ExprKind::MethodCall { recv, .. } => match self.as_path(recv) {
+                    Some((p, _)) => p.join("."),
+                    None => continue,
+                },
+                _ => match self.as_path(&v) {
+                    Some((p, _)) => p.join("."),
+                    None => continue,
+                },
+            };
+            if !classes.contains(&class) {
+                classes.push(class);
+            }
+        }
+        Some(classes.len() > 1)
+    }
+
+    /// Is the innermost function one whose values are returned as they are (`impl Interface`)?
+    fn returns_unboxed(&self) -> bool {
+        self.fns.last().is_some_and(|f| f.unboxed_ret)
+    }
+
     /// A class without fields, which is its own value: `Marker`, `shapes.Marker`.
     fn is_unit_class_value(&self, e: &Expr) -> bool {
         let path = match &e.kind {
@@ -1221,6 +1268,35 @@ impl<'a> Lowerer<'a> {
                 }
                 self.binary(*op, l, r, false);
             }
+            // `m[k] = v` puts a value in a map; as an expression it is `()`, like an assignment
+            Assign(None, target, value) if self.map_entry_types(target).is_some() => {
+                self.e.w("{ ");
+                self.map_insert(target, value);
+                self.e.w("; }");
+            }
+            // `m[k] += 1`: the key may be missing, and only the program knows what that means
+            Assign(Some(op), target, _) if self.map_entry_types(target).is_some() => {
+                let (Some((key_ty, _)), ExprKind::Index(m, k)) = (self.map_entry_types(target), &target.kind) else { unreachable!() };
+                let simple = |x: &Expr| x.ident().is_some() || matches!(x.kind, Int(_) | Str(_) | Char(_));
+                let (m, owned, borrowed) = if m.ident().is_some() && simple(k) {
+                    let key = self.capture(k, P_LOWEST);
+                    // `entry` takes the key itself, `get_mut` a reference (text: a `&str`)
+                    match &k.kind {
+                        Str(_) if key_ty.single_name() == Some("String") => (self.capture(m, P_POSTFIX), format!("{}.to_string()", key), key),
+                        Str(_) => (self.capture(m, P_POSTFIX), key.clone(), key),
+                        _ => (self.capture(m, P_POSTFIX), key.clone(), format!("&{}", key)),
+                    }
+                } else {
+                    ("map".into(), "key".into(), "&key".into())
+                };
+                let o = op.as_str();
+                self.diags.push(
+                    Diag::error(target.span, format!("a map's value can't be changed in place with `{}=`: the key may not be in the map", o)).with_help(format!(
+                        "write `*{m}.entry({owned}).or_default() {o}= ...` to start a missing key at its default value (0, \"\", an empty list), or `*{m}.get_mut({borrowed}).unwrap() {o}= ...` to stop the program when it is missing"
+                    )),
+                );
+                self.expr(target, P_LOWEST);
+            }
             Assign(op, target, value) => {
                 let target_ty = self.assign_target_type(target);
                 self.expr(target, P_LOWEST + 1);
@@ -1231,7 +1307,9 @@ impl<'a> Lowerer<'a> {
                 match (op, target_ty) {
                     (None, Some(t)) => self.coerce(value, &t, TyPos::Local),
                     // String += "...$x": append a borrowed str
-                    (Some(BinOp::Add), _) if matches!(value.kind, Template(_)) || (matches!(value.kind, Binary(BinOp::Add, ..)) && self.is_string_concat(value)) => {
+                    (Some(BinOp::Add), _)
+                        if matches!(value.kind, Template(_)) || (matches!(value.kind, Binary(BinOp::Add, ..)) && self.is_string_concat(value)) || (self.is_owned_string(value) && self.is_owned_string(target)) =>
+                    {
                         self.e.w("&");
                         self.expr(value, P_UNARY);
                     }
@@ -1367,7 +1445,7 @@ impl<'a> Lowerer<'a> {
             }
             Async { is_move, block } => {
                 self.e.w(if *is_move { "async move " } else { "async " });
-                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: true, tries: Vec::new(), text_break: None });
+                self.fns.push(FnCtx { throws: false, ret: None, is_lambda: true, tries: Vec::new(), text_break: None, unboxed_ret: false });
                 let saved = std::mem::take(&mut self.loops);
                 self.block_value(block, &Target::none());
                 self.loops = saved;
@@ -1447,6 +1525,10 @@ impl<'a> Lowerer<'a> {
                 }
                 let p = self.pat(pat);
                 let borrows = self.loop_borrow(iter);
+                // the body changes the elements: borrowed mutably (for a field, sema makes the
+                // method `&mut self` by the same rule)
+                let writes_elements = borrows.is_some()
+                    && matches!(pat, Pat::Ident { name, by_ref: false, mutable: false, sub: None, .. } if visit::writes_through(body, name));
                 // an element of a list of interface values is a box: `Box<dyn Shape>`, or a
                 // reference to one when the loop borrows the list
                 let boxed = match pat {
@@ -1456,16 +1538,19 @@ impl<'a> Lowerer<'a> {
                             MethodCall { recv, name, args, .. } if args.is_empty() && matches!(name.as_str(), "iter" | "iter_mut") => (&**recv, true),
                             _ => (iter.as_ref(), borrows.is_some()),
                         };
-                        self.elem_type(coll).and_then(|t| self.boxed_iface(&t)).map(|b| (name.clone(), if by_ref { Type::Ref { lifetime: None, mutable: false, inner: Box::new(b) } } else { b }))
+                        self.elem_type(coll).and_then(|t| self.boxed_iface(&t)).map(|b| (name.clone(), if by_ref { Type::Ref { lifetime: None, mutable: writes_elements, inner: Box::new(b) } } else { b }))
                     }
                     _ => None,
                 };
                 match borrows {
-                    // a collection used again after the loop is borrowed, not consumed
+                    // a collection used again after the loop is borrowed, not consumed; mutably
+                    // when the body changes the elements (`for (x in xs) x.qty += 1`)
                     Some(copy) => {
                         let plain = |p: &Pat| matches!(p, Pat::Ident { by_ref: false, mutable: false, sub: None, .. } | Pat::Wild);
                         let by_value = copy && (plain(pat) || matches!(pat, Pat::Tuple(ps) if ps.iter().all(plain)));
-                        if by_value {
+                        if writes_elements {
+                            self.e.w(&format!("for {} in &mut ", p));
+                        } else if by_value {
                             self.e.w(&format!("for &{} in &", p));
                         } else {
                             self.e.w(&format!("for {} in &", p));
@@ -1704,6 +1789,41 @@ impl<'a> Lowerer<'a> {
                 self.expr(x, P_LOWEST);
             }
         }
+    }
+
+    /// For `m[k]` on a `HashMap` or `BTreeMap`: its key and value types.
+    fn map_entry_types(&self, target: &Expr) -> Option<(Type, Type)> {
+        let ExprKind::Index(m, _) = &target.kind else { return None };
+        let mut t = self.infer_type(m)?;
+        while let Type::Ref { inner, .. } = t {
+            t = *inner;
+        }
+        let Type::Path { segs, .. } = &t else { return None };
+        let [seg] = segs.as_slice() else { return None };
+        if !matches!(seg.name.as_str(), "HashMap" | "BTreeMap") {
+            return None;
+        }
+        match seg.generics.as_deref() {
+            Some([GenericArg::Type(k), GenericArg::Type(v)]) => Some((k.clone(), v.clone())),
+            _ => Some((Type::Infer, Type::Infer)),
+        }
+    }
+
+    /// `m[k] = v` on a map: `m.insert(k, v)`, which adds the key or replaces its value.
+    fn map_insert(&mut self, target: &Expr, value: &Expr) {
+        let (Some((key_ty, value_ty)), ExprKind::Index(m, key)) = (self.map_entry_types(target), &target.kind) else { return };
+        self.expr(m, P_POSTFIX);
+        self.e.w(".insert(");
+        for (i, (x, t)) in [(&**key, key_ty), (value, value_ty)].into_iter().enumerate() {
+            if i > 0 {
+                self.e.w(", ");
+            }
+            match t {
+                Type::Infer => self.expr(x, P_LOWEST),
+                t => self.coerce(x, &t, TyPos::Generic),
+            }
+        }
+        self.e.w(")");
     }
 
     fn assign_target_type(&self, target: &Expr) -> Option<Type> {
@@ -2827,19 +2947,65 @@ impl<'a> Lowerer<'a> {
                 continue;
             }
             let v = self.fresh("v");
-            let ends_in_field = matches!(seg.last().unwrap().kind, ExprKind::Field { .. } | ExprKind::Index(..));
+            // a shared object's field is read through its getter (a copy) at the end
+            let getter = matches!(&seg.last().unwrap().kind, ExprKind::Field { recv, name, .. } if self.optional_shared_field(recv, name).is_some());
+            let ends_in_field = matches!(seg.last().unwrap().kind, ExprKind::Field { .. } | ExprKind::Index(..)) && !getter;
             // a field read through a reference is borrowed (`&v.name`), like Kotlin's reference semantics
             let amp = borrowed && !flatten && ends_in_field;
             self.e.w(&format!(".{}(|{}| {}{}", method, v, if amp { "&" } else { "" }, v));
-            for l in seg {
-                self.link_suffix(l);
-            }
+            self.segment_links(seg);
             if flatten && ends_in_field {
                 self.e.w(".as_ref()");
             }
             self.e.w(")");
             borrowed = flatten && ends_in_field;
         }
+    }
+
+    /// Emits the links of a `?.` segment after its value. A shared object's field is read as
+    /// outside `?.`: through the getter, a copy (`v.name()`), at the end, and through one borrow
+    /// inside (`v.0.borrow().items.len()`).
+    fn segment_links(&mut self, seg: &[&Expr]) {
+        for (i, l) in seg.iter().enumerate() {
+            let shared = match &l.kind {
+                ExprKind::Field { recv, name, .. } => self.optional_shared_field(recv, name).map(|sync| (name, sync)),
+                _ => None,
+            };
+            match shared {
+                Some((name, _)) if i == seg.len() - 1 => self.e.w(&format!(".{}()", member(name))),
+                Some((name, sync)) => {
+                    let write = matches!(&seg[i + 1].kind, ExprKind::MethodCall { name, .. } if crate::sema::MUTATING_METHODS.contains(&name.as_str()));
+                    let access = if sync { "lock().unwrap()" } else if write { "borrow_mut()" } else { "borrow()" };
+                    self.e.w(&format!(".0.{}.{}", access, member(name)));
+                }
+                None => self.link_suffix(l),
+            }
+        }
+    }
+
+    /// The type of a value in a `?.` chain: `infer_type`, or the declared type of a class field
+    /// reached through `?.` (`a.parent?.parent`).
+    fn chain_value_type(&self, e: &Expr) -> Option<Type> {
+        if let Some(t) = self.infer_type(e) {
+            return Some(t);
+        }
+        let ExprKind::Field { recv, name, .. } = &e.kind else { return None };
+        let mut t = self.chain_value_type(recv)?;
+        while let Type::Option(inner) | Type::Ref { inner, .. } = t {
+            t = *inner;
+        }
+        self.class_info(t.single_name()?)?.fields.iter().find(|f| &f.name == name).map(|f| f.ty.clone())
+    }
+
+    /// Is `recv.field` (in a `?.` chain) a field of a shared class, reached through a `T?` or
+    /// a reference? Returns whether the class is `@sync`.
+    fn optional_shared_field(&self, recv: &Expr, field: &str) -> Option<bool> {
+        let mut t = self.chain_value_type(recv);
+        while let Some(Type::Option(inner) | Type::Ref { inner, .. }) = t {
+            t = Some(*inner);
+        }
+        let c = self.class_info(t.as_ref()?.single_name()?)?;
+        (c.is_shared && c.fields.iter().any(|f| f.name == field)).then_some(c.is_sync)
     }
 
     /// `?.` means Kotlin safe navigation on optional values and Rust's `?` + `.` on results.
@@ -3078,9 +3244,7 @@ impl<'a> Lowerer<'a> {
             None => {
                 self.e.nl();
                 self.e.w(&var);
-                for l in seg {
-                    self.link_suffix(l);
-                }
+                self.segment_links(seg);
                 self.e.w(";");
             }
         }
@@ -3093,17 +3257,28 @@ impl<'a> Lowerer<'a> {
 
     // ------------------------------------------------------------------ operators
 
+    /// Is `e` a `+` of text that becomes `format!`: with a literal or template, or one Rust
+    /// rejects (an owned `String` on the right, borrowed text on the left). Neither side moves.
     fn is_string_concat(&self, e: &Expr) -> bool {
         let mut ops = Vec::new();
         concat_operands(e, &mut ops);
-        ops.iter().any(|o| is_string_lit(o))
+        if ops.len() < 2 {
+            return false;
+        }
+        let borrowed_text = |o: &Expr| matches!(self.infer_type(o), Some(Type::Ref { inner, .. }) if matches!(inner.single_name(), Some("str" | "String")));
+        ops.iter().any(|o| is_string_lit(o)) || borrowed_text(ops[0]) || ops[1..].iter().any(|o| self.is_owned_string(o))
+    }
+
+    /// Is `e` known to be an owned `String`?
+    fn is_owned_string(&self, e: &Expr) -> bool {
+        matches!(self.infer_type(e), Some(t) if t.single_name() == Some("String"))
     }
 
     fn string_concat(&mut self, e: &Expr) {
         let mut nodes: Vec<&Expr> = Vec::new();
         let mut ops: Vec<&Expr> = Vec::new();
         spine(e, &mut ops, &mut nodes);
-        let first = ops.iter().position(|o| is_string_lit(o)).unwrap();
+        let first = ops.iter().position(|o| is_string_lit(o)).unwrap_or(0);
         let mut fmt = String::new();
         let mut args: Vec<&Expr> = Vec::new();
         if first == 1 {
@@ -3193,6 +3368,7 @@ impl<'a> Lowerer<'a> {
                             self.e.w("Ok(");
                         }
                         match &f.ret {
+                            Some(_) if f.unboxed_ret => self.expr(x, P_LOWEST),
                             Some(t) => self.coerce(x, t, TyPos::Local),
                             None => self.expr(x, P_LOWEST),
                         }
@@ -3273,6 +3449,7 @@ impl<'a> Lowerer<'a> {
             return;
         };
         let p = self.pat(b);
+        let ty = subject.and_then(|s| self.infer_type(s));
         self.e.w("{");
         self.e.indent();
         self.e.nl();
@@ -3283,13 +3460,32 @@ impl<'a> Lowerer<'a> {
         self.e.w(";");
         self.e.nl();
         self.push_scope();
-        self.bind_pat(b, None);
+        self.bind_pat(b, ty);
         let var = Expr::new(ExprKind::Path { segs: vec![match b { Pat::Ident { name, .. } => name.clone(), _ => "_".into() }], generics: None, global: false }, span);
         self.when_expr(Some(&var), arms, rust_match, mode, span);
         self.pop_scope();
         self.e.dedent();
         self.e.nl();
         self.e.w("}");
+    }
+
+    /// A `when` on a `String` (`Some(false)`) or `&String` (`Some(true)`) with a string literal arm.
+    fn text_when(&self, subject: &Expr, arms: &[WhenArm]) -> Option<bool> {
+        fn text(p: &Pat) -> bool {
+            match p {
+                Pat::Lit(e) => matches!(e.kind, ExprKind::Str(_) | ExprKind::RawStr(_)),
+                Pat::Or(ps) => ps.iter().any(text),
+                _ => false,
+            }
+        }
+        if !arms.iter().any(|a| a.conds.iter().any(|c| matches!(c, WhenCond::Pat(p) if text(p)))) {
+            return None;
+        }
+        let is_string = |t: &Type| t.single_name() == Some("String");
+        match self.infer_type(subject)? {
+            Type::Ref { inner, .. } => is_string(&inner).then_some(true),
+            t => is_string(&t).then_some(false),
+        }
     }
 
     fn when_expr(&mut self, subject: Option<&Expr>, arms: &[WhenArm], rust_match: bool, mode: Option<&Target>, span: Span) {
@@ -3314,7 +3510,22 @@ impl<'a> Lowerer<'a> {
         match subject {
             Some(s) => {
                 self.e.w("match ");
-                self.expr(s, P_LOWEST);
+                // text arms on a `String` compare it as `&str`, the type of the literals: `&*s`
+                // (which a `&str` the inference took for a `String` gives too), `s.as_str()` for
+                // a `&String`
+                match self.text_when(s, arms) {
+                    Some(true) => {
+                        self.expr(s, P_POSTFIX);
+                        self.e.w(".as_str()");
+                        self.e.decide(s.span, ".as_str()", "the arms compare text", None);
+                    }
+                    Some(false) => {
+                        self.e.w("&*");
+                        self.expr(s, P_UNARY);
+                        self.e.decide(s.span, "&*", "the arms compare text", None);
+                    }
+                    None => self.expr(s, P_LOWEST),
+                }
                 self.e.w(" {");
                 self.e.indent();
                 let mut has_catch_all = false;
@@ -3662,7 +3873,7 @@ impl<'a> Lowerer<'a> {
         self.e.w(&format!("|{}|", ps.join(", ")));
         let ret = ret.clone().or_else(|| ret_ty.cloned().filter(|t| !t.is_unit()));
         let explicit_ret = matches!(&e.kind, ExprKind::Lambda { ret: Some(_), .. });
-        self.fns.push(FnCtx { throws: false, ret: ret.clone(), is_lambda: true, tries: Vec::new(), text_break: None });
+        self.fns.push(FnCtx { throws: false, ret: ret.clone(), is_lambda: true, tries: Vec::new(), text_break: None, unboxed_ret: false });
         let saved_loops = std::mem::take(&mut self.loops);
         let target = Target { ty: ret.clone(), wrap: None, fn_result: false };
         // `{ items.push(next_id()) }`: in a block, so the calls that change `this` can go first

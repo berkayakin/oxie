@@ -1,0 +1,13 @@
+// `m[k] += 1` on a map is an Oxie error: the key may be missing, and the fix says what that means.
+import std::collections::HashMap
+
+fun main() {
+    var counts: HashMap<String, i32> = HashMap()
+    counts["total"] += 1
+    // error: 6: a map's value can't be changed in place with `+=`: the key may not be in the map
+    // error: 6: `*counts.entry("total".to_string()).or_default() += ...`
+    var m = HashMap()
+    m.insert(1, 2)
+    m[1] *= 3 // error: 11: `*m.get_mut(&1).unwrap() *= ...`
+    println("${counts:?} ${m:?}")
+}

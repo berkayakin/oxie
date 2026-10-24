@@ -190,9 +190,9 @@ fn split_of(c: &ClassParts, item: &Item, f: &FunDecl, info: &ClassInfo, k: &Crat
     let lends = |n: &str| k.class(n).is_some_and(|c| c.lifetimes > 0) || k.enum_(n).is_some_and(|e| e.lifetimes > 0);
     let returns_ok = match (&f.ret, &f.body) {
         (Some(t), _) => !borrows(t, &lends),
-        (None, Some(FunBody::Block(_))) => true,
-        // an expression body's type comes from the expression (an assignment is a statement)
-        (None, Some(FunBody::Expr(e))) => matches!(e.kind, ExprKind::Assign(..)),
+        // without a return type, a body gives `()` (an expression body that gives a value
+        // is an error asking for its type)
+        (None, Some(FunBody::Block(_) | FunBody::Expr(_))) => true,
         _ => false,
     };
     if !returns_ok {

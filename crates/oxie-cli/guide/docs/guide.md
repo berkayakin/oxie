@@ -485,7 +485,7 @@ What Oxie removes is the bookkeeping around it:
 * `&self`/`&mut self` are inferred, and closures that modify captured variables are declared
   `mut` for you;
 * `for (x in xs)` borrows `xs` when it is used after the loop, so iterating doesn't use up the
-  list;
+  list, and borrows it mutably when the body changes the elements (`x.qty += 1`);
 * a call on a field whose argument changes the same object runs that argument first (below);
 * a loop over one field can call a method that changes other fields (below);
 * trait bounds on type parameters are inferred from the body: `fun show<T>(x: T) = "<$x>"`
