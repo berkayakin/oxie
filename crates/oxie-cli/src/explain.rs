@@ -42,10 +42,7 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
                 rewrite(d, format!("can't take {} out of {}", element, list));
                 format!("{} keeps its elements, and indexing only reaches one where it is, so it can't be moved out.", list)
             } else {
-                let written: String = lines.get(d.line as usize).map(|l| l.chars().skip(d.col as usize).collect()).unwrap_or_default();
-                let place = oxie_place(&first, &written);
-                d.label = d.label.take().map(|l| l.replace(&format!("`{}`", first), &format!("`{}`", place)));
-                rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&place)));
+                rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
                 "the value belongs to something you only borrowed, so it can't be moved out.".to_string()
             };
             d.notes.retain(|n| !n.contains("`mut "));
@@ -95,6 +92,30 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
     d.secondary.retain(|s| s.exact && !s.text.is_empty());
     d.notes.retain(|n| !n.contains("in format strings you may be able to use"));
     generated_names(d);
+    field_names(d, sources);
+}
+
+/// rustc names `this` and its fields as Rust does (`self.items`, `*self`); messages, labels,
+/// notes and fix titles name them as the code does at their position (see `oxie_place`).
+fn field_names(d: &mut MappedDiag, sources: &Sources) {
+    let written = |file: &Path, line: u32, col: u32| -> String { sources.file(file).and_then(|f| f.lines().get(line as usize).map(|l| l.chars().skip(col as usize).collect())).unwrap_or_default() };
+    let here = written(&d.file, d.line, d.col);
+    d.message = oxie_places(&d.message, &here);
+    d.label = d.label.take().map(|l| oxie_places(&l, &here));
+    for n in d.notes.iter_mut().filter(|n| !n.starts_with("rustc: ")) {
+        *n = oxie_places(n, &here);
+    }
+    for f in &mut d.fixes {
+        f.title = oxie_places(&f.title, &here);
+    }
+    for s in &mut d.secondary {
+        s.text = oxie_places(&s.text, &written(s.file.as_deref().unwrap_or(&d.file), s.line, s.col));
+    }
+}
+
+/// `text` with each place of `this` between backticks in Oxie's words.
+fn oxie_places(text: &str, written: &str) -> String {
+    text.split('`').enumerate().map(|(i, s)| if i % 2 == 1 { oxie_place(s, written).unwrap_or_else(|| s.to_string()) } else { s.to_string() }).collect::<Vec<_>>().join("`")
 }
 
 /// `main() throws` is generated as `__oxie_main` (called from a plain `main`); messages call
@@ -1708,18 +1729,20 @@ fn span_edit(src: &str, span: Span, text: &str) -> Edit {
     Edit { file: None, line: l as u32, col: c as u32, end_line: el as u32, end_col: ec as u32, text: text.to_string() }
 }
 
-/// A place as rustc names it (`self.name`, `*self`) in the words of the Oxie code `written` at
-/// the error: a field of `this` is `name`, or `this.name` where the code spells out `this`.
-fn oxie_place(place: &str, written: &str) -> String {
+/// A place of `this` as rustc names it (`self.name`, `*self`) in the words of the Oxie code
+/// `written` at its position: a field is `name`, or `this.name` where the code spells out
+/// `this` (after a `&`, `&mut` or `*`). None for other places.
+fn oxie_place(place: &str, written: &str) -> Option<String> {
     let place = place.trim_start_matches('*');
     // `init` blocks build the object as `__self`
-    let Some(rest) = place.strip_prefix("self").or_else(|| place.strip_prefix("__self")) else { return place.to_string() };
-    match rest.strip_prefix('.') {
-        _ if rest.is_empty() => "this".into(),
-        Some(field) if !written.starts_with("this.") => field.to_string(),
-        Some(_) => format!("this{}", rest),
-        None => place.to_string(),
+    let rest = place.strip_prefix("self").or_else(|| place.strip_prefix("__self"))?;
+    if rest.is_empty() {
+        return Some("this".into());
     }
+    let field = rest.strip_prefix('.')?;
+    let written = written.trim_start_matches(['&', '*', '(']).trim_start_matches("mut ");
+    // a tuple field (`self.0`) can't be written alone
+    Some(if written.starts_with("this.") || field.starts_with(|c: char| c.is_ascii_digit()) { format!("this.{}", field) } else { field.to_string() })
 }
 
 fn describe(path: &str) -> String {
@@ -2294,13 +2317,17 @@ mod tests {
 
     #[test]
     fn rust_places_in_oxie_words() {
-        assert_eq!(oxie_place("self.name", "name"), "name");
-        assert_eq!(oxie_place("self.name", "this.name"), "this.name");
-        assert_eq!(oxie_place("self.address.city", "address.city"), "address.city");
-        assert_eq!(oxie_place("*self", "this"), "this");
-        assert_eq!(oxie_place("__self.items", "items"), "items");
-        assert_eq!(oxie_place("selfie.name", "selfie.name"), "selfie.name");
-        assert_eq!(oxie_place("p.name", "p.name"), "p.name");
+        assert_eq!(oxie_place("self.name", "name"), Some("name".into()));
+        assert_eq!(oxie_place("self.name", "this.name"), Some("this.name".into()));
+        assert_eq!(oxie_place("self.address.city", "address.city"), Some("address.city".into()));
+        assert_eq!(oxie_place("self.log", "&mut log)"), Some("log".into()));
+        assert_eq!(oxie_place("self.log", "&this.log[0]"), Some("this.log".into()));
+        assert_eq!(oxie_place("*self", "this"), Some("this".into()));
+        assert_eq!(oxie_place("__self.items", "items"), Some("items".into()));
+        assert_eq!(oxie_place("self.0", "0"), Some("this.0".into()));
+        assert_eq!(oxie_place("selfie.name", "selfie.name"), None);
+        assert_eq!(oxie_place("p.name", "p.name"), None);
+        assert_eq!(oxie_places("a reference to `self.items` is still in use (`&mut self`)", "items"), "a reference to `items` is still in use (`&mut self`)");
     }
 
     #[test]

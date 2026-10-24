@@ -69,3 +69,21 @@ class Pet(val name: String) {
     fun spelled(): String = this.name
     // error: 69: can't take `this.name` out of a value that is only borrowed
 }
+
+// other borrow errors name a field as the code does at each place too
+class Ledger(var log: Vec<String>) {
+    fun take_log(): Vec<String> {
+        val first = &this.log[0]
+        val all = std.mem.take(&mut log)
+        // error: 77: `log` can't be changed while it is borrowed
+        // error: 77: `this.log` is borrowed here
+        println(first)
+        all
+    }
+
+    fun drain(self): usize {
+        val moved = log
+        moved.len() + log.len()
+        // error: 86: `log` was moved, so it can't be used anymore
+    }
+}

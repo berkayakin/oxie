@@ -179,9 +179,11 @@
 * That error names the element and its list: "can't take `items[0]` out of `items`", because a
   list keeps its elements and indexing only reaches one where it is. It used to say "can't take
   `Vec<String>` out of a value that is only borrowed", which named the type, and gave a reason
-  that doesn't hold for a list nothing borrows. For a field, it names the field as the code does:
-  "can't take `name` out of ...", or `this.name` where the code writes that, instead of Rust's
-  `self.name`.
+  that doesn't hold for a list nothing borrows.
+* Errors about a field of `this` (moved, borrowed while it changes, taken out of a borrow) name
+  it as the code does at each place: "`items` can't be changed while it is borrowed", or
+  `this.items` where the code spells out `this`, instead of Rust's `self.items`. rustc's own
+  message, on the last line, keeps its wording.
 * A labeled block (`'found: { ... }`) gets the declared type of what it initializes, as a plain
   block does, so its value is converted: `"text"` to a `String`, a value to `T?`.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix
