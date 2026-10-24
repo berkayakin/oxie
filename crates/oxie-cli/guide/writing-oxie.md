@@ -81,6 +81,9 @@ fun main() {
 | `interface I { fun f(): i32 }`, `class C : I { override fun f() = 1 }` | trait and its impl |
 | `&I`, `Vec<I>` (an interface as a type) | `&dyn I`, `Vec<Box<dyn I>>` |
 | `shared class S(var n: i32)`, `@sync shared class` | a handle to one object: `Rc<RefCell<..>>`, `Arc<Mutex<..>>` |
+| `operator fun plus(o: V): V`, `minus`, `times`, `div`, `rem`, `unaryMinus`, `plusAssign` | `impl Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `AddAssign` |
+| `override fun toString() = "($x, $y)"` | `impl Display` |
+| `fun String.shout(): String = this.to_uppercase()`, `fun i32.is_even(): bool = this % 2 == 0` | extension functions (a trait and its impl, imported everywhere) |
 | `object O { }`, `companion object { }`, `static fun` | namespace; static functions |
 | `{ it * 2 }`, `{ a, b -> a + b }`, `(a, b) => a + b`, `xs.map { }` | lambdas; a last lambda argument goes outside the parentheses |
 | `vec[1, 2]`, `listOf(1, 2)`, `mutableListOf<i32>()`, `mapOf("a" to 1)`, `setOf(1)` | `Vec`, `Vec`, `Vec::new()`, `HashMap`, `HashSet` |
@@ -107,7 +110,10 @@ fun main() {
   `min_of`, `max_by_key`, `min_by_key`, `sorted`, `sorted_by`, `sorted_by_descending`,
   `reversed`, `distinct`, `group_by`, `associate_by`, `partition`, `chunked`,
   `join_to_string`, `join_with`, `map_indexed`, `index_of_first`, `is_not_empty`. They return
-  new `Vec`s (`find`, `first()`, `max_by_key` return references). They exist on lists, arrays
+  new `Vec`s (`find`, `first()`, `max_by_key` return references). As in Kotlin, `sorted_by`
+  takes a key (`sorted_by { it.age }`); to sort with a comparator, call Rust's `sort_by` on a
+  `var` list: `xs.sort_by { a, b -> b.age.cmp(&a.age) }`. `join_to_string(", ")` joins,
+  `join_with(", ") { it.name.as_str() }` maps each element first. They exist on lists, arrays
   and slices, not on iterators: what `iter()`, `split()`, `chars()`, `lines()` or a range
   `.map { }` return is a lazy iterator with Rust's methods, so call the operation on the list
   (`xs.map { }`, not `xs.iter().map { }`) or `collect()` first:
@@ -166,9 +172,13 @@ Rust habits compile, but they skip what Oxie infers and don't read as Oxie. Writ
 * Construct with `Point(1.0, 2.0)`, not `Point::new` or a struct literal; `HashMap()` calls
   `HashMap::new()`. Use `.` in paths: `Color.Red`, `std.mem.swap(a, b)`, `Duration.from_secs(1)`.
 * No `&` or `&mut` at call sites of Oxie functions: `total(items)` lends `items` when the
-  parameter is a reference. Lifetimes and trait bounds that the body implies are added for you.
+  parameter is a reference. Lifetimes are added for you, and so are the trait bounds of common
+  uses (`"$x"`, `a < b`, `x.clone()`, `a + b`, map keys). When the compiler still asks for one,
+  as `T: Clone` for `.cloned()`, declare it: `class Stack<T: Clone>`.
 * `data class` and enums derive `Debug`, `Clone` and `PartialEq` (and `Copy`, `Eq`, `Hash` when
   possible) on their own. Other derives: `@derive(Hash)` or `class C : Hash`.
+* Operators are `operator fun`s in the class body (`operator fun plus(o: Vec2): Vec2`), not
+  `impl Add` blocks.
 * `error enum` (or `error class`) declares an error type with its messages, in place of a
   hand-written `Display` and `Error` impl.
 
@@ -237,8 +247,9 @@ fun main() {
 
 * Through a reference (`find` returns `&User?`), `?.email` gives a borrowed value. Where you
   need a `String`, copy it: `?.email.clone() ?: "..."`.
-* `?.let { }` borrows too: `it` is a reference, so write `v?.let { Celsius(*it) }` for a
-  number, or `it.clone()`.
+* `?.let { }` on a variable or field borrows it, so `it` is a reference: `v?.let { Celsius(*it) }`
+  for a number, or `it.clone()`. On the result of a call, `it` is the value itself:
+  `mean(xs)?.let { Celsius(it) }`.
 * `map.get(key)` gives an optional reference. `?:` with a literal reads the value for you
   (`counts.get(word) ?: 0` is a number), but with `return` or `throw` on the right you get the
   reference: `val n = *(stock.get(item) ?: throw ...)`, or `stock.get(item).copied() ?: throw ...`.

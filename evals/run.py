@@ -166,7 +166,7 @@ class Toolchain:
 
     def run(self, args, cwd: Path, timeout: int):
         try:
-            return subprocess.run([self.oxie, *args], cwd=cwd, env=self.env(cwd.parent), capture_output=True, text=True, timeout=timeout)
+            return subprocess.run([self.oxie, *args], cwd=cwd, env=self.env(cwd.parent), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return subprocess.CompletedProcess(args, -1, "", f"timed out after {timeout}s")
 
@@ -291,7 +291,7 @@ def grade(task: Task, src: Path, work: Path, toolchain: Toolchain) -> dict:
     g["problems"] += [f"matches forbidden `{p}`" for p in task.forbids + FORBIDDEN if re.search(p, bare, re.M)]
     g["problems"] += [f"has no {f}" for f in task.files if f.removeprefix("src/") not in files]
     lines = [line.strip() for line in task.expected.splitlines() if len(line.strip()) >= 8]
-    if len(lines) >= 2 and 2 * sum(line in code for line in lines) > len(lines):
+    if len(lines) >= 2 and 2 * sum(line in without_comments for line in lines) > len(lines):
         g["problems"].append("prints the expected output literally")
 
     project = toolchain.project(work)
@@ -380,10 +380,9 @@ def agent_metrics(calls, final, allowed) -> dict:
     ran = [c for c in calls if c["tool"] == "Bash" and not (c["error"] and c["output"].startswith("Permission for this tool use was denied"))]
     commands = [c["input"].get("command", "") for c in ran]
     builds = [c for c in ran if BUILD_COMMAND.search(c["input"].get("command", ""))]
-    first_build_ok = None
-    if builds:
-        first = builds[0]
-        first_build_ok = not first["error"] and not re.search(r"^(?:error(?:\[|:)|Exit code [1-9])", first["output"], re.M)
+    # a compiler error, not an `error: ...` line the program prints
+    failed = re.compile(r"could not compile|^error\[E\d+\]|^error(?:\[\w+\])?:.*\n\s*-->", re.M)
+    first_build_ok = not failed.search(builds[0]["output"]) if builds else None
     usage = final.get("usage") or {}
     return {
         "turns": final.get("num_turns"),
@@ -402,7 +401,7 @@ def agent_metrics(calls, final, allowed) -> dict:
 
 def run_process(cmd, cwd: Path, env: dict, timeout: int):
     """Runs `cmd` in a process group of its own, so a timeout also stops what it started."""
-    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         out, err = proc.communicate(timeout=timeout)
         return out, err, False
@@ -455,7 +454,7 @@ class Eval:
         if self.args.mode == "agent":
             project = self.toolchain.project(run_dir, task.starter)
             if condition != "agents-md":
-                (project / "AGENTS.md").unlink()
+                (project / "AGENTS.md").unlink(missing_ok=True)
             env = self.toolchain.env(run_dir, hide_guide=condition == "bare")
             out, err, timed_out = run_process(self.agent_command(task, condition), project, env, self.args.timeout)
             (saved / "transcript.jsonl").write_text(out)
@@ -629,10 +628,12 @@ def main():
         out = Path(args.report)
         config = json.loads((out / "config.json").read_text())
         records = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines() if line.strip()]
-        for r in records:  # counted again, in case the patterns changed since the run
-            src = out / "runs" / r["task"] / f"{r['condition']}-{r['rep']}" / "src"
-            if src.exists():
-                r["rust_isms"] = rust_isms(strip_code("\n".join(p.read_text() for p in sorted(src.rglob("*.oxi"))), strings=True))
+        for r in records:  # counted again, in case the counting changed since the run
+            saved = out / "runs" / r["task"] / f"{r['condition']}-{r['rep']}"
+            if (saved / "src").exists():
+                r["rust_isms"] = rust_isms(strip_code("\n".join(p.read_text() for p in sorted((saved / "src").rglob("*.oxi"))), strings=True))
+            if (saved / "transcript.jsonl").exists():
+                r.update(agent_metrics(*parse_transcript((saved / "transcript.jsonl").read_text()), []))
         (out / "report.md").write_text(report(records, config))
         print(out / "report.md")
         return
