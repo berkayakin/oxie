@@ -80,6 +80,11 @@
   no longer one part of a rustc suggestion that edits several places (`value` without the
   `let value = name.clone()` it needs), and the quick fix test checks the lines a fix changes
   too.
+* A value used after a `move` lambda took it is explained as taken by the lambda. The error
+  used to say it moved into the call around its use inside the lambda (`println`), and to
+  suggest letting that function borrow it. It now points at the lambda and suggests giving the
+  lambda its own copy, with a quick fix that writes the capture list (`{ [name] -> ... }`, or
+  `name` added to the lambda's list) when the type implements `Clone`.
 * A method that calls an interface method taking `&mut self` takes `&mut self` too. It used to
   stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
   method being `&mut self` because another implementation changes its object), when it was a

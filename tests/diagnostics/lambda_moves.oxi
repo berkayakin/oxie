@@ -1,0 +1,62 @@
+// A value that a `move` lambda (or one with a capture list) uses is taken by the lambda, not by
+// the call around that use inside it. The fix gives the lambda its own copy in a capture list,
+// when the value can be copied.
+
+import std::thread
+
+class Job(val id: i32)
+
+fun describe(j: Job) = println(j.id)
+
+fun main() {
+    val name = "worker".to_string()
+    val h = thread::spawn(move { println("$name") })
+    println(name)
+    // error: 14: this lambda takes `name`
+    // error: 14: help: a `move` lambda takes the values it uses, so the lambda owns `name` now
+    // error: 14: fix: give the lambda its own copy of `name` (`[name]`): `val h = thread::spawn({ [name] -> println("$name") })`
+    // not: 14: moved into `println()`
+    // not: 14: Let `println` borrow
+    h.join().unwrap()
+
+    // a lambda with parameters gets the capture list before them
+    val tag = "t".to_string()
+    val show = move { n: i32 -> println("$tag $n") }
+    show(1)
+    println(tag)
+    // error: 26: fix: give the lambda its own copy of `tag` (`[tag]`): `val show = { [tag] n: i32 -> println("$tag $n") }`
+
+    // a capture list that leaves the value out
+    val count = 2
+    val label = "l".to_string()
+    val each = { [count] -> println("$label $count") }
+    each()
+    println(label)
+    // error: 34: Give the lambda its own copy by adding `label` to its capture list.
+    // error: 34: fix: give the lambda its own copy of `label` (`[label]`): `val each = { [count, label] -> println("$label $count") }`
+
+    // made again in every iteration
+    val prefix = "p".to_string()
+    for i in 0..2 {
+        thread::spawn(move { println("$prefix $i") }).join().unwrap()
+        // error: 41: this lambda takes `prefix` in every iteration of the loop
+        // error: 41: fix: give each lambda its own copy of `prefix` (`[prefix]`): `thread::spawn({ [prefix] -> println("$prefix $i") }).join().unwrap()`
+    }
+
+    // a value that can't be copied gets no fix
+    val job = Job(1)
+    val run = move { describe(job) }
+    run()
+    describe(job)
+    // error: 50: Finish using `job` before the lambda.
+    // not: 50: fix:
+    // not: 50: [job]
+
+    // without `move`, the lambda takes what its body moves
+    val text = "x".to_string()
+    val consume = { drop(text) }
+    consume()
+    println(text)
+    // error: 59: `text` moved into `drop()` here
+    // not: 59: due to use in closure
+}

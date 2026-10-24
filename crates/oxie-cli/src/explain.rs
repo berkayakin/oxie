@@ -94,6 +94,13 @@ fn generated_names(d: &mut MappedDiag) {
 // individual errors
 
 fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str) {
+    // a `move` lambda takes what it uses; rustc's "value moved into closure here" is at its start
+    let into = |t: &str| t.contains("into closure");
+    let at = if d.label.as_deref().is_some_and(into) { Some((d.line, d.col)) } else { d.secondary.iter().find(|s| into(&s.text)).map(|s| (s.line, s.col)) };
+    if let Some(lambda) = at.and_then(|(l, c)| move_lambda(sources, &d.file, lines, l, c, name)) {
+        moved_into_lambda(d, lines, name, lambda);
+        return;
+    }
     refine(d, lines, name);
     // rustc suggests a copy (`.clone()`, `<T as Clone>::clone(..)`, or one taken before a lambda)
     // only when the type implements `Clone`; a plain `.clone()` is its suggestion at the move
@@ -108,7 +115,8 @@ fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str
         d.label = Some(format!("`{}` is moved here in every iteration of the loop", name));
     }
     for s in d.secondary.iter_mut() {
-        if s.text.contains("moved here") || s.text.contains("value moved") {
+        // a lambda without `move` takes a value its body moves: the move is at that use
+        if s.text.contains("moved here") || s.text.contains("moved due to use in closure") || (s.text.contains("value moved") && !s.text.contains("into closure")) {
             let line = lines.get(s.line as usize).copied().unwrap_or("");
             if let Some(c) = find_word(line, name, s.col as usize) {
                 s.col = c as u32;
@@ -122,7 +130,7 @@ fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str
             };
             move_site = Some((s.line, s.col));
             s.exact = true;
-        } else if s.text.contains("move occurs because") || s.text.contains("inside of this loop") {
+        } else if s.text.contains("move occurs because") || s.text.contains("inside of this loop") || s.text.contains("into closure") {
             s.text = String::new();
         }
     }
@@ -182,6 +190,118 @@ fn moved_value(d: &mut MappedDiag, sources: &Sources, lines: &[&str], name: &str
             let borrowed = borrowed_type(&ty);
             d.fixes.push(Fix { title: format!("let `{}` borrow it (parameter type `{}`)", f, borrowed), edits: vec![Edit { file, ..edit(pl, pc, pe, &borrowed) }] });
         }
+    }
+}
+
+/// A lambda that took a value because it is `move` (written so, or with a capture list).
+struct MoveLambda {
+    line: u32,
+    /// `move {` or the `{` of a capture list lambda
+    col: u32,
+    end_col: u32,
+    /// lists its captures, `{ [a] -> ... }`
+    captures: bool,
+    /// gives it its own copy of the value in a capture list
+    fix: Option<Vec<Edit>>,
+}
+
+/// The `move` lambda starting at (line, col), and the edit that adds `name` to its capture list,
+/// for `move { ... }` and `{ [a] -> ... }` written on one line with the `{`.
+fn move_lambda(sources: &Sources, file: &Path, lines: &[&str], line: u32, col: u32, name: &str) -> Option<MoveLambda> {
+    let here = sources.file(file)?;
+    let at = byte_offset(&here.text, line, col) as u32;
+    let mut found = None;
+    oxie_compiler::visit::walk_items(&here.ast().items, &mut |e| {
+        if let ExprKind::Lambda { is_move: true, params, body, .. } = &e.kind {
+            if e.span.start == at {
+                found = Some((params.is_empty(), body.span));
+            }
+        }
+        true
+    });
+    let (no_params, body) = found?;
+    let text = lines.get(line as usize).copied().unwrap_or("");
+    let chars: Vec<char> = text.chars().collect();
+    let c = col as usize;
+    let before: String = chars[..c.min(chars.len())].iter().collect();
+    let written_move = before.trim_end().strip_suffix("move").filter(|b| !b.chars().next_back().is_some_and(is_ident_char)).map(|b| b.chars().count() as u32);
+    if chars.get(c) != Some(&'{') {
+        // `move |x| ...` or `move x => ...`, which starts at `move`
+        let word = chars[c.min(chars.len())..].iter().take_while(|ch| is_ident_char(**ch)).count().max(1);
+        return Some(MoveLambda { line, col, end_col: col + word as u32, captures: false, fix: None });
+    }
+    let after: String = chars[c + 1..].iter().collect();
+    let captures = written_move.is_none() && after.trim_start().starts_with('[');
+    let fix = if let Some(m) = written_move {
+        // `{ [name] -> ... }` has no `it`
+        let uses_it = here.text.get(body.start as usize..body.end as usize).is_some_and(|b| b.lines().any(|l| find_word(l, "it", 0).is_some()));
+        let list = if !no_params { Some(format!(" [{}]", name)) } else if !uses_it { Some(format!(" [{}] ->", name)) } else { None };
+        list.map(|l| vec![edit(line, m, col, ""), edit(line, col + 1, col + 1, &l)])
+    } else if captures {
+        // before the `]` that closes the list
+        let open = c + 1 + (after.chars().count() - after.trim_start().chars().count());
+        let mut depth = 0;
+        let close = chars.iter().enumerate().skip(open).find_map(|(i, ch)| {
+            match ch {
+                '[' | '(' | '{' => depth += 1,
+                ']' | ')' | '}' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(i)
+        });
+        close.filter(|&i| chars[i] == ']').map(|i| vec![edit(line, i as u32, i as u32, &format!(", {}", name))])
+    } else {
+        None
+    };
+    Some(MoveLambda { line, col: written_move.unwrap_or(col), end_col: col + 1, captures, fix })
+}
+
+fn moved_into_lambda(d: &mut MappedDiag, lines: &[&str], name: &str, lambda: MoveLambda) {
+    let copyable = d.raw_suggestions.iter().any(|s| s.contains("clone("));
+    let in_loop = d.label.as_deref().is_some_and(|l| l.contains("previous iteration"));
+    let takes = format!("this lambda takes `{}`", name);
+    for s in d.secondary.iter_mut() {
+        if s.text.contains("into closure") {
+            (s.line, s.col, s.end_col, s.text, s.exact) = (lambda.line, lambda.col, lambda.end_col, takes.clone(), true);
+        } else if s.text.contains("moved due to use in closure") {
+            refine_label(s, lines, name);
+            s.text = format!("`{}` is used here, so the lambda takes it", name);
+        } else {
+            // "move occurs because", "inside of this loop", and the use of a lambda that
+            // repeats the primary span
+            s.text = String::new();
+        }
+    }
+    d.secondary.retain(|s| !s.text.is_empty());
+    if in_loop {
+        (d.line, d.end_line, d.col, d.end_col) = (lambda.line, lambda.line, lambda.col, lambda.end_col);
+        d.label = Some(format!("{} in every iteration of the loop", takes));
+    } else {
+        refine(d, lines, name);
+        d.label = Some("used here after the move".into());
+    }
+    rewrite(
+        d,
+        if in_loop { format!("`{}` was already moved in an earlier loop iteration", name) } else { format!("`{}` was moved, so it can't be used anymore", name) },
+    );
+    d.notes.retain(|n| !n.starts_with("note: move occurs") && !n.contains("consider cloning"));
+    let (owner, copy) = if in_loop {
+        (format!("the lambda made in the first iteration owns `{}`, and later iterations can't use it", name), "each lambda")
+    } else {
+        (format!("the lambda owns `{}` now, and `{}` can't be used afterwards", name, name), "the lambda")
+    };
+    let instead = match (copyable, lambda.captures) {
+        (true, false) => format!("Give {} its own copy with a capture list, `{{ [{}] -> ... }}`, or with a `{}.clone()` made before it.", copy, name, name),
+        (true, true) => format!("Give {} its own copy by adding `{}` to its capture list.", copy, name),
+        (false, _) if in_loop => format!("Create `{}` inside the loop, so that each iteration has its own.", name),
+        (false, _) => format!("Finish using `{}` before the lambda.", name),
+    };
+    let rule = if lambda.captures { "a lambda with a capture list takes the other values it uses too" } else { "a `move` lambda takes the values it uses" };
+    d.notes.push(help(&format!("{}, so {}. {}", rule, owner, instead)));
+    // rustc's copy renames the value inside the lambda (`let value = name.clone()`)
+    d.suggestions.clear();
+    if let Some(edits) = lambda.fix.filter(|_| copyable) {
+        d.fixes.push(Fix { title: format!("give {} its own copy of `{}` (`[{}]`)", copy, name, name), edits });
     }
 }
 
