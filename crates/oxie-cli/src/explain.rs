@@ -31,15 +31,28 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
         "E0596" => borrow_mut(d, sources, &lines, &first),
         "E0499" | "E0502" | "E0505" | "E0506" => borrow_conflict(d, sources, &lines, &first, &code),
         "E0507" => {
-            rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
+            let at = byte_offset(src, d.line, d.col) as u32;
+            // `items[0]` (rustc: "cannot move out of index of `Vec<String>`") stays in the list,
+            // whether the list is borrowed or not
+            let reason = if d.message.starts_with("cannot move out of index of") {
+                let (element, list) = match indexed_at(&here.ast().items, src, at) {
+                    Some((element, list)) => (format!("`{}`", element), format!("`{}`", list)),
+                    None => ("an element".to_string(), describe(&first)),
+                };
+                rewrite(d, format!("can't take {} out of {}", element, list));
+                format!("{} keeps its elements, and indexing only reaches one where it is, so it can't be moved out.", list)
+            } else {
+                rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
+                "the value belongs to something you only borrowed, so it can't be moved out.".to_string()
+            };
             d.notes.retain(|n| !n.contains("`mut "));
             // rustc offers `&` because `Display` puts the text in a `String` variable, as for a
             // `val`, but the text of a `toString` can't be a reference
-            if is_to_string_text(&here.ast().items, byte_offset(src, d.line, d.col) as u32) {
+            if is_to_string_text(&here.ast().items, at) {
                 d.notes.retain(|n| !n.starts_with("help: consider borrowing here"));
                 d.suggestions.retain(|s| s.replacement != "&");
             }
-            d.notes.push(help("the value belongs to something you only borrowed, so it can't be moved out. Take a copy with `.clone()`, or borrow it with `&`."));
+            d.notes.push(help(&format!("{} Take a copy with `.clone()`, or borrow it with `&`.", reason)));
         }
         "E0373" => lambda_outlives(d, &lines, &names),
         "E0597" => {
@@ -1469,6 +1482,22 @@ fn byte_offset(src: &str, line: u32, col: u32) -> usize {
     let start: usize = src.split_inclusive('\n').take(line as usize).map(str::len).sum();
     let rest = src.get(start..).unwrap_or("");
     start + rest.char_indices().nth(col as usize).map_or(rest.len(), |(i, _)| i)
+}
+
+/// The text of the index expression starting at `offset` and of its list (`items[0]`, `items`):
+/// the outermost one, for `rows[0][1]`.
+fn indexed_at(items: &[Item], src: &str, offset: u32) -> Option<(String, String)> {
+    let mut found = None;
+    oxie_compiler::visit::walk_items(items, &mut |e| {
+        if let ExprKind::Index(list, _) = &e.kind {
+            if found.is_none() && e.span.start == offset {
+                found = Some((e.span, list.span));
+            }
+        }
+        true
+    });
+    let (element, list) = found?;
+    Some((source_text(src, element)?, source_text(src, list)?))
 }
 
 /// The source text of a span on one line.

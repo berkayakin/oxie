@@ -176,6 +176,10 @@
   because the end of the generated `self.name` didn't map onto `name` (or onto `this.name`). An
   element taken out of a list (`fun first(): String = items[0]`) gets `items[0].clone()` too,
   where rustc suggests `<String as Clone>::clone(&...)`, which isn't Oxie.
+* That error names the element and its list: "can't take `items[0]` out of `items`", because a
+  list keeps its elements and indexing only reaches one where it is. It used to say "can't take
+  `Vec<String>` out of a value that is only borrowed", which named the type, and gave a reason
+  that doesn't hold for a list nothing borrows.
 * A labeled block (`'found: { ... }`) gets the declared type of what it initializes, as a plain
   block does, so its value is converted: `"text"` to a `String`, a value to `T?`.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix

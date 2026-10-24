@@ -38,14 +38,25 @@ class Nick(val nick: String, val short: bool) {
     // not: 36: pass a reference
 }
 
-// an element taken out of a list: rustc suggests `<String as Clone>::clone(&...)`
+// an element taken out of a list: the headline names both, and rustc's
+// `<String as Clone>::clone(&...)` is a `.clone()` fix
 class Shelf(val items: Vec<String>) {
     fun first(): String = items[0]
-    // error: 43: fix: use a copy (`.clone()`): `fun first(): String = items[0].clone()`
-    // not: 43: as Clone
+    // error: 44: can't take `items[0]` out of `items`
+    // error: 44: fix: use a copy (`.clone()`): `fun first(): String = items[0].clone()`
+    // not: 44: as Clone
 
     fun last(): String {
         return this.items[items.len() - 1]
-        // error: 48: fix: use a copy (`.clone()`): `return this.items[items.len() - 1].clone()`
+        // error: 50: fix: use a copy (`.clone()`): `return this.items[items.len() - 1].clone()`
     }
+}
+
+// a list keeps its elements even when nothing borrows it
+fun first_word() {
+    val words = vec["a".to_string()]
+    val w = words[0]
+    // error: 58: can't take `words[0]` out of `words`
+    // not: 58: only borrowed
+    println("$w ${words.len()}")
 }
