@@ -107,8 +107,12 @@ fun main() {
   `min_of`, `max_by_key`, `min_by_key`, `sorted`, `sorted_by`, `sorted_by_descending`,
   `reversed`, `distinct`, `group_by`, `associate_by`, `partition`, `chunked`,
   `join_to_string`, `join_with`, `map_indexed`, `index_of_first`, `is_not_empty`. They return
-  new `Vec`s (`find`, `first()`, `max_by_key` return references). `is_not_empty()` is only for
-  lists; for text write `!s.is_empty()`.
+  new `Vec`s (`find`, `first()`, `max_by_key` return references). They exist on lists, arrays
+  and slices, not on iterators: what `iter()`, `split()`, `chars()`, `lines()` or a range
+  `.map { }` return is a lazy iterator with Rust's methods, so call the operation on the list
+  (`xs.map { }`, not `xs.iter().map { }`) or `collect()` first:
+  `"b a".split(' ').collect::<Vec<_>>().sorted()`. `is_not_empty()` is only for lists; for text
+  write `!s.is_empty()`. You implement `toString()`, but you call `to_string()`.
 * **Numbers don't convert by themselves.** `i32 * f64` is an error: write `n as f64`.
   `len()` and indexes are `usize`. Integer division truncates. `Int`, `Long` and `Double` are
   names for `i32`, `i64` and `f64`.
@@ -135,8 +139,13 @@ fun main() {
   handle it: `when (val r = f()) { Ok(v) -> ...; Err(e) -> ... }`, `f() ?: default`,
   `if (val Err(e) = f())`, or `.unwrap()`.
 * **`null` is `Option`.** A `T?` must be unwrapped before use: there are no smart casts, so
-  instead of `if (x != null) x.foo()` write `if (val x = x) x.foo()` or `x?.foo()`. In a
-  lambda, `return` returns from the lambda, not from the enclosing function.
+  instead of `if (x != null) x.foo()` write `if (val x = x) x.foo()` or `x?.foo()`.
+* **Lambdas** are Rust closures. `return` in a lambda returns from the lambda, not from the
+  enclosing function. In predicates (`filter`, `find`, `any`, `count`, ...) the element is a
+  reference: comparing it with a literal reads through it (`filter { it > 2 }`), but to pass
+  it on write `*it` or `it.clone()`. When the compiler can't tell a parameter's type
+  ("type annotations needed", as with `trim_matches { }`), write it:
+  `{ c: char -> !c.is_alphanumeric() }`.
 * **Printing.** `"$x"` needs `Display`: numbers, text and types with `toString()`. Lists,
   maps, options and other values print with `"${x:?}"`. A whole `f64` prints without
   decimals (`43`); write `"${x:.1}"` for a fixed number of decimals.
@@ -152,7 +161,8 @@ Rust habits compile, but they skip what Oxie infers and don't read as Oxie. Writ
 * A class instead of a struct and an `impl` block. Leave out `self` parameters (`&self` or
   `&mut self` is inferred from what the method does) and `self.` in front of fields. Implement
   an interface with `: Name` and `override fun`, and `Display` with
-  `override fun toString() = "..."`.
+  `override fun toString() = "..."`. A `toString` with a block body must end with its text:
+  `return` inside it doesn't compile in this version.
 * Construct with `Point(1.0, 2.0)`, not `Point::new` or a struct literal; `HashMap()` calls
   `HashMap::new()`. Use `.` in paths: `Color.Red`, `std.mem.swap(a, b)`, `Duration.from_secs(1)`.
 * No `&` or `&mut` at call sites of Oxie functions: `total(items)` lends `items` when the
@@ -227,11 +237,18 @@ fun main() {
 
 * Through a reference (`find` returns `&User?`), `?.email` gives a borrowed value. Where you
   need a `String`, copy it: `?.email.clone() ?: "..."`.
+* `?.let { }` borrows too: `it` is a reference, so write `v?.let { Celsius(*it) }` for a
+  number, or `it.clone()`.
+* `map.get(key)` gives an optional reference. `?:` with a literal reads the value for you
+  (`counts.get(word) ?: 0` is a number), but with `return` or `throw` on the right you get the
+  reference: `val n = *(stock.get(item) ?: throw ...)`, or `stock.get(item).copied() ?: throw ...`.
 * `a ?: b` takes `a`: for an optional field you use again later, write `a.clone() ?: b`.
 * `?.` followed by a method that itself returns an optional gives a nested optional
   (`T??`); use `.and_then { }` instead.
 * The right side of `?:` can be `return`, `throw`, `continue` or `break`:
   `val v = map.get(key) ?: return`.
+* A value is wrapped in `Some` where a `T?` is expected, except an enum variant without
+  fields: write `Some(Status.Done)`, in a `when` arm too.
 
 **Interfaces as values.**
 

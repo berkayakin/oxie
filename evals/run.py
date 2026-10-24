@@ -77,7 +77,7 @@ FORBIDDEN = [r"\brust\s*\{"]
 # Rust written where Oxie has its own form; counted, not failed.
 RUST_ISMS = {
     "fn": r"\bfn\s+\w",
-    "let": r"\blet\s",
+    "let": r"(?<![.\w])let\s",
     "macro!": r"\b(?:println|print|eprintln|eprint|format|vec|panic|assert|assert_eq|assert_ne|write|writeln|unreachable|todo|matches)!",
     "match": r"\bmatch\b",
     "impl": r"\bimpl\b",
@@ -88,7 +88,7 @@ RUST_ISMS = {
     "::new(": r"::new\s*\(",
     "Rc/Arc": r"\b(?:Rc|Arc)\s*<\s*(?:RefCell|Mutex|RwLock)",
     "#[attr]": r"#!?\[",
-    "|x| closure": r"[(,=]\s*(?:move\s+)?\|[^|\n]*\|",
+    "|x| closure": r"(?:[(,]|(?<![=!<>])=)\s*(?:move\s+)?\|(?!\|)[^|\n]*\|",
     "String::from": r"\bString::from\s*\(",
     "semicolon": r";[ \t]*$",
 }
@@ -175,7 +175,9 @@ def strip_code(code: str, strings: bool) -> str:
     """`code` with comments (and, when `strings` is set, the text of string and char literals)
     blanked out, keeping its lines."""
     out, i, n = [], 0, len(code)
-    blank = lambda s: re.sub(r"[^\n]", " ", s)
+    spaces = lambda s: re.sub(r"[^\n]", " ", s)
+    # a literal keeps its quotes, so `"a" || "b"` doesn't read as `||` after blanking
+    blank = lambda s: s[0] + spaces(s[1:-1]) + s[-1] if len(s) > 1 and s[0] in "\"'r" else spaces(s)
     while i < n:
         c = code[i]
         if code.startswith("//", i):
@@ -352,7 +354,8 @@ def looked_outside(calls, allowed) -> list:
     """Tool calls that read files in the home directory outside the run (the repository, crate
     sources, caches) or reach the Oxie website, which the rules ask the agent not to."""
     home = Path.home().resolve()
-    allowed = [Path(a).resolve() for a in allowed]
+    # Claude Code keeps long tool output there, and the agent reads it back
+    allowed = [Path(a).resolve() for a in allowed] + [home / ".claude" / "projects"]
 
     def outside(path: str) -> bool:
         p = Path(os.path.expanduser(path)).resolve()
@@ -485,6 +488,10 @@ class Eval:
         (saved / "grade.json").write_text(json.dumps(record, indent=2) + "\n")
         if not self.args.keep:
             shutil.rmtree(run_dir, ignore_errors=True)
+        # what Claude Code stored for the run's directory, even without session persistence
+        for d in (run_dir / "app", run_dir):
+            slug = re.sub(r"[^A-Za-z0-9]", "-", str(d.resolve()))
+            shutil.rmtree(Path.home() / ".claude" / "projects" / slug, ignore_errors=True)
         return record
 
 
@@ -612,7 +619,7 @@ def main():
     parser.add_argument("--name", default="", help="name of the results directory")
     parser.add_argument("--keep", action="store_true", help="keep the projects the runs worked in")
     parser.add_argument("--check", action="store_true", help="only check that every task's reference solution passes")
-    parser.add_argument("--report", metavar="DIR", help="rewrite DIR/report.md from DIR/results.jsonl")
+    parser.add_argument("--report", metavar="DIR", help="rewrite DIR/report.md from DIR/results.jsonl, counting the Rust-isms again")
     args = parser.parse_args()
 
     tasks = load_tasks([t for t in args.tasks.split(",") if t])
@@ -622,6 +629,10 @@ def main():
         out = Path(args.report)
         config = json.loads((out / "config.json").read_text())
         records = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines() if line.strip()]
+        for r in records:  # counted again, in case the patterns changed since the run
+            src = out / "runs" / r["task"] / f"{r['condition']}-{r['rep']}" / "src"
+            if src.exists():
+                r["rust_isms"] = rust_isms(strip_code("\n".join(p.read_text() for p in sorted(src.rglob("*.oxi"))), strings=True))
         (out / "report.md").write_text(report(records, config))
         print(out / "report.md")
         return

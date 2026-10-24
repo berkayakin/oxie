@@ -19,7 +19,8 @@ It needs Python 3.11 or newer, Rust, a shell (macOS or Linux), and Claude Code l
 (`claude`). The runs are real model calls, billed to your Claude account or API key; the report
 shows what they cost. Results go to `evals/results/<date>-<model>-<mode>/` (ignored by git):
 `report.md`, `results.jsonl`, and for each run its transcript, the sources it ended with, and its
-grade. `--report <dir>` rewrites a report from `results.jsonl`.
+grade. `--report <dir>` rewrites a report from `results.jsonl`, counting the Rust-isms in the
+saved sources again.
 
 ## What a run does
 
