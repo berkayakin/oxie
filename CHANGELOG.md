@@ -80,6 +80,14 @@
   no longer one part of a rustc suggestion that edits several places (`value` without the
   `let value = name.clone()` it needs), and the quick fix test checks the lines a fix changes
   too.
+* rustc's suggestions that edit several places are shown whole, in Oxie terms: a constructed
+  value where a box of an interface is expected gets the fix `vec[Box.new(Circle(1.5))]`, and a
+  field holding a function called like a method gets `(s.run)(3)`. Their help used to show only
+  the first part (`Box::new(`, `(`). A method that rustc suggests for a similar name but that
+  means the opposite is no longer a fix: `value.is_not_empty()` or `value.isNotEmpty()` on text
+  got `value.is_empty()`, which turns the condition around, and now gets `!value.is_empty()`. A
+  list operation called on text or an iterator says so, instead of suggesting to implement
+  Oxie's runtime trait `ListOps`.
 * A method that calls an interface method taking `&mut self` takes `&mut self` too. It used to
   stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
   method being `&mut self` because another implementation changes its object), when it was a
