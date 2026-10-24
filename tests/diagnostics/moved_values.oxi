@@ -27,6 +27,7 @@ fun main() {
     val h = thread::spawn(move { println(name) })
     println(name)
     // error: 28: `name` was moved
-    // not: 28: fix:
+    // error: 28: fix: give the lambda its own copy of `name`
+    // not: 28: let value
     h.join().unwrap()
 }

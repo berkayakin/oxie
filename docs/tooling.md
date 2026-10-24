@@ -104,7 +104,7 @@ fixes:
 
 | rustc error | Oxie explanation and fix |
 |---|---|
-| use of moved value (E0382) | where it moved, and where and why the function keeps it; let the function borrow, or pass a copy when the type implements `Clone` (otherwise use the value before the call) |
+| use of moved value (E0382) | where it moved, and where and why the function keeps it; let the function borrow, or pass a copy when the type implements `Clone` (otherwise use the value before the call); for a value a `move` lambda took, give the lambda its own copy in a capture list (`{ [name] -> ... }`) |
 | dropped while borrowed (E0597, E0716) | keep the value in a `val`; for a function whose result Oxie tied to all its references, the signature that leaves this argument out |
 | borrowed text where a `String` is expected, from `?.` ... `?:` through a reference (E0308) | copy the field: `u.address?.city.clone() ?: "unknown"` |
 | `?:` or `?.` on a value that can't be null, such as a `String` (E0277, E0599, E0282) | which value isn't optional, and its type; remove the default, or use `.` |
