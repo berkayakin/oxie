@@ -40,18 +40,18 @@ impl Ids {
 
     pub(crate) fn add(&mut self) {
         let next_id = self.next_id();
-        self.items.push(next_id);
+        self.items.push(next_id)
     }
 
     pub(crate) fn add_scaled(&mut self) {
         let next_id = self.next_id();
-        self.items.push(next_id * 10);
+        self.items.push(next_id * 10)
     }
 
     pub(crate) fn add_pair(&mut self) {
         let next_id = self.next_id();
         let next_id_2 = self.next_id();
-        self.pairs.push((next_id, next_id_2));
+        self.pairs.push((next_id, next_id_2))
     }
 
     pub(crate) fn name(&mut self, n: String) -> Option<String> {

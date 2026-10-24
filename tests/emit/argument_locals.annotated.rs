@@ -52,20 +52,20 @@ impl Ids {
     // argument_locals.oxi:19
     pub(crate) fn add(&mut self /* oxie: &mut self because it calls `items.push()` */) {
         let next_id = self.next_id(); /* oxie: computed first because `next_id()` changes `this` while `items` is borrowed for `.push()` */
-        self.items.push(next_id);
+        self.items.push(next_id)
     }
 
     // argument_locals.oxi:20
     pub(crate) fn add_scaled(&mut self /* oxie: &mut self because it calls `items.push()` */) {
         let next_id = self.next_id(); /* oxie: computed first because `next_id()` changes `this` while `items` is borrowed for `.push()` */
-        self.items.push(next_id * 10);
+        self.items.push(next_id * 10)
     }
 
     // argument_locals.oxi:21
     pub(crate) fn add_pair(&mut self /* oxie: &mut self because it calls `pairs.push()` */) {
         let next_id = self.next_id(); /* oxie: computed first because `next_id()` changes `this` while `pairs` is borrowed for `.push()` */
         let next_id_2 = self.next_id(); /* oxie: computed first because `next_id()` changes `this` while `pairs` is borrowed for `.push()` */
-        self.pairs.push((next_id, next_id_2));
+        self.pairs.push((next_id, next_id_2))
     }
 
     // argument_locals.oxi:23

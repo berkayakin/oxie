@@ -48,7 +48,7 @@ pub(crate) fn label_of(n: &Node) -> String {
 }
 
 pub(crate) fn register(u: User, all: &mut Vec<User>) {
-    all.push(u);
+    all.push(u)
 }
 
 fn main() {

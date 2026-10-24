@@ -1505,6 +1505,7 @@ fn mismatched(d: &mut MappedDiag, src: &str, lines: &[&str]) {
     if borrowed_text {
         elvis_borrowed_text(d, lines);
     }
+    expr_body_value(d, lines);
     // `n ?: "none"` with an `i32?`: the default goes to a runtime helper, which rustc mentions
     if d.rust_message.is_none() {
         if let Some((value, _)) = elvis_default_at(src, d.line, d.col) {
@@ -1512,6 +1513,43 @@ fn mismatched(d: &mut MappedDiag, src: &str, lines: &[&str]) {
             d.notes.retain(|n| !n.contains("the return type of this call") && !n.contains("method defined here") && !n.contains("arguments to this"));
             d.notes.push(help(&format!("`{} ?: default` gives the value in `{}`, or the default when there is none, so both need the same type.", value, value)));
         }
+    }
+}
+
+/// `fun opt(x: i32) = Some(x)`: an expression body without a return type must be `()`, and Oxie
+/// couldn't tell this one's type. The fix declares it: `fun opt(x: i32): i32? = Some(x)`.
+fn expr_body_value(d: &mut MappedDiag, lines: &[&str]) {
+    let Some(found) = d.label.as_deref().and_then(|l| between(l, "expected `()`, found `", "`")) else { return };
+    let line = lines.get(d.line as usize).copied().unwrap_or("");
+    let Some(fun_at) = line.find("fun ") else { return };
+    // the `)` that closes the parameters, followed by ` = ` and the body the error is in
+    let open = match line[fun_at..].find('(') {
+        Some(i) => fun_at + i,
+        None => return,
+    };
+    let mut depth = 0;
+    let Some(close) = line[open..].char_indices().find(|&(_, c)| {
+        depth += match c {
+            '(' => 1,
+            ')' => -1,
+            _ => 0,
+        };
+        depth == 0
+    }).map(|(i, _)| open + i) else { return };
+    let after = &line[close + 1..];
+    let eq = after.len() - after.trim_start().len();
+    if !after[eq..].starts_with('=') || after[eq..].starts_with("==") || line[..close + 1 + eq].chars().count() as u32 > d.col {
+        return;
+    }
+    let name: String = line[fun_at + 4..open].chars().filter(|c| !c.is_whitespace()).collect();
+    let name = name.rsplit('.').next().unwrap_or(&name).split('<').next().unwrap_or("").to_string();
+    rewrite(d, format!("`{}` declares no return type, but its body gives a value of type `{}`", name, found));
+    d.label = Some(format!("of type `{}`", found));
+    d.notes.retain(|n| !n.contains("try adding a return type") && !n.contains("consider using a semicolon") && !n.contains("expected unit type") && !n.contains("found enum") && !n.contains("found struct"));
+    d.notes.push(help("a function written `fun f() = expr` without a return type returns nothing, and Oxie couldn't tell the type of this body. Declare the return type, or write the body as a block (`{ ... }`) to throw the value away."));
+    if !found.contains(['{', '}']) && !found.contains("closure") && !found.contains("impl ") {
+        let col = line[..close + 1].chars().count() as u32;
+        d.fixes.push(Fix { title: format!("declare the return type `{}`", found), edits: vec![edit(d.line, col, col, &format!(": {}", found))] });
     }
 }
 

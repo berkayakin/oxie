@@ -23,12 +23,13 @@ USAGE:
 
 COMMANDS:
     new <name> [--lib]     Create a new project
-    init [--lib]           Turn the current directory into a oxie project
+    init [--lib]           Turn the current directory into an Oxie project
     run [file.oxi] [--release] [-- args]
                            Build and run the project, or a single .oxi script
     build [--release]      Build the project
     check                  Type-check the project without producing binaries
-    test [filter]          Run `test \"...\" { }` blocks
+    test [file.oxi] [filter]
+                           Run the `test \"...\" { }` blocks of the project, or of a script
     fmt [--check] [paths]  Format .oxi files
     emit <file.oxi> [--annotate]
                            Print the Rust code generated for a file; `--annotate` marks
@@ -40,12 +41,45 @@ COMMANDS:
     clean                  Remove build artifacts
     version                Print version
 
-Any extra arguments after `--` are passed to the program (run) or cargo (build/check/test).";
+Any extra arguments after `--` are passed to the program (run) or cargo (build/check/test).
+`oxie <command> --help` describes one command.";
+
+/// `oxie <command> --help`: the command's entry in `HELP`.
+fn command_help(cmd: &str) -> Option<String> {
+    let cmd = if cmd == "format" { "fmt" } else { cmd };
+    let commands = HELP.split("COMMANDS:\n").nth(1)?.split("\n\n").next()?;
+    // `    new <name> [--lib]     Create a new project`, the description maybe on the next lines
+    let (mut usage, mut about) = (None, Vec::new());
+    for line in commands.lines() {
+        match line.strip_prefix("    ").filter(|l| !l.starts_with(' ')) {
+            Some(l) if l.split_whitespace().next() == Some(cmd) => {
+                let (u, a) = l.split_once("  ").unwrap_or((l, ""));
+                usage = Some(u.to_string());
+                about.push(a.trim());
+            }
+            Some(_) if usage.is_some() => break,
+            None if usage.is_some() => about.push(line.trim()),
+            _ => {}
+        }
+    }
+    let about: Vec<&str> = about.into_iter().filter(|a| !a.is_empty()).collect();
+    usage.map(|u| format!("USAGE:\n    oxie {}\n\n{}", u, about.join(" ")))
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("help");
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
+    // `--help` describes the command and never runs it (`oxie init --help` would set up the
+    // current directory); after `--` it belongs to the program
+    let before_dashdash = rest.iter().take_while(|a| *a != "--");
+    if before_dashdash.clone().any(|a| a == "--help" || a == "-h") {
+        let name = if cmd.ends_with(".oxi") { "run" } else { cmd };
+        if let Some(h) = command_help(name) {
+            println!("{}", h);
+            return ExitCode::SUCCESS;
+        }
+    }
     let r = match cmd {
         "new" => cmd_new(rest),
         "init" => cmd_init(rest),

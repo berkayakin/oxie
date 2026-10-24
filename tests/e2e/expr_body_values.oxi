@@ -1,0 +1,19 @@
+// A function written `= expr` without a return type returns the value when its type is obvious
+// (`Some(x)` is `T?`), and returns nothing when the body gives nothing (`items.push(x)`).
+class Cart(var items: Vec<i32>, var total: i32 = 0) {
+    fun add(x: i32) = items.push(x)
+    fun reset() = total = 0
+    fun show() = println("${items.len()} items, total $total")
+}
+
+fun opt(x: i32) = Some(x)
+fun label(x: i32) = Some("n=$x")
+fun twice(x: i32) = x * 2
+
+fun main() {
+    var c = Cart(vec[])
+    c.add(3)
+    c.reset()
+    c.show()
+    println("${opt(1):?} ${label(2):?} ${twice(3)}")
+}

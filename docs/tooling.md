@@ -65,7 +65,7 @@ it to the checkout it runs in.
 | `oxie run file.oxi [-- args]` | Run a single file. Inside a project's `src/` this runs the project |
 | `oxie build [--release]` | Build |
 | `oxie check` | Type-check without producing binaries (fast) |
-| `oxie test [name] [--release]` | Run `test` blocks; `name` may be the test's description (`oxie test "adds numbers"`) or part of it |
+| `oxie test [file.oxi] [name] [--release]` | Run `test` blocks of the project, or of a script; `name` may be the test's description (`oxie test "adds numbers"`) or part of it |
 | `oxie fmt [--check] [paths]` | Format `.oxi` files (the project's `src/` by default) |
 | `oxie emit file.oxi [--annotate]` | Print the Rust generated for a file; `--annotate` puts a `// file.oxi:line` comment above each statement and says why at each choice Oxie made (see [What Oxie decided](#what-oxie-decided)) |
 | `oxie from-rust file.rs [-o out.oxi]` | Translate Rust to Oxie (`-` reads stdin); see [Translating Rust](#translating-rust) |
@@ -75,6 +75,7 @@ it to the checkout it runs in.
 | `oxie version` | Print the version |
 
 Arguments after `--` go to the program (`run`) or to cargo (`build`, `check`, `test`).
+`oxie <command> --help` (or `-h`) describes a command and runs nothing.
 
 ### Diagnostics
 

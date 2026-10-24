@@ -393,6 +393,30 @@ fn commands_are_documented() {
     assert!(missing.is_empty(), "docs/tooling.md doesn't describe `oxie {}`", missing.join("`, `oxie "));
 }
 
+/// `oxie <command> --help` describes the command and runs nothing: `init --help` set up the
+/// current directory, `fmt --help` formatted it, and `run --help` ran the project.
+#[test]
+fn help_never_runs_a_command() {
+    let help = oxie().arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&help.stdout).to_string();
+    let commands: Vec<&str> = help.lines().skip_while(|l| !l.starts_with("COMMANDS:")).skip(1).take_while(|l| !l.trim().is_empty()).filter(|l| !l.starts_with("     ")).filter_map(|l| l.split_whitespace().next()).collect();
+    assert!(commands.len() > 10, "{}", help);
+    let tmp = std::env::temp_dir().join(format!("oxie-help-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    // a crate, so that `init`, `run` or `test` would find something to act on
+    std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"helped\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+    for cmd in commands.iter().copied().chain(["format"]) {
+        for flag in ["--help", "-h"] {
+            let out = oxie().args([cmd, flag]).current_dir(&tmp).output().unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success() && stdout.starts_with("USAGE:\n    oxie "), "`oxie {} {}`:\n{}{}", cmd, flag, stdout, String::from_utf8_lossy(&out.stderr));
+        }
+    }
+    let left: Vec<String> = std::fs::read_dir(&tmp).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+    std::fs::remove_dir_all(&tmp).unwrap();
+    assert_eq!(left, ["Cargo.toml"], "a `--help` changed the directory");
+}
+
 /// The reserved words listed in the language reference are the ones the parser reserves.
 #[test]
 fn keywords_are_documented() {

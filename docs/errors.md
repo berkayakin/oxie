@@ -116,7 +116,8 @@ fun main() {
 ## `try` / `catch`
 
 `try { }` runs a block in which `?` and `throw` jump to `catch` instead of leaving the
-function:
+function. So does a throwing call used as a statement or as the block's value, which passes its
+error on without `?` as it does in a throwing function:
 
 ```oxie
 fun main() {

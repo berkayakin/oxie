@@ -11,8 +11,29 @@ use crate::diag::{Diag, Span};
 pub enum StrPart {
     /// Literal text, already escaped for a Rust string literal (without format-brace escaping).
     Lit(String),
-    /// `${expr}` or `$name`; `offset` is the byte offset of `src` in the file.
+    /// `${expr}` or `$name`; `offset` is the byte offset of `src` in the file. A `$` followed by
+    /// digits keeps its `$` in `src` (`$5`).
     Interp { src: String, offset: usize, spec: Option<String> },
+}
+
+/// `$5` as text, as in Kotlin (`"cost $5"`); only error messages read `$0` as a field.
+pub fn dollar_digits_as_text(parts: Vec<StrPart>) -> Vec<StrPart> {
+    let mut out: Vec<StrPart> = Vec::new();
+    for p in parts {
+        let text = match p {
+            StrPart::Interp { src, .. } if src.starts_with('$') => src,
+            StrPart::Lit(s) => s,
+            other => {
+                out.push(other);
+                continue;
+            }
+        };
+        match out.last_mut() {
+            Some(StrPart::Lit(prev)) => prev.push_str(&text),
+            _ => out.push(StrPart::Lit(text)),
+        }
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -555,7 +576,9 @@ impl<'a> Lexer<'a> {
             if !lit.is_empty() {
                 parts.push(StrPart::Lit(std::mem::take(lit)));
             }
-            parts.push(StrPart::Interp { src: self.src[s..e].to_string(), offset: self.base + s, spec: None });
+            // `$5` keeps its `$`: it is text, except in error messages (see `dollar_digits_as_text`)
+            let (src, offset) = if next.unwrap().is_ascii_digit() { (self.src[s - 1..e].to_string(), self.base + s - 1) } else { (self.src[s..e].to_string(), self.base + s) };
+            parts.push(StrPart::Interp { src, offset, spec: None });
             self.pos = e;
             true
         } else {
@@ -623,6 +646,11 @@ impl<'a> Lexer<'a> {
                         self.pos += 1;
                         lit.push('$');
                     }
+                }
+                // the text is raw, except `\$` for a dollar sign before a name (`\$HOME`)
+                '\\' if self.peek_at(1) == Some('$') => {
+                    self.pos += 2;
+                    lit.push('$');
                 }
                 '\\' => {
                     self.pos += 1;
@@ -751,5 +779,21 @@ mod tests {
     fn triple_quoted() {
         let t = kinds("\"\"\"\n    hello\n      world\n    \"\"\"");
         assert_eq!(t[0], Tok::Str(vec![StrPart::Lit("hello\\n  world".into())]));
+    }
+
+    #[test]
+    fn dollar_before_digits_is_text() {
+        let text = |src: &str| match &kinds(src)[0] {
+            Tok::Str(parts) => dollar_digits_as_text(parts.clone()),
+            t => panic!("{:?}", t),
+        };
+        assert_eq!(text("\"cost $5, only $9.99\""), vec![StrPart::Lit("cost $5, only $9.99".into())]);
+        assert_eq!(text("\"\"\"\n    \\$5 \\$HOME $\n    \"\"\""), vec![StrPart::Lit("$5 $HOME $".into())]);
+        // `$0` in an error message is a field: the lexer keeps it apart
+        assert!(matches!(&text("\"a $n $0\"")[1], StrPart::Interp { src, .. } if src == "n"));
+        match &kinds("\"x $0\"")[0] {
+            Tok::Str(parts) => assert!(matches!(&parts[1], StrPart::Interp { src, .. } if src == "$0")),
+            t => panic!("{:?}", t),
+        }
     }
 }

@@ -123,6 +123,7 @@ impl<'a> Lowerer<'a> {
                     return Some(ty(&en.name));
                 }
                 match n {
+                    "Some" if args.len() == 1 => self.infer_type(&args[0].value).map(|t| Type::Option(Box::new(t))),
                     "listOf" | "mutableListOf" | "arrayListOf" | "vecOf" if !args.is_empty() => match self.infer_type(&args[0].value) {
                         Some(t) => Some(Type::Path { global: false, segs: vec![PathSeg { name: "Vec".into(), generics: Some(vec![GenericArg::Type(t)]), fn_sugar: None }], span: Default::default() }),
                         None => Some(generic("Vec", 1)),

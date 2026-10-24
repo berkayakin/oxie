@@ -194,9 +194,9 @@ impl<'a> Lowerer<'a> {
                     return;
                 }
                 self.e.mark(expr.span);
-                if self.in_throwing_fn() && (self.is_throwing_call(expr) || self.is_rust_result_call(expr)) {
-                    self.expr(expr, P_POSTFIX);
-                    self.e.w("?;");
+                if self.passes_errors_on() && (self.is_throwing_call(expr) || self.is_rust_result_call(expr)) {
+                    self.propagate(expr);
+                    self.e.w(";");
                     return;
                 }
                 // the arguments were moved out above, or stay (`keep_args`)
@@ -625,9 +625,8 @@ impl<'a> Lowerer<'a> {
                 if has_safe_link(&r) && self.safe_chain_stmt(&r) {
                     return true;
                 }
-                if self.in_throwing_fn() && self.is_throwing_call(&r) {
-                    self.expr(&r, P_POSTFIX);
-                    self.e.w("?");
+                if self.passes_errors_on() && self.is_throwing_call(&r) {
+                    self.propagate(&r);
                     return false;
                 }
                 self.expr(&r, P_LOWEST);
@@ -726,13 +725,12 @@ impl<'a> Lowerer<'a> {
             _ => {
                 let wrap = t.wrap.clone().filter(|_| !is_ok_err_call(e));
                 // calling a throwing function propagates its error, like an exception would
-                let auto_try = wrap.is_some() && self.in_throwing_fn() && self.is_throwing_call(e);
+                let auto_try = wrap.is_some() && self.passes_errors_on() && self.is_throwing_call(e);
                 if let Some(w) = &wrap {
                     self.e.w(&format!("{}(", w));
                 }
                 if auto_try {
-                    self.expr(e, P_POSTFIX);
-                    self.e.w("?");
+                    self.propagate(e);
                 } else {
                     match &t.ty {
                         Some(ty) => self.coerce(e, ty, TyPos::Local),
@@ -979,6 +977,18 @@ impl<'a> Lowerer<'a> {
             },
             _ => false,
         }
+    }
+
+    /// A throwing call's error passes on here: to the `catch` of an enclosing `try`, or out of a
+    /// throwing function.
+    fn passes_errors_on(&self) -> bool {
+        self.fns.last().is_some_and(|f| !f.tries.is_empty()) || self.in_throwing_fn()
+    }
+
+    /// `call?`, or inside a `try`, a jump to its `catch` with the error, as an explicit `?` does.
+    fn propagate(&mut self, e: &Expr) {
+        let t = Expr::new(ExprKind::Try(Box::new(e.clone())), e.span);
+        self.expr(&t, P_LOWEST);
     }
 
     fn in_throwing_fn(&self) -> bool {

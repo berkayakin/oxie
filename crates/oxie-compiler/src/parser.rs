@@ -38,11 +38,14 @@ pub struct Parser<'a> {
     /// The type after `as`: a `<` after its path starts generic arguments only if they parse,
     /// otherwise it compares (`n as usize < m`).
     cast_ty: bool,
+    /// An error message template, where `$0` is the case's first positional field; elsewhere
+    /// it is text (`"cost $5"`).
+    positional: bool,
 }
 
 pub fn parse_file(src: &str) -> (File, Vec<Diag>) {
     let (toks, mut diags) = lexer::lex(src);
-    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false };
+    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false, positional: false };
     let file = p.file();
     diags.append(&mut p.diags);
     (file, diags)
@@ -51,7 +54,7 @@ pub fn parse_file(src: &str) -> (File, Vec<Diag>) {
 /// Parses a standalone expression (used for tests and tooling).
 pub fn parse_expr_str(src: &str) -> (Expr, Vec<Diag>) {
     let (toks, mut diags) = lexer::lex(src);
-    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false };
+    let mut p = Parser { src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false, positional: false };
     let e = p.expr().unwrap_or(Expr::new(ExprKind::Error, Span::default()));
     diags.append(&mut p.diags);
     (e, diags)
@@ -1257,7 +1260,7 @@ impl<'a> Parser<'a> {
         }
         decl.generics = generics;
         if is_error && self.eat_punct("=") {
-            decl.message = Some(self.expr()?);
+            decl.message = Some(self.message()?);
         }
         if self.peek_past_newlines_punct("{") {
             if is_struct && decl.fields.is_empty() && decl.kind != TypeKind::TupleStruct {
@@ -1267,7 +1270,7 @@ impl<'a> Parser<'a> {
             }
         }
         if is_error && decl.message.is_none() && self.eat_punct("=") {
-            decl.message = Some(self.expr()?);
+            decl.message = Some(self.message()?);
         }
         if is_union {
             decl.kind = TypeKind::Union;
@@ -1505,7 +1508,7 @@ impl<'a> Parser<'a> {
             let mut discriminant = None;
             let mut message = None;
             if self.eat_punct("=") {
-                let e = self.expr()?;
+                let e = if is_error { self.message()? } else { self.expr()? };
                 if is_error {
                     message = Some(e);
                 } else {
@@ -2748,7 +2751,17 @@ impl<'a> Parser<'a> {
         self.paren_or_lambda()
     }
 
+    /// The message of an `error class` or `error enum` case: `= "'$text' is not a number"`.
+    fn message(&mut self) -> PResult<Expr> {
+        self.positional = true;
+        let e = self.expr();
+        self.positional = false;
+        e
+    }
+
     fn string_expr(&mut self, parts: Vec<StrPart>, span: Span) -> PResult<Expr> {
+        // `$5` is text, except `$0` in an error message
+        let parts = if self.positional { parts } else { lexer::dollar_digits_as_text(parts) };
         if parts.iter().all(|p| matches!(p, StrPart::Lit(_))) {
             return Ok(Expr::new(ExprKind::Str(parts), span));
         }
@@ -2756,10 +2769,14 @@ impl<'a> Parser<'a> {
         for p in parts {
             match p {
                 StrPart::Lit(s) => out.push(TemplatePart::Lit(s)),
+                StrPart::Interp { src, offset, .. } if src.starts_with('$') => {
+                    let n = Expr::new(ExprKind::Int(src[1..].to_string()), Span::new(offset + 1, offset + src.len()));
+                    out.push(TemplatePart::Expr(n, None));
+                }
                 StrPart::Interp { src: s, offset, spec } => {
                     let (toks, mut diags) = lexer::lex_at(&s, offset);
                     self.diags.append(&mut diags);
-                    let mut sub = Parser { src: self.src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false };
+                    let mut sub = Parser { src: self.src, inner_attrs: Vec::new(), toks, pos: 0, diags: Vec::new(), no_struct: false, cast_ty: false, positional: false };
                     let e = sub.expr();
                     if e.is_ok() && !matches!(sub.tok(), Tok::Newline | Tok::Eof) {
                         let sp = sub.span();
@@ -3500,6 +3517,7 @@ impl<'a> Parser<'a> {
             Tok::Int(_) | Tok::Float(_) | Tok::Char(_) | Tok::Punct("-") => Ok(Pat::Lit(Box::new(self.lit_pattern_expr()?))),
             Tok::Str(parts) => {
                 self.bump();
+                let parts = lexer::dollar_digits_as_text(parts);
                 if parts.iter().any(|p| matches!(p, StrPart::Interp { .. })) {
                     self.diags.push(Diag::error(start, "string templates cannot be used as patterns"));
                 }

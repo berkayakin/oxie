@@ -220,6 +220,18 @@
 * An element of a `Vec<Shape>`, a loop variable over one and an interface-typed field can be
   passed to an `&Shape` parameter; before, they needed `.as_ref()`.
 * The reference's `join_with` example compiles.
+* Inside `try { }`, a throwing call without `?` (as a statement or as the block's value) jumps
+  to `catch`, as `?` does. Before, in a throwing function it left the function, skipping
+  `catch`, and in one that doesn't throw its error was dropped.
+* `$` followed by a digit is text, as in Kotlin: `"cost $5"` prints `cost $5` (it printed
+  `cost 5`). `\$` is a dollar sign in `"""` strings too. In `error enum` messages `$0` still
+  names the first positional field.
+* A function written `= expr` without a return type no longer drops a value it can't type:
+  `fun first() = items.first().copied()` is an error that offers `: i32?`, and
+  `fun opt(x: i32) = Some(x)` is inferred to return `i32?`. Before, both silently returned `()`.
+* `oxie <command> --help` describes the command. Before, most commands took `--help` as an
+  argument: `oxie init --help` set up the current directory, `oxie fmt --help` formatted it, and
+  `oxie run --help` ran the project. `oxie test file.oxi` (tests of a script) is in the help.
 
 ## 0.1.0 - 2026-10-23
 

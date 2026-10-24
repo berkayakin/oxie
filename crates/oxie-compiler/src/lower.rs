@@ -1435,7 +1435,15 @@ impl<'a> Lowerer<'a> {
             FunBody::Block(b) => self.fn_block(b, ret.as_ref(), throws),
             FunBody::Expr(e) => {
                 let b = Block { stmts: vec![Stmt::Expr { expr: e.clone(), semi: false }], span: e.span };
-                self.fn_block(&b, ret.as_ref(), throws);
+                // the value of `= expr` without a return type (`items.push(x)`) must be `()`:
+                // anything else is an error asking for the type, never dropped
+                // (`fun opt(x: i32) = Some(x)`)
+                if ret.is_none() && !throws && !e.diverges() && !e.is_block_like() {
+                    let unit = Target { ty: None, wrap: None, fn_result: true };
+                    self.fn_block_with(&b, Some(&unit), false);
+                } else {
+                    self.fn_block(&b, ret.as_ref(), throws);
+                }
             }
         }
         self.self_by_value = by_value;
@@ -1444,6 +1452,12 @@ impl<'a> Lowerer<'a> {
 
     /// Emits a function body block: tail value for non-unit functions, `Ok(())` for unit throwing ones.
     pub(crate) fn fn_block(&mut self, b: &Block, ret: Option<&Type>, throws: bool) {
+        let target = ret.map(|t| Target { ty: Some(t.clone()), wrap: if throws { Some("Ok".into()) } else { None }, fn_result: true });
+        self.fn_block_with(b, target.as_ref(), throws);
+    }
+
+    /// `fn_block` with the target of the last expression: `None` makes it a statement.
+    fn fn_block_with(&mut self, b: &Block, target: Option<&Target>, throws: bool) {
         // generated names are numbered per function, so a change renumbers only its function
         let outer_tmp = std::mem::take(&mut self.tmp);
         let outer = self.scopes.iter().flat_map(|s| s.keys().cloned()).collect();
@@ -1451,10 +1465,9 @@ impl<'a> Lowerer<'a> {
         self.e.w("{");
         self.e.indent();
         self.push_scope();
-        match ret {
-            Some(t) => {
-                let target = Target { ty: Some(t.clone()), wrap: if throws { Some("Ok".into()) } else { None }, fn_result: true };
-                self.stmts_with_tail(&b.stmts, Some(&target));
+        match target {
+            Some(target) => {
+                self.stmts_with_tail(&b.stmts, Some(target));
             }
             None => {
                 self.stmts_with_tail(&b.stmts, None);
@@ -2536,6 +2549,7 @@ pub fn lit_parts(parts: &[StrPart]) -> String {
         .iter()
         .map(|p| match p {
             StrPart::Lit(s) => s.clone(),
+            StrPart::Interp { src, .. } if src.starts_with('$') => src.clone(),
             StrPart::Interp { src, .. } => format!("${{{}}}", src),
         })
         .collect()

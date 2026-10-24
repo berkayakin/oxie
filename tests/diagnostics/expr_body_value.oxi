@@ -1,0 +1,18 @@
+// A function written `= expr` whose value Oxie can't type asks for its return type instead of
+// dropping the value.
+import std::collections::HashMap
+
+class Cart(var items: Vec<i32>) {
+    fun first() = items.first().copied() // error: 6: fix: declare the return type `i32?`: `fun first(): i32? = items.first().copied()`
+}
+
+fun twice(x: i32) = x * 2
+fun quad(x: i32) = twice(twice(x)) // error: 10: `quad` declares no return type, but its body gives a value of type `i32`
+
+fun remember(m: &mut HashMap<String, i32>) = m.insert("a".to_string(), 1) // error: 12: write the body as a block
+
+fun main() {
+    var m = HashMap()
+    remember(&mut m)
+    println("${Cart(vec[1]).first():?} ${quad(1):?}")
+}

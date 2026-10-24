@@ -54,7 +54,7 @@ pub(crate) fn label_of(n: &Node /* oxie: &Node because it only reads `n` */) -> 
 
 // class_params.oxi:12
 pub(crate) fn register(u: User /* oxie: owned because it passes `u` to `.push()` */, all: &mut Vec<User>) {
-    all.push(u);
+    all.push(u)
 }
 
 // class_params.oxi:14

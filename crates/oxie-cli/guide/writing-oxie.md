@@ -143,7 +143,8 @@ fun main() {
 * **No exceptions.** `throws`, `throw`, `try`/`catch` and `?` work on `Result` values, and a
   function that can fail says so in its signature. Calling a throwing function (or a Rust call
   that returns a `Result`, like `fs.write(path, text)`) as a statement inside another throwing
-  function passes its error on; anywhere else you get the `Result` and
+  function, or inside `try { }`, passes its error on (to the caller, or to `catch`); anywhere
+  else you get the `Result` and
   handle it: `when (val r = f()) { Ok(v) -> ...; Err(e) -> ... }`, `f() ?: default`,
   `if (val Err(e) = f())`, or `.unwrap()`.
 * **`null` is `Option`.** A `T?` must be unwrapped before use: there are no smart casts, so

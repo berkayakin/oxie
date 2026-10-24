@@ -1,0 +1,45 @@
+// Inside `try`, a throwing call passes its error to `catch`, with or without `?`, in throwing
+// functions and in ones that don't throw.
+import std::fs
+
+fun check(s: &str) throws { if (s.is_empty()) throw "empty" }
+
+fun parse(s: &str): i32 throws = s.trim().parse()?
+
+fun in_throwing() throws {
+    try {
+        check("")
+        println("not reached")
+    } catch (e) {
+        println("caught: $e")
+    }
+    val n = try { parse("x") } catch (e) { println("parse failed: $e"); -1 }
+    val m = try { parse("7") } catch (e) { println("parse failed: $e"); -1 }
+    println("after: $n $m")
+    check("")
+    println("not reached either")
+}
+
+fun in_plain() {
+    try {
+        check("")
+        println("not reached")
+    } catch (e) {
+        println("caught: $e")
+    }
+    val n = try { parse("42") } catch (e) { println("$e"); 0 }
+    println("value: ${n + 1}")
+    try {
+        fs.write("/nonexistent-oxie-dir/x.txt", "data")
+        println("not reached")
+    } catch (e) {
+        println("write failed: ${e.to_string().len() > 0}")
+    }
+    val r = try { check("x"); parse("y") }
+    println("result: ${r.is_err()}")
+}
+
+fun main() {
+    println("in_throwing: ${in_throwing().unwrap_err()}")
+    in_plain()
+}

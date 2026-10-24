@@ -63,8 +63,10 @@ fun short(x: i32) = x * 2
 ```
 
 * **Return type**: `: T` (or Rust's `-> T`). Omitted means `()`, except for an expression
-  body whose type is obvious (a literal, a template, arithmetic on typed values, a call to a
-  function with a declared type, a constructor, ...), which Oxie infers.
+  body whose type is obvious (a literal, a template, arithmetic on typed values, `Some(x)`, a
+  call to a function with a declared type, a constructor, ...), which Oxie infers. An
+  expression body whose type Oxie can't tell must give `()` (`fun add(x: i32) = items.push(x)`);
+  one that gives a value is an error that offers its type, never a value silently dropped.
 * **Block value**: the last expression of a block is its value. In a function returning `()`
   the last expression is a statement.
 * **Default arguments** and **named arguments** (`f(x = 1)`) work for functions, methods and
@@ -372,13 +374,16 @@ the declared type of a variable, field, parameter or return value:
 "Hello, $name!"            // format!("Hello, {name}!")
 "sum: ${a + b}"            // format!("sum: {}", a + b)
 "${value:.2} ${list:?}"    // format specs after `:` (Rust's format syntax)
-"cost: \$5"                // literal dollar sign
+"cost: $5, \$price"       // `$` before a digit is text; `\$` before a name too
 """
     multi-line
       text with $vars
     """                    // common indentation and the first/last empty lines are removed
 ```
 
+* `$` starts a template only before a name or `{`; elsewhere (`$5`, `100$`) it is text, as in
+  Kotlin. `\$` is a dollar sign in both kinds of strings (`"""` strings are otherwise raw).
+  In `error enum` messages, `$0` is the case's first positional field.
 * A literal without `$` is a `&'static str`; a template is a `String`.
 * Inside `println`, `print`, `eprintln`, `format`, `panic`, `assert`, `write`, `writeln`, ...
   a template is spliced directly into the format string (no extra allocation).

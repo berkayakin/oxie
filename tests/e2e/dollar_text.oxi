@@ -1,0 +1,24 @@
+// `$` followed by a digit (or nothing that can start a name) is text, as in Kotlin; `$0` refers
+// to a field only in error messages.
+error enum ShopError {
+    TooExpensive(i64) = "costs $$0, more than you have"
+    Missing(item: String) = "no $item in stock"
+}
+
+fun main() {
+    val price = 5
+    println("cost $5")
+    val sale = "only $9.99"
+    println(sale)
+    println("total: $price dollars, or ${price}0 cents / 10, or \$price")
+    println("$ alone, $, and 100$")
+    println("""
+        multi: $5 and \$HOME
+        name: $price
+        """)
+    println("${ShopError.TooExpensive(12)}; ${ShopError.Missing("pen")}")
+    when (sale) {
+        "only $9.99" -> println("matched the literal")
+        else -> println("no match")
+    }
+}
