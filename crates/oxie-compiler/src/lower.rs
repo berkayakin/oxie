@@ -2312,8 +2312,10 @@ impl<'a> Lowerer<'a> {
                     let mut parts: Vec<String> = Vec::new();
                     for f in fs {
                         if used.contains(&f.name) {
-                            self.bind_name(&f.name, None);
-                            parts.push(esc(&f.name));
+                            // a field named `f` is bound as `__f`, so it doesn't hide the formatter
+                            let name = if f.name == "f" { "__f" } else { &f.name };
+                            self.bind_name(name, None);
+                            parts.push(if name == f.name { esc(name) } else { format!("{}: {}", f.name, name) });
                         }
                     }
                     if parts.len() < fs.len() {
@@ -2325,7 +2327,10 @@ impl<'a> Lowerer<'a> {
             self.e.w(&format!("{} => ", pat));
             match &v.message {
                 Some(m) => {
-                    let m2 = rewrite_positional(m);
+                    let mut m2 = rewrite_positional(m);
+                    if matches!(&v.fields, VariantFields::Named(fs) if fs.iter().any(|f| f.name == "f")) {
+                        rename_ident(&mut m2, "f", "__f");
+                    }
                     self.fns.push(FnCtx { throws: false, ret: None, is_lambda: false, tries: Vec::new(), text_break: None });
                     self.write_message(&m2);
                     self.fns.pop();
@@ -2679,6 +2684,18 @@ pub(crate) fn auto_lifetimes(f: &FunDecl, self_ref: bool, lt: &dyn Fn(&str) -> u
     }
     set(f2.ret.as_mut().unwrap(), &l, lt);
     f2
+}
+
+/// Replaces the name `from` with `to` everywhere in `e`.
+fn rename_ident(e: &mut Expr, from: &str, to: &str) {
+    visit::walk_expr_mut(e, &mut |x| {
+        if let ExprKind::Path { segs, generics: None, global: false } = &mut x.kind {
+            if segs.len() == 1 && segs[0] == from {
+                segs[0] = to.to_string();
+            }
+        }
+        true
+    });
 }
 
 /// In error message templates `$0` / `${0}` refers to tuple field 0.

@@ -155,9 +155,10 @@
   `String`). A `return` at the end is just the value; one before it breaks out of the block
   that computes the text.
 * `toString` and the fields of its class: a field named `f` (`"$n/$f"`) is the field; it used
-  to be the `Formatter` that `Display` gets, which can't be formatted. A field that is the whole
-  text (`override fun toString() = name`) is written as it is; it used to be moved out of
-  `this`, which rustc rejected.
+  to be the `Formatter` that `Display` gets, which can't be formatted. The same goes for a field
+  named `f` in the message of an error enum's variant (`Missing(f: String) = "missing $f"`). A
+  field that is the whole text (`override fun toString() = name`) is written as it is; it used
+  to be moved out of `this`, which rustc rejected.
 * A labeled block (`'found: { ... }`) gets the declared type of what it initializes, as a plain
   block does, so its value is converted: `"text"` to a `String`, a value to `T?`.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix
