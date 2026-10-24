@@ -1,0 +1,46 @@
+// `toString` implements `Display`: a template is written with `write!` and a field with
+// `write_str`, other text is computed first, and a `return` before the end breaks out of the
+// block that computes it.
+
+class Point(val x: i32, val y: i32) {
+    override fun toString() = "($x, $y)"
+}
+
+// `f` is the field, not the formatter
+class Fraction(val n: i32, val f: i32) {
+    override fun toString() = "$n/$f"
+}
+
+class Person(val name: String) {
+    override fun toString() = name
+}
+
+class Size(val w: i32, val h: i32) {
+    override fun toString(): String {
+        return "${w}x$h"
+    }
+}
+
+class History(val entries: Vec<String>) {
+    override fun toString(): String {
+        val joined = entries.join("; ")
+        return "${entries.len()} entries: $joined"
+    }
+}
+
+class Report(val title: String, val items: Vec<String>) {
+    override fun toString(): String {
+        if (items.is_empty()) return "$title: empty"
+        val joined = items.join(", ")
+        return "$title: $joined"
+    }
+}
+
+fun main() {
+    println(Point(1, 2))
+    println(Fraction(1, 2))
+    println(Person("Ada".to_string()))
+    println(Size(3, 4))
+    println(History(vec["a".to_string(), "b".to_string()]))
+    println(Report("todo".to_string(), vec[]))
+}

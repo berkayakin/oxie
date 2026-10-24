@@ -1,0 +1,86 @@
+// A variant without fields is wrapped in `Some` where a `T?` is expected, like one with fields,
+// and so is a class without fields, which is its own value.
+
+enum Status {
+    Pending
+    Done
+    Paid(amount: f64)
+
+    fun next(): Status? = when (this) {
+        Pending -> Self.Done
+        Done -> null
+        Paid(_) -> Done
+    }
+}
+
+interface Named {
+    fun name(): String
+}
+
+enum Mode : Named {
+    Fast, Slow
+
+    override fun name(): String = when (this) {
+        Fast -> "fast"
+        Slow -> "slow"
+    }
+}
+
+class Job(val status: Status?)
+
+struct Marker
+
+class Anonymous : Named {
+    override fun name(): String = "anonymous"
+}
+
+fun marker(found: bool): Marker? = if (found) Marker else null
+
+fun finished(): Status? = Status.Done
+
+fun after(go: bool): Status? {
+    if (go) {
+        return Status.Done
+    }
+    return null
+}
+
+fun pick(go: bool): Status? = if (go) Status.Done else null
+
+fun parse(code: i32): Status? = when (code) {
+    0 -> Status.Pending
+    1 -> Status.Done
+    2 -> Status.Paid(9.5)
+    else -> null
+}
+
+fun show(s: Status?): String = when (s) {
+    null -> "none"
+    else -> "${s:?}"
+}
+
+fun main() {
+    println(show(finished()))
+    println("${show(after(true))} ${show(after(false))}")
+    println("${show(pick(true))} ${show(pick(false))}")
+    for (code in 0..4) println("$code: ${show(parse(code))}")
+
+    val s: Status? = Status.Done
+    var t: Status? = null
+    println("${show(s)} ${show(t)}")
+    t = Status.Pending
+    println(show(t))
+    println("${show(Status.Pending)} ${show(Some(Status.Done))} ${show(Status::Done)}")
+    println(show(Job(Status.Done).status))
+
+    val all: Vec<Status?> = vec[Status.Pending, null, Done]
+    println("${all:?}")
+    println("${show(Status.Pending.next())} ${show(Status.Done.next())} ${show(Status.Paid(1.0).next())}")
+
+    val m: Named = Mode.Slow
+    val modes: Vec<Named> = vec[Mode.Fast, m, Anonymous]
+    println(modes.iter().map { it.name() }.collect::<Vec<_>>().join(", "))
+
+    val seen: Marker? = Marker
+    println("${marker(true).is_some()} ${marker(false).is_some()} ${seen.is_some()}")
+}

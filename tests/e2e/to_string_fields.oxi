@@ -1,0 +1,39 @@
+// `toString` reads the class's fields: one named `f` is the field (not the formatter that
+// `Display` gets), and a field that is the whole text is written without moving it.
+
+class Fraction(val n: i32, val f: i32) {
+    override fun toString() = "$n/$f"
+}
+
+class Field(val f: String, val values: Vec<String>) {
+    override fun toString(): String {
+        if (values.is_empty()) return "$f: none"
+        val f = values.join(", ")
+        return "${this.f}: $f"
+    }
+}
+
+class Person(val name: String) {
+    override fun toString() = name
+}
+
+class Tag(val label: &'static str) {
+    override fun toString(): String {
+        return label
+    }
+}
+
+class Row(val cells: Vec<String>) {
+    override fun toString() = cells[0]
+}
+
+fun main() {
+    println(Fraction(1, 2))
+    println(Field("size".to_string(), vec[]))
+    println(Field("colors".to_string(), vec["red".to_string(), "blue".to_string()]))
+    val ada = Person("Ada".to_string())
+    println(ada)
+    println("${ada.name.len()} letters")
+    println(Tag("urgent"))
+    println(Row(vec["first".to_string(), "second".to_string()]))
+}

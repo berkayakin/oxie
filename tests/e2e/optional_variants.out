@@ -1,0 +1,15 @@
+Some(Done)
+Some(Done) none
+Some(Done) none
+0: Some(Pending)
+1: Some(Done)
+2: Some(Paid { amount: 9.5 })
+3: none
+Some(Done) none
+Some(Pending)
+Some(Pending) Some(Done) Some(Done)
+Some(Done)
+[Some(Pending), None, Some(Done)]
+Some(Done) none Some(Done)
+fast, slow, anonymous
+true false true
