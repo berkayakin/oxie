@@ -1,0 +1,37 @@
+class Stack<T> {
+    var items: Vec<T> = vec[]
+
+    fun push(item: T) = items.push(item)
+    fun pop(): T? = items.pop()
+    fun peek(): &T? = items.last()
+    fun size(): usize = items.len()
+    fun is_empty(): bool = items.is_empty()
+}
+
+fun <T> largest(xs: &[T]): &T? {
+    var best: &T? = null
+    for (x in xs) {
+        if (best.is_none() || x > best!!) best = x
+    }
+    best
+}
+
+fun main() {
+    var s = Stack<i32>()
+    for (n in 1..=4) s.push(n * 10)
+    println("size ${s.size()}, top ${s.peek():?}")
+    println("popped ${s.pop():?} ${s.pop():?}")
+    println("size ${s.size()}, empty ${s.is_empty()}")
+    s.pop()
+    s.pop()
+    println("pop on empty: ${s.pop():?}, empty ${s.is_empty()}")
+
+    var words = Stack<String>()
+    words.push("kiwi".to_string())
+    words.push("fig".to_string())
+    println("top word: ${words.peek() ?: "none"}")
+
+    println("largest: ${largest(&[3, 9, 2]):?} ${largest(&["pear", "apple", "plum"]):?}")
+    val empty: Vec<i32> = vec[]
+    println("largest of nothing: ${largest(&empty):?}")
+}

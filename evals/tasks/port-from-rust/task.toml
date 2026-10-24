@@ -1,0 +1,2 @@
+features = ["translating Rust", "class", "throws", "when", "toString"]
+forbids = ['\bfn\b', '\blet\b', '\bimpl\b', '\bmatch\b', '\w!\s*[(\[{]']

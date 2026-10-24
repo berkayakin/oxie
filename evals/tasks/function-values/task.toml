@@ -1,0 +1,2 @@
+features = ["lambdas", "function types", "closures that capture", "repeat"]
+requires = ['\bclass\s+Step\b', '\brepeat\s*\(']

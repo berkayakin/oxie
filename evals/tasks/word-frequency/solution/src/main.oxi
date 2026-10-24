@@ -1,0 +1,23 @@
+import std::collections::HashMap
+
+val TEXT = "The quick brown fox jumps over the lazy dog. The dog sleeps; the fox runs!"
+
+fun main() {
+    val words: Vec<String> = TEXT
+        .split_whitespace()
+        .map { it.trim_matches { c: char -> !c.is_alphanumeric() }.to_lowercase() }
+        .filter { !it.is_empty() }
+        .collect()
+
+    var counts: HashMap<String, i32> = HashMap()
+    for (w in &words) *counts.entry(w.clone()).or_insert(0) += 1
+
+    var ranked: Vec<(String, i32)> = counts.into_iter().collect()
+    ranked.sort_by { a, b -> b.1.cmp(&a.1).then(a.0.cmp(&b.0)) }
+    for ((word, n) in ranked.iter().take(3)) println("$word: $n")
+
+    println("distinct: ${ranked.len()}")
+    val longest = ranked.iter().map { it.0.clone() }.max_by { a, b -> a.len().cmp(&b.len()).then(b.cmp(a)) }
+    println("longest: ${longest ?: "-".to_string()}")
+    println("words with o: ${words.distinct().filter { it.contains('o') }.join_to_string(", ")}")
+}

@@ -1,0 +1,39 @@
+fun make_multiplier(k: i32): (i32) -> i32 = move { it * k }
+
+fun apply_twice(x: i32, f: (i32) -> i32): i32 {
+    val once = f(x)
+    f(once)
+}
+
+class Step(name: String, run: (i32) -> i32)
+
+fun main() {
+    val triple = make_multiplier(3)
+    println("triple 7 = ${triple(7)}")
+    println("twice +5 on 1 = ${apply_twice(1) { it + 5 }}")
+
+    val steps = vec[
+        Step("double", { it * 2 }),
+        Step("add ten", { x -> x + 10 }),
+        Step("square", (x: i32) => x * x),
+        Step("triple", Box.new(make_multiplier(3))),
+    ]
+    var value = 3
+    for (s in &steps) {
+        val before = value
+        value = (s.run)(value)
+        println("${s.name}: $before -> $value")
+    }
+
+    var calls = 0
+    val counted = { x: i32 ->
+        calls += 1
+        x - 1
+    }
+    var n = 10
+    repeat(3) { n = counted(n) }
+    println("n = $n after $calls calls")
+
+    val evens = (1..=10).filter { it % 2 == 0 }.map { it * it }.collect::<Vec<i32>>()
+    println("even squares: ${evens:?}, sum ${evens.iter().sum::<i32>()}")
+}

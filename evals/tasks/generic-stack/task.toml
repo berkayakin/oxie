@@ -1,0 +1,2 @@
+features = ["generic class", "generic function", "nullable results"]
+requires = ['\bclass\s+Stack\s*<', '\blargest\b']

@@ -1,0 +1,5 @@
+bob: withdraw 200 refused
+bob: withdrew 20
+alice: joint=130 savings=30
+bob: joint=130
+same account: true

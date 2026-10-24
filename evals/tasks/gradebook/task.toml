@@ -1,0 +1,2 @@
+features = ["data class", "collection operations", "string templates", "when"]
+requires = ['data\s+class']

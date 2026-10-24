@@ -1,0 +1,18 @@
+{
+  "name": "oxie",
+  "owner": {
+    "name": "oxie-lang"
+  },
+  "metadata": {
+    "description": "Claude Code support for the Oxie programming language"
+  },
+  "plugins": [
+    {
+      "name": "oxie",
+      "description": "Teaches Claude Code to write Oxie from the guide the installed oxie command prints for its own version",
+      "source": "./",
+      "strict": false,
+      "skills": ["./skills/oxie"]
+    }
+  ]
+}

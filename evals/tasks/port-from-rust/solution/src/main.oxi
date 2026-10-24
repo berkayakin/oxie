@@ -1,0 +1,61 @@
+enum Token {
+    Num(f64)
+    Op(char)
+}
+
+class Calculator {
+    var stack: Vec<f64> = vec[]
+    var history: Vec<String> = vec[]
+
+    fun eval(input: &str): f64 throws String {
+        stack.clear()
+        for (tok in tokenize(input)?) {
+            when (tok) {
+                Num(n) -> stack.push(n)
+                Op(op) -> {
+                    val b = stack.pop() ?: throw "stack underflow"
+                    val a = stack.pop() ?: throw "stack underflow"
+                    val r = when (op) {
+                        '+' -> a + b
+                        '-' -> a - b
+                        '*' -> a * b
+                        '/' -> {
+                            if (b == 0.0) throw "division by zero"
+                            a / b
+                        }
+                        else -> unreachable()
+                    }
+                    stack.push(r)
+                }
+            }
+        }
+        val result = stack.pop() ?: throw "empty expression"
+        if (!stack.is_empty()) throw "${stack.len()} values left over"
+        history.push("$input = $result")
+        result
+    }
+
+    override fun toString() = "${history.len()} calculations: ${history.join("; ")}"
+}
+
+fun tokenize(input: &str): Vec<Token> throws String {
+    var tokens = vec[]
+    for (w in input.split_whitespace()) {
+        tokens.push(when (w) {
+            "+", "-", "*", "/" -> Token.Op(w.chars().next().unwrap())
+            else -> Token.Num(w.parse().map_err { "bad token '$w'" }?)
+        })
+    }
+    tokens
+}
+
+fun main() {
+    var calc = Calculator()
+    for (input in ["3 4 +", "5 1 2 + 4 * + 3 -", "2 0 /", "1 +", "2 x *", "1 2", "10 4 /"]) {
+        when (val r = calc.eval(input)) {
+            Ok(v) -> println("$input => $v")
+            Err(e) -> println("$input => error: $e")
+        }
+    }
+    println(calc)
+}

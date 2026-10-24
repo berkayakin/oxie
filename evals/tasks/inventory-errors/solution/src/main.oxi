@@ -1,0 +1,32 @@
+import std::collections::HashMap
+
+error enum InventoryError {
+    Unknown(item: String) = "unknown item '$item'"
+    NotEnough(item: String, wanted: u32, have: u32) = "not enough $item: wanted $wanted, have $have"
+}
+
+fun take(stock: &mut HashMap<String, u32>, item: &str, qty: u32): u32 throws InventoryError {
+    val have = stock.get_mut(item) ?: throw InventoryError.Unknown(item.to_string())
+    if (*have < qty) throw InventoryError.NotEnough(item.to_string(), qty, *have)
+    *have -= qty
+    *have
+}
+
+fun main() {
+    var stock = mapOf("apple".to_string() to 5u32, "pear".to_string() to 2, "plum".to_string() to 0)
+    val orders = vec[("apple", 3), ("pear", 5), ("kiwi", 1), ("apple", 2), ("apple", 1)]
+    for ((item, qty) in orders) {
+        when (val r = take(stock, item, qty)) {
+            Ok(left) -> println("$item x$qty: ok, $left left")
+            Err(e) -> println("$item x$qty: error: $e")
+        }
+    }
+    try {
+        take(stock, "pear", 1)?
+        take(stock, "plum", 1)?
+        println("both taken")
+    } catch (e: InventoryError) {
+        println("batch stopped: $e")
+    }
+    println("left: ${stock.values().sum::<u32>()}")
+}

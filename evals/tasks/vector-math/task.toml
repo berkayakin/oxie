@@ -1,0 +1,2 @@
+features = ["data class", "operator overloading", "extension function", "toString"]
+requires = ['data\s+class\s+Vec2', '\boperator\s+fun\b', '\bfun\s+f64\.deg_to_rad\b']

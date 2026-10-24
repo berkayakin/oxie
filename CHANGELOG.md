@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+* `oxie guide` prints a guide to writing Oxie, for AI coding agents and people: how to work with
+  the compiler, the language at a glance, how it differs from Kotlin and from Rust, and the usual
+  mistakes. `oxie guide <topic>` prints a page of the documentation (`oxie guide topics` lists
+  them). Both are built into the binary, so they describe the installed version.
+* `oxie new` and `oxie init` write an `AGENTS.md` that tells agents to read `oxie guide`. It
+  states no language rules, so it stays right when Oxie changes.
+* `oxie build`, `run`, `check`, `test` and `guide` warn when the project builds with another
+  `oxie-build` version than the installed `oxie`, and say how to make the two match.
+* A Claude Code skill in `skills/oxie`, installable as a plugin from this repository
+  (`claude plugin install oxie --marketplace oxie-lang/oxie`), and `evals/`, which measures how
+  well models write Oxie with and without it.
 * A documentation site at [oxie.bkymz.net](https://oxie.bkymz.net), generated from `docs/`: every
   example shows the Rust that `oxie emit` produces for it and its output, kept current by the tests.
 * Panics point at the `.oxi` source: `oxie run` and `oxie test` rewrite the location of a

@@ -1,0 +1,29 @@
+import std::f64::consts::PI
+
+interface Shape {
+    fun name(): String
+    fun area(): f64
+    fun describe(): String = "${name()} with area ${area():.2}"
+}
+
+class Circle(radius: f64) : Shape {
+    override fun name() = "circle"
+    override fun area() = PI * radius * radius
+}
+
+class Rectangle(width: f64, height: f64) : Shape {
+    override fun name() = "rectangle"
+    override fun area() = width * height
+}
+
+class Triangle(base: f64, height: f64) : Shape {
+    override fun name() = "triangle"
+    override fun area() = 0.5 * base * height
+}
+
+fun main() {
+    var shapes: Vec<Shape> = vec[Circle(1.5), Rectangle(2.0, 3.5), Triangle(4.0, 2.5)]
+    shapes.sort_by { a, b -> a.area().total_cmp(&b.area()) }
+    for (s in &shapes) println(s.describe())
+    println("total area: ${shapes.sum_of { it.area() }:.2}")
+}

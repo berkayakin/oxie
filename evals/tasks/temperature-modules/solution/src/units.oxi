@@ -1,0 +1,5 @@
+data class Celsius(value: f64) {
+    fun to_fahrenheit(): f64 = value * 9.0 / 5.0 + 32.0
+
+    override fun toString() = "${value:.1}C"
+}

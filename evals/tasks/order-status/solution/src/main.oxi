@@ -1,0 +1,55 @@
+enum Status {
+    Pending
+    Paid(amount: f64)
+    Shipped(tracking: String)
+    Delivered
+    Cancelled(reason: String)
+
+    fun label(): String = when (this) {
+        Pending -> "pending"
+        Paid(amount) -> "paid ${amount:.2}"
+        Shipped(tracking) -> "shipped ($tracking)"
+        Delivered -> "delivered"
+        Cancelled(reason) -> "cancelled: $reason"
+    }
+
+    fun is_final(): bool = this is Delivered || this is Cancelled(_)
+}
+
+enum Event {
+    Pay(amount: f64)
+    Ship(tracking: String)
+    Deliver
+    Cancel(reason: String)
+}
+
+fun next(status: &Status, event: &Event): Status? = when ((status, event)) {
+    (Status.Pending, Event.Pay(amount)) -> Status.Paid(*amount)
+    (Status.Pending, Event.Cancel(reason)) -> Status.Cancelled(reason.clone())
+    (Status.Paid(_), Event.Ship(tracking)) -> Status.Shipped(tracking.clone())
+    (Status.Paid(_), Event.Cancel(reason)) -> Status.Cancelled("refund: $reason")
+    (Status.Shipped(_), Event.Deliver) -> Some(Status.Delivered)
+    else -> null
+}
+
+fun main() {
+    val events = vec[
+        Event.Ship("X1"),
+        Event.Pay(25.5),
+        Event.Ship("TRK-42"),
+        Event.Cancel("changed my mind"),
+        Event.Deliver,
+        Event.Pay(1.0),
+    ]
+    var status = Status.Pending
+    println("start: ${status.label()}")
+    for (e in &events) {
+        if (val s = next(&status, e)) {
+            status = s
+            println("-> ${status.label()}")
+        } else {
+            println("ignored ${e:?} while ${status.label()}")
+        }
+    }
+    println("final: ${status.is_final()}")
+}

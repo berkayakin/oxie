@@ -1,0 +1,2 @@
+features = ["reading compiler errors", "Kotlin habits", "ranges", "borrowing"]
+requires = ['data\s+class\s+Item', '\bfun\s+total\b']

@@ -1,0 +1,8 @@
+triple 7 = 21
+twice +5 on 1 = 11
+double: 3 -> 6
+add ten: 6 -> 16
+square: 16 -> 256
+triple: 256 -> 768
+n = 7 after 3 calls
+even squares: [4, 16, 36, 64, 100], sum 220

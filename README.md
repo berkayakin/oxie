@@ -204,13 +204,14 @@ oxie run dice.oxi
 
 | Command | What it does |
 |---|---|
-| `oxie new <name> [--lib]` | Create a project (`Cargo.toml`, `build.rs`, `src/main.oxi`) |
+| `oxie new <name> [--lib]` | Create a project (`Cargo.toml`, `build.rs`, `src/main.oxi`, `AGENTS.md`) |
 | `oxie run [file.oxi] [-- args]` | Build and run the project or a script |
 | `oxie build` / `oxie check` | Build / type-check |
 | `oxie test [name]` | Run `test "name" { }` blocks |
 | `oxie fmt [--check]` | Format `.oxi` files |
 | `oxie emit file.oxi [--annotate]` | Show the generated Rust (`--annotate` marks each statement's `.oxi` line) |
 | `oxie from-rust file.rs` | Translate Rust to Oxie |
+| `oxie guide [topic]` | The guide to writing this version of Oxie, for people and AI agents |
 | `oxie lsp` | Language server for editors |
 
 Compiler errors — Oxie's own and rustc's — point at your `.oxi` lines:
@@ -266,6 +267,21 @@ Differences are within timing noise. See [docs/performance.md](docs/performance.
 * **Grammars**: tree-sitter in [`editors/tree-sitter-oxie`](editors/tree-sitter-oxie), TextMate
   in [`editors/vscode-oxie/syntaxes`](editors/vscode-oxie/syntaxes).
 
+## AI coding agents
+
+Models know little about Oxie, and what they know may describe an older version. `oxie guide`
+prints a guide to writing the installed version: how to work with the compiler, how Oxie
+differs from Kotlin and Rust, and the usual mistakes. The `AGENTS.md` that `oxie new` writes tells
+agents to read it. Neither a project nor an agent's setup holds language rules of its own, so
+updating Oxie updates what agents learn. Claude Code also has a skill that does this for any
+Oxie work:
+
+```bash
+claude plugin install oxie --marketplace oxie-lang/oxie
+```
+
+[`evals/`](evals) measures how well models write Oxie with and without this help.
+
 ## Documentation
 
 The documentation is published at [oxie.bkymz.net](https://oxie.bkymz.net), where every example
@@ -292,9 +308,11 @@ from Rust, and a Rust program with Oxie modules.
 ```
 crates/oxie-compiler   lexer, parser, semantic analysis, lowering to Rust, formatter
 crates/oxie-build      build.rs helper used by Oxie projects
-crates/oxie-cli        the `oxie` command and language server
+crates/oxie-cli        the `oxie` command and language server (guide/: what `oxie guide` prints)
 crates/oxie-from-rust  Rust → Oxie translator (`oxie from-rust`)
 editors/              tree-sitter grammar, Kuana and VS Code extensions
+skills/oxie/          Claude Code skill, which sends agents to `oxie guide`
+evals/                measures how well models write Oxie, with and without the skill
 examples/             example projects (also run by the test suite)
 bench/                Oxie vs Rust benchmarks
 tests/                end-to-end and diagnostics tests

@@ -1,0 +1,3 @@
+features = ["test blocks", "when", "ranges"]
+requires = ['\btest\s+"']
+tests = 4

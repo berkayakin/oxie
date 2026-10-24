@@ -1,0 +1,8 @@
+start: pending
+ignored Ship { tracking: "X1" } while pending
+-> paid 25.50
+-> shipped (TRK-42)
+ignored Cancel { reason: "changed my mind" } while shipped (TRK-42)
+-> delivered
+ignored Pay { amount: 1.0 } while delivered
+final: true

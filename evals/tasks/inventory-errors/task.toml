@@ -1,0 +1,2 @@
+features = ["error enum", "throws", "try/catch", "HashMap"]
+requires = ['error\s+enum\s+InventoryError', '\bthrows\b', '\btry\s*\{', '\bcatch\b']

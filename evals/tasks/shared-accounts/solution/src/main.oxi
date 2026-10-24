@@ -1,0 +1,39 @@
+shared class Account(name: String, var balance: i64 = 0) {
+    fun deposit(amount: i64) {
+        balance += amount
+    }
+
+    fun withdraw(amount: i64): bool {
+        if (amount > balance) return false
+        balance -= amount
+        true
+    }
+}
+
+class Customer(name: String) {
+    var accounts: Vec<Account> = vec[]
+
+    fun open(account: Account) = accounts.push(account)
+
+    fun summary(): String = "$name: " + accounts.map { "${it.name()}=${it.balance()}" }.join_to_string(" ")
+}
+
+fun main() {
+    val joint = Account("joint")
+    val savings = Account("savings")
+    var alice = Customer("alice")
+    var bob = Customer("bob")
+    alice.open(joint)
+    alice.open(savings)
+    bob.open(joint)
+
+    alice.accounts[0].deposit(100)
+    bob.accounts[0].deposit(50)
+    if (!bob.accounts[0].withdraw(200)) println("bob: withdraw 200 refused")
+    if (bob.accounts[0].withdraw(20)) println("bob: withdrew 20")
+    savings.deposit(30)
+
+    println(alice.summary())
+    println(bob.summary())
+    println("same account: ${alice.accounts[0] == bob.accounts[0]}")
+}

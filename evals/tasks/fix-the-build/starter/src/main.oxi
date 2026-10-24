@@ -1,0 +1,22 @@
+data class Item(name: String, price: Double, qty: Int)
+
+fun total(items: List<Item>): Double {
+    var sum = 0.0
+    for (item in items) {
+        sum += item.price * item.qty
+    }
+    return sum
+}
+
+fun main() {
+    val items = listOf(Item("pen", 1.5, 4), Item("book", 12.0, 1), Item("bag", 25.0, 1))
+    val cheap = items.filter { it.price < 10.0 }
+    println("cheap: ${cheap.size}")
+    val names = items.map { it.name.toUpperCase() }
+    println(names.joinToString(", "))
+    val count = 0
+    for (i in 1..items.size) count += 1
+    println("items: $count")
+    println("total: ${total(items)}")
+    println("first: ${items[0].name}")
+}

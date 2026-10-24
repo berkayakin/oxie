@@ -1,0 +1,8 @@
+3 4 + => 7
+5 1 2 + 4 * + 3 - => 14
+2 0 / => error: division by zero
+1 + => error: stack underflow
+2 x * => error: bad token 'x'
+1 2 => error: 1 values left over
+10 4 / => 2.5
+3 calculations: 3 4 + = 7; 5 1 2 + 4 * + 3 - = 14; 10 4 / = 2.5

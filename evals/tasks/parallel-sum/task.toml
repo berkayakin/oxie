@@ -1,0 +1,2 @@
+features = ["@sync shared class", "threads", "capture lists"]
+requires = ['@sync\s+shared\s+class', '\bspawn\b']

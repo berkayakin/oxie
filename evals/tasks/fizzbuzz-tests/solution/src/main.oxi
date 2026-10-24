@@ -1,0 +1,28 @@
+fun fizzbuzz(n: i32): String = when {
+    n % 15 == 0 -> "FizzBuzz".to_string()
+    n % 3 == 0 -> "Fizz".to_string()
+    n % 5 == 0 -> "Buzz".to_string()
+    else -> n.to_string()
+}
+
+test "plain numbers stay numbers" {
+    assert_eq(fizzbuzz(1), "1")
+    assert_eq(fizzbuzz(7), "7")
+}
+
+test "multiples of three are Fizz" {
+    assert_eq(fizzbuzz(3), "Fizz")
+    assert_eq(fizzbuzz(9), "Fizz")
+}
+
+test "multiples of five are Buzz" {
+    assert_eq(fizzbuzz(10), "Buzz")
+}
+
+test "multiples of fifteen are FizzBuzz" {
+    assert_eq(fizzbuzz(30), "FizzBuzz")
+}
+
+fun main() {
+    println((1..=15).map { fizzbuzz(it) }.collect::<Vec<_>>().join(" "))
+}
