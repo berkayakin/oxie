@@ -1,4 +1,5 @@
-// A variant without fields is wrapped in `Some` where a `T?` is expected, like one with fields.
+// A variant without fields is wrapped in `Some` where a `T?` is expected, like one with fields,
+// and so is a class without fields, which is its own value.
 
 enum Status {
     Pending
@@ -26,6 +27,14 @@ enum Mode : Named {
 }
 
 class Job(val status: Status?)
+
+struct Marker
+
+class Anonymous : Named {
+    override fun name(): String = "anonymous"
+}
+
+fun marker(found: bool): Marker? = if (found) Marker else null
 
 fun finished(): Status? = Status.Done
 
@@ -69,6 +78,9 @@ fun main() {
     println("${show(Status.Pending.next())} ${show(Status.Done.next())} ${show(Status.Paid(1.0).next())}")
 
     val m: Named = Mode.Slow
-    val modes: Vec<Named> = vec[Mode.Fast, m]
+    val modes: Vec<Named> = vec[Mode.Fast, m, Anonymous]
     println(modes.iter().map { it.name() }.collect::<Vec<_>>().join(", "))
+
+    val seen: Marker? = Marker
+    println("${marker(true).is_some()} ${marker(false).is_some()} ${seen.is_some()}")
 }

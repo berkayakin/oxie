@@ -2026,8 +2026,8 @@ impl<'a> Lowerer<'a> {
         self.e.w("fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {");
         self.e.indent();
         self.e.nl();
+        // the formatter `f` isn't bound: a field `f` of the class is still the field
         self.push_scope();
-        self.bind_name("f", None);
         let text_break = matches!(f.body, Some(FunBody::Block(_))).then_some(false);
         self.fns.push(FnCtx { throws: false, ret: Some(Type::simple("String")), is_lambda: false, tries: Vec::new(), text_break });
         let single = match &f.body {
@@ -2039,14 +2039,20 @@ impl<'a> Lowerer<'a> {
             },
             _ => None,
         };
-        match single.as_ref().map(|e| &e.kind) {
-            Some(ExprKind::Template(parts)) => {
+        match single.as_ref() {
+            Some(Expr { kind: ExprKind::Template(parts), .. }) => {
                 self.e.w("write!(f, ");
                 self.format_args(parts);
                 self.e.w(")");
             }
-            Some(ExprKind::Str(parts)) => {
+            Some(Expr { kind: ExprKind::Str(parts), .. }) => {
                 self.e.w(&format!("f.write_str(\"{}\")", lit_parts(parts)));
+            }
+            // `toString() = name` writes the field, which a `String` result would move out of `self`
+            Some(e) if self.is_place(e) => {
+                self.e.w("f.write_str(&");
+                self.expr(e, P_UNARY);
+                self.e.w(")");
             }
             _ => {
                 self.e.w("let __oxie_s: String = ");

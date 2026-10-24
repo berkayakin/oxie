@@ -950,8 +950,8 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Constructor calls: `Point(1, 2)`, `Shape.Circle(1.0)`, `Point { .. }`, and variants
-    /// without fields: `Status.Done`.
+    /// Constructor calls: `Point(1, 2)`, `Shape.Circle(1.0)`, `Point { .. }`, and variants and
+    /// classes without fields: `Status.Done`, `Marker`.
     fn is_constructed_value(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::StructLit { .. } => true,
@@ -965,9 +965,23 @@ impl<'a> Lowerer<'a> {
             ExprKind::MethodCall { recv, name, .. } => {
                 is_type_like(name) && matches!(self.as_path(recv), Some((_, PathKind::Type)))
             }
-            ExprKind::Path { .. } | ExprKind::Field { .. } => self.is_unit_variant(e),
+            ExprKind::Path { .. } | ExprKind::Field { .. } => self.is_unit_variant(e) || self.is_unit_class_value(e),
             _ => false,
         }
+    }
+
+    /// A class without fields, which is its own value: `Marker`, `shapes.Marker`.
+    fn is_unit_class_value(&self, e: &Expr) -> bool {
+        let path = match &e.kind {
+            ExprKind::Path { segs, generics: None, global: false } if segs.len() == 1 && (self.is_local(&segs[0]) || self.implicit_field(&segs[0]).is_some()) => return false,
+            ExprKind::Path { segs, generics: None, .. } => segs.clone(),
+            ExprKind::Field { .. } => match self.as_path(e) {
+                Some((p, PathKind::Type)) => p,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        self.class_at(&path).is_some_and(|c| c.is_unit)
     }
 
     /// A variant without fields: `Status.Done`, `Self.Done`, `shapes.Status.Done`, or `Done`

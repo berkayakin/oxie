@@ -27,6 +27,46 @@ impl ::std::fmt::Display for Point {
     }
 }
 
+pub(crate) struct Fraction {
+    pub(crate) n: i32,
+    pub(crate) f: i32,
+}
+
+impl Fraction {
+    #[allow(dead_code)]
+    pub(crate) fn new(n: i32, f: i32) -> Self {
+        Self {
+            n,
+            f,
+        }
+    }
+}
+
+impl ::std::fmt::Display for Fraction {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        write!(f, "{}/{}", self.n, self.f)
+    }
+}
+
+pub(crate) struct Person {
+    pub(crate) name: String,
+}
+
+impl Person {
+    #[allow(dead_code)]
+    pub(crate) fn new(name: String) -> Self {
+        Self {
+            name,
+        }
+    }
+}
+
+impl ::std::fmt::Display for Person {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 pub(crate) struct Size {
     pub(crate) w: i32,
     pub(crate) h: i32,
@@ -101,6 +141,8 @@ impl ::std::fmt::Display for Report {
 
 fn main() {
     println!("{}", Point::new(1, 2));
+    println!("{}", Fraction::new(1, 2));
+    println!("{}", Person::new("Ada".to_string()));
     println!("{}", Size::new(3, 4));
     println!("{}", History::new(vec!["a".to_string(), "b".to_string()]));
     println!("{}", Report::new("todo".to_string(), vec![]));

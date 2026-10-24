@@ -11,4 +11,5 @@ Some(Pending) Some(Done) Some(Done)
 Some(Done)
 [Some(Pending), None, Some(Done)]
 Some(Done) none Some(Done)
-fast, slow
+fast, slow, anonymous
+true false true
