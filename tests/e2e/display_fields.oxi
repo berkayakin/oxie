@@ -1,5 +1,6 @@
-// `toString` reads the class's fields: one named `f` is the field (not the formatter that
-// `Display` gets), and a field that is the whole text is written without moving it.
+// `toString` and error messages read their fields: one named `f` is the field (not the
+// formatter that `Display` gets), and a field that is the whole text is written without moving
+// it.
 
 class Fraction(val n: i32, val f: i32) {
     override fun toString() = "$n/$f"
@@ -27,6 +28,13 @@ class Row(val cells: Vec<String>) {
     override fun toString() = cells[0]
 }
 
+error enum FileError {
+    Missing(f: String) = "missing $f"
+    Range(path: String, f: i32) = "$path: line ${f + 1}"
+}
+
+error class Locked(f: String, by: String) = "$f is locked by $by"
+
 fun main() {
     println(Fraction(1, 2))
     println(Field("size".to_string(), vec[]))
@@ -36,4 +44,7 @@ fun main() {
     println("${ada.name.len()} letters")
     println(Tag("urgent"))
     println(Row(vec["first".to_string(), "second".to_string()]))
+    println(FileError.Missing("notes.txt".to_string()))
+    println(FileError.Range("main.oxi".to_string(), 41))
+    println(Locked("todo.txt".to_string(), "ada".to_string()))
 }

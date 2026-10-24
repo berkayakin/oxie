@@ -163,9 +163,27 @@
   `String`). A `return` at the end is just the value; one before it breaks out of the block
   that computes the text.
 * `toString` and the fields of its class: a field named `f` (`"$n/$f"`) is the field; it used
-  to be the `Formatter` that `Display` gets, which can't be formatted. A field that is the whole
-  text (`override fun toString() = name`) is written as it is; it used to be moved out of
-  `this`, which rustc rejected.
+  to be the `Formatter` that `Display` gets, which can't be formatted. The same goes for a field
+  named `f` in the message of an error enum's variant (`Missing(f: String) = "missing $f"`). A
+  field that is the whole text (`override fun toString() = name`) is written as it is; it used
+  to be moved out of `this`, which rustc rejected.
+* A field that a `toString` gives without being all of it (`return name` after other
+  statements, `if (short) nick else name`) needs `.clone()`, as in any method that returns a
+  `String`, and the error now offers only that. It used to offer the fix `return &name` too,
+  which doesn't compile.
+* A field of `this` that can't be moved out (`return name` in a method that returns a `String`)
+  gets rustc's `.clone()` as a quick fix: `return name.clone()`. It used to be only a note,
+  because the end of the generated `self.name` didn't map onto `name` (or onto `this.name`). An
+  element taken out of a list (`fun first(): String = items[0]`) gets `items[0].clone()` too,
+  where rustc suggests `<String as Clone>::clone(&...)`, which isn't Oxie.
+* That error names the element and its list: "can't take `items[0]` out of `items`", because a
+  list keeps its elements and indexing only reaches one where it is. It used to say "can't take
+  `Vec<String>` out of a value that is only borrowed", which named the type, and gave a reason
+  that doesn't hold for a list nothing borrows.
+* Errors about a field of `this` (moved, borrowed while it changes, taken out of a borrow) name
+  it as the code does at each place: "`items` can't be changed while it is borrowed", or
+  `this.items` where the code spells out `this`, instead of Rust's `self.items`. rustc's own
+  message, on the last line, keeps its wording.
 * A labeled block (`'found: { ... }`) gets the declared type of what it initializes, as a plain
   block does, so its value is converted: `"text"` to a `String`, a value to `T?`.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix

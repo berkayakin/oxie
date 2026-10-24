@@ -9,9 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::cargo::{Edit, Fix, Label, MappedDiag};
+use crate::cargo::{Edit, Fix, Label, MappedDiag, Suggestion};
 use crate::sources::Sources;
-use oxie_compiler::ast::{Block, Cond, Expr, ExprKind, File, FunDecl, Item, ItemKind, Pat, Stmt, Type, TypeDecl, UnOp};
+use oxie_compiler::ast::{Block, Cond, Expr, ExprKind, File, FunBody, FunDecl, Item, ItemKind, Pat, Stmt, Type, TypeDecl, UnOp};
 use oxie_compiler::diag::Span;
 
 pub fn explain(d: &mut MappedDiag, sources: &Sources) {
@@ -31,9 +31,28 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
         "E0596" => borrow_mut(d, sources, &lines, &first),
         "E0499" | "E0502" | "E0505" | "E0506" => borrow_conflict(d, sources, &lines, &first, &code),
         "E0507" => {
-            rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
+            let at = byte_offset(src, d.line, d.col) as u32;
+            // `items[0]` (rustc: "cannot move out of index of `Vec<String>`") stays in the list,
+            // whether the list is borrowed or not
+            let reason = if d.message.starts_with("cannot move out of index of") {
+                let (element, list) = match indexed_at(&here.ast().items, src, at) {
+                    Some((element, list)) => (format!("`{}`", element), format!("`{}`", list)),
+                    None => ("an element".to_string(), describe(&first)),
+                };
+                rewrite(d, format!("can't take {} out of {}", element, list));
+                format!("{} keeps its elements, and indexing only reaches one where it is, so it can't be moved out.", list)
+            } else {
+                rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
+                "the value belongs to something you only borrowed, so it can't be moved out.".to_string()
+            };
             d.notes.retain(|n| !n.contains("`mut "));
-            d.notes.push(help("the value belongs to something you only borrowed, so it can't be moved out. Take a copy with `.clone()`, or borrow it with `&`."));
+            // rustc offers `&` because `Display` puts the text in a `String` variable, as for a
+            // `val`, but the text of a `toString` can't be a reference
+            if is_to_string_text(&here.ast().items, at) {
+                d.notes.retain(|n| !n.starts_with("help: consider borrowing here"));
+                d.suggestions.retain(|s| s.replacement != "&");
+            }
+            d.notes.push(help(&format!("{} Take a copy with `.clone()`, or borrow it with `&`.", reason)));
         }
         "E0373" => lambda_outlives(d, &lines, &names),
         "E0597" => {
@@ -73,6 +92,30 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
     d.secondary.retain(|s| s.exact && !s.text.is_empty());
     d.notes.retain(|n| !n.contains("in format strings you may be able to use"));
     generated_names(d);
+    field_names(d, sources);
+}
+
+/// rustc names `this` and its fields as Rust does (`self.items`, `*self`); messages, labels,
+/// notes and fix titles name them as the code does at their position (see `oxie_place`).
+fn field_names(d: &mut MappedDiag, sources: &Sources) {
+    let written = |file: &Path, line: u32, col: u32| -> String { sources.file(file).and_then(|f| f.lines().get(line as usize).map(|l| l.chars().skip(col as usize).collect())).unwrap_or_default() };
+    let here = written(&d.file, d.line, d.col);
+    d.message = oxie_places(&d.message, &here);
+    d.label = d.label.take().map(|l| oxie_places(&l, &here));
+    for n in d.notes.iter_mut().filter(|n| !n.starts_with("rustc: ")) {
+        *n = oxie_places(n, &here);
+    }
+    for f in &mut d.fixes {
+        f.title = oxie_places(&f.title, &here);
+    }
+    for s in &mut d.secondary {
+        s.text = oxie_places(&s.text, &written(s.file.as_deref().unwrap_or(&d.file), s.line, s.col));
+    }
+}
+
+/// `text` with each place of `this` between backticks in Oxie's words.
+fn oxie_places(text: &str, written: &str) -> String {
+    text.split('`').enumerate().map(|(i, s)| if i % 2 == 1 { oxie_place(s, written).unwrap_or_else(|| s.to_string()) } else { s.to_string() }).collect::<Vec<_>>().join("`")
 }
 
 /// `main() throws` is generated as `__oxie_main` (called from a plain `main`); messages call
@@ -1404,11 +1447,81 @@ fn elvis_default_at(src: &str, line: u32, col: u32) -> Option<(String, String)> 
     found
 }
 
+/// Is the expression at `offset` the text of a `toString`: a value its body is or ends with, or
+/// one that a `return` gives?
+fn is_to_string_text(items: &[Item], offset: u32) -> bool {
+    for it in items.iter().filter(|it| it.span.start <= offset && offset <= it.span.end) {
+        match &it.kind {
+            ItemKind::Fun(f) if (f.name == "toString" || f.name == "to_string") && f.mods.is_override => {
+                let mut starts = Vec::new();
+                match &f.body {
+                    Some(FunBody::Expr(e)) => values(e, &mut starts),
+                    Some(FunBody::Block(b)) => {
+                        block_values(b, &mut starts);
+                        oxie_compiler::visit::walk_block(b, &mut |e| match &e.kind {
+                            // a `return` in a lambda gives the lambda's value
+                            ExprKind::Lambda { .. } => false,
+                            ExprKind::Return(Some(v)) => {
+                                values(v, &mut starts);
+                                true
+                            }
+                            _ => true,
+                        });
+                    }
+                    None => {}
+                }
+                return starts.contains(&offset);
+            }
+            ItemKind::Type(t) => return is_to_string_text(&t.members, offset),
+            ItemKind::Impl(i) => return is_to_string_text(&i.members, offset),
+            ItemKind::Mod { items, .. } | ItemKind::Object { items, .. } => return is_to_string_text(items, offset),
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Where the values a block ends with start (both branches of an `if` and every arm of a `when`).
+fn block_values(b: &Block, out: &mut Vec<u32>) {
+    if let Some(Stmt::Expr { expr, semi: false }) = b.stmts.last() {
+        values(expr, out);
+    }
+}
+
+fn values(e: &Expr, out: &mut Vec<u32>) {
+    match &e.kind {
+        ExprKind::If { then, else_: Some(el), .. } => {
+            block_values(then, out);
+            values(el, out);
+        }
+        ExprKind::When { arms, .. } => arms.iter().for_each(|a| values(&a.body, out)),
+        ExprKind::Block(b) => block_values(b, out),
+        ExprKind::Paren(x) => values(x, out),
+        _ => out.push(e.span.start),
+    }
+}
+
 /// The byte offset of a zero-based line and character column.
 fn byte_offset(src: &str, line: u32, col: u32) -> usize {
     let start: usize = src.split_inclusive('\n').take(line as usize).map(str::len).sum();
     let rest = src.get(start..).unwrap_or("");
     start + rest.char_indices().nth(col as usize).map_or(rest.len(), |(i, _)| i)
+}
+
+/// The text of the index expression starting at `offset` and of its list (`items[0]`, `items`):
+/// the outermost one, for `rows[0][1]`.
+fn indexed_at(items: &[Item], src: &str, offset: u32) -> Option<(String, String)> {
+    let mut found = None;
+    oxie_compiler::visit::walk_items(items, &mut |e| {
+        if let ExprKind::Index(list, _) = &e.kind {
+            if found.is_none() && e.span.start == offset {
+                found = Some((e.span, list.span));
+            }
+        }
+        true
+    });
+    let (element, list) = found?;
+    Some((source_text(src, element)?, source_text(src, list)?))
 }
 
 /// The source text of a span on one line.
@@ -1498,14 +1611,56 @@ fn rustc_fixes(d: &mut MappedDiag, lines: &[&str]) {
     // one that edits several places (`Box::new(` and `)`), when each part reads as Oxie: its note
     // can't show the code in one piece, so it becomes the fix's title
     for m in d.multipart.clone() {
+        let same_place = |d: &MappedDiag, edits: &[Edit]| d.fixes.iter().any(|f| f.edits.iter().any(|x| edits.iter().any(|e| (x.line, x.col) == (e.line, e.col))));
+        if let Some(edits) = clone_call(&m.parts, lines) {
+            if !same_place(d, &edits) {
+                d.fixes.push(Fix { title: "use a copy (`.clone()`)".into(), edits });
+            }
+            continue;
+        }
         let edits: Option<Vec<Edit>> = m.parts.iter().map(|p| Some(Edit { file: None, line: p.line, col: p.col, end_line: p.end_line, end_col: p.end_col, text: oxie_code(&p.replacement)? })).collect();
         let Some(edits) = edits else { continue };
-        if d.fixes.iter().any(|f| f.edits.iter().any(|x| edits.iter().any(|e| (x.line, x.col) == (e.line, e.col)))) {
+        if same_place(d, &edits) {
             continue;
         }
         d.notes.retain(|n| n.strip_prefix("help: ") != Some(m.message.as_str()));
         d.fixes.push(Fix { title: oxie_terms(&m.message), edits });
     }
+}
+
+/// rustc's `<String as Clone>::clone(&` and `)` around a value, in Oxie: `.clone()` after the
+/// value, which is put in parentheses unless the call applies to all of it (`items[0]`).
+fn clone_call(parts: &[Suggestion], lines: &[&str]) -> Option<Vec<Edit>> {
+    let [open, close] = parts else { return None };
+    if !(open.replacement.starts_with('<') && open.replacement.ends_with(" as Clone>::clone(&") && close.replacement == ")" && open.line == close.line) {
+        return None;
+    }
+    let line = lines.get(open.line as usize)?;
+    let value: String = line.chars().skip(open.end_col as usize).take(close.col.checked_sub(open.end_col)? as usize).collect();
+    if value.is_empty() {
+        return None;
+    }
+    Some(if postfix_ok(&value) {
+        vec![edit(close.line, close.col, close.end_col, ".clone()")]
+    } else {
+        vec![edit(open.line, open.col, open.end_col, "("), edit(close.line, close.col, close.end_col, ").clone()")]
+    })
+}
+
+/// Does a method call after this code apply to all of it: a name, field, index, call or
+/// parenthesized value (`this.items[i + 1]`, `(a + b)`), not `*x` or `a + b`?
+fn postfix_ok(code: &str) -> bool {
+    let mut depth = 0;
+    for c in code.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            _ if depth > 0 => {}
+            c if is_ident_char(c) || c == '.' => {}
+            _ => return false,
+        }
+    }
+    depth == 0
 }
 
 /// A part of a rustc suggestion as Oxie, when it reads the same apart from paths through a type
@@ -1572,6 +1727,22 @@ fn span_edit(src: &str, span: Span, text: &str) -> Edit {
     let idx = oxie_compiler::LineIndex::new(src);
     let ((l, c), (el, ec)) = (idx.line_col(src, span.start as usize), idx.line_col(src, span.end as usize));
     Edit { file: None, line: l as u32, col: c as u32, end_line: el as u32, end_col: ec as u32, text: text.to_string() }
+}
+
+/// A place of `this` as rustc names it (`self.name`, `*self`) in the words of the Oxie code
+/// `written` at its position: a field is `name`, or `this.name` where the code spells out
+/// `this` (after a `&`, `&mut` or `*`). None for other places.
+fn oxie_place(place: &str, written: &str) -> Option<String> {
+    let place = place.trim_start_matches('*');
+    // `init` blocks build the object as `__self`
+    let rest = place.strip_prefix("self").or_else(|| place.strip_prefix("__self"))?;
+    if rest.is_empty() {
+        return Some("this".into());
+    }
+    let field = rest.strip_prefix('.')?;
+    let written = written.trim_start_matches(['&', '*', '(']).trim_start_matches("mut ");
+    // a tuple field (`self.0`) can't be written alone
+    Some(if written.starts_with("this.") || field.starts_with(|c: char| c.is_ascii_digit()) { format!("this.{}", field) } else { field.to_string() })
 }
 
 fn describe(path: &str) -> String {
@@ -2142,6 +2313,31 @@ mod tests {
         assert_eq!(oxie_code("let value = name.clone();\n"), None);
         assert_eq!(oxie_terms("store this in the heap by calling `Box::new`"), "store this in the heap by calling `Box.new`");
         assert_eq!(oxie_terms("to call the trait object stored in `run`, surround the field access with parentheses"), "to call the function stored in `run`, surround the field access with parentheses");
+    }
+
+    #[test]
+    fn rust_places_in_oxie_words() {
+        assert_eq!(oxie_place("self.name", "name"), Some("name".into()));
+        assert_eq!(oxie_place("self.name", "this.name"), Some("this.name".into()));
+        assert_eq!(oxie_place("self.address.city", "address.city"), Some("address.city".into()));
+        assert_eq!(oxie_place("self.log", "&mut log)"), Some("log".into()));
+        assert_eq!(oxie_place("self.log", "&this.log[0]"), Some("this.log".into()));
+        assert_eq!(oxie_place("*self", "this"), Some("this".into()));
+        assert_eq!(oxie_place("__self.items", "items"), Some("items".into()));
+        assert_eq!(oxie_place("self.0", "0"), Some("this.0".into()));
+        assert_eq!(oxie_place("selfie.name", "selfie.name"), None);
+        assert_eq!(oxie_place("p.name", "p.name"), None);
+        assert_eq!(oxie_places("a reference to `self.items` is still in use (`&mut self`)", "items"), "a reference to `items` is still in use (`&mut self`)");
+    }
+
+    #[test]
+    fn qualified_clone_is_a_clone_call() {
+        let part = |col: u32, text: &str| Suggestion { line: 0, col, end_line: 0, end_col: col, replacement: text.into() };
+        let fix = |line: &str, start: u32, end: u32| clone_call(&[part(start, "<String as Clone>::clone(&"), part(end, ")")], &[line]);
+        assert_eq!(fix("    return items[i + 1]", 11, 23), Some(vec![edit(0, 23, 23, ".clone()")]));
+        assert_eq!(fix("    return (a + b)", 11, 18), Some(vec![edit(0, 18, 18, ".clone()")]));
+        assert_eq!(fix("    return *r", 11, 13), Some(vec![edit(0, 11, 11, "("), edit(0, 13, 13, ").clone()")]));
+        assert_eq!(clone_call(&[part(4, "Box::new("), part(9, ")")], &["val x = value"]), None);
     }
 
     #[test]

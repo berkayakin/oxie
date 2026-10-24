@@ -10,3 +10,80 @@ fun main() {
     x = 6
     // error: 10: cannot assign twice
 }
+
+// a field given back from `this` is copied with `.clone()`, as rustc suggests; the text of a
+// `toString` is a `String`, so a field it gives isn't lent with `&` (a `val` in it is)
+class Person(val name: String, val items: Vec<String>) {
+    fun label(): String {
+        return name
+        // error: 18: fix: use a copy (`.clone()`): `return name.clone()`
+    }
+
+    override fun toString(): String {
+        val first = items[0]
+        // error: 23: fix: pass a reference (`&`): `val first = &items[0]`
+        if (first.is_empty()) return name
+        // error: 25: fix: use a copy (`.clone()`): `if (first.is_empty()) return name.clone()`
+        // not: 25: pass a reference
+        // not: 25: consider borrowing
+        this.name
+        // error: 29: fix: use a copy (`.clone()`): `this.name.clone()`
+        // not: 29: pass a reference
+    }
+}
+
+class Nick(val nick: String, val short: bool) {
+    override fun toString() = if (short) nick else "anonymous"
+    // error: 36: fix: use a copy (`.clone()`): `override fun toString() = if (short) nick.clone() else "anonymous"`
+    // not: 36: pass a reference
+}
+
+// an element taken out of a list: the headline names both, and rustc's
+// `<String as Clone>::clone(&...)` is a `.clone()` fix
+class Shelf(val items: Vec<String>) {
+    fun first(): String = items[0]
+    // error: 44: can't take `items[0]` out of `items`
+    // error: 44: fix: use a copy (`.clone()`): `fun first(): String = items[0].clone()`
+    // not: 44: as Clone
+
+    fun last(): String {
+        return this.items[items.len() - 1]
+        // error: 50: fix: use a copy (`.clone()`): `return this.items[items.len() - 1].clone()`
+    }
+}
+
+// a list keeps its elements even when nothing borrows it
+fun first_word() {
+    val words = vec["a".to_string()]
+    val w = words[0]
+    // error: 58: can't take `words[0]` out of `words`
+    // not: 58: only borrowed
+    println("$w ${words.len()}")
+}
+
+// a field is named as the code writes it: `name`, or `this.name`
+class Pet(val name: String) {
+    fun called(): String = name
+    // error: 66: can't take `name` out of a value that is only borrowed
+    // error: 66: move occurs because `name` has type `String`
+    fun spelled(): String = this.name
+    // error: 69: can't take `this.name` out of a value that is only borrowed
+}
+
+// other borrow errors name a field as the code does at each place too
+class Ledger(var log: Vec<String>) {
+    fun take_log(): Vec<String> {
+        val first = &this.log[0]
+        val all = std.mem.take(&mut log)
+        // error: 77: `log` can't be changed while it is borrowed
+        // error: 77: `this.log` is borrowed here
+        println(first)
+        all
+    }
+
+    fun drain(self): usize {
+        val moved = log
+        moved.len() + log.len()
+        // error: 86: `log` was moved, so it can't be used anymore
+    }
+}
