@@ -87,7 +87,10 @@
   means the opposite is no longer a fix: `value.is_not_empty()` or `value.isNotEmpty()` on text
   got `value.is_empty()`, which turns the condition around, and now gets `!value.is_empty()`. A
   list operation called on text or an iterator says so, instead of suggesting to implement
-  Oxie's runtime trait `ListOps`.
+  Oxie's runtime trait `ListOps`. On an iterator it says to call the operation on the list or to
+  collect the iterator first, with the fix `xs.map_indexed { }` for `xs.iter().map_indexed { }`
+  and `s.chars().collect::<Vec<_>>().join_to_string("")` for `s.chars().join_to_string("")`,
+  instead of rustc's similar name, which gave `"b a".split(' ').sorted()` the fix `is_sorted()`.
 * A method that calls an interface method taking `&mut self` takes `&mut self` too. It used to
   stay `&self`, which rustc rejected, when its own class's implementation changed nothing (the
   method being `&mut self` because another implementation changes its object), when it was a
