@@ -121,12 +121,18 @@ fixes:
 | no `Display` (E0277) | print with `:?`, or add `toString` |
 | missing trait bound (E0277) | `require T: Bound` |
 | no method `size`, `toUpperCase`, ... (E0599) | the Rust name (`len`, `to_uppercase`) |
+| no method `is_not_empty` on text, where rustc suggests `is_empty` (E0599) | `!value.is_empty()`: a name that means the opposite of the one called is never the fix |
+| a list operation on text or an iterator (E0599) | says it is one of Oxie's list operations, instead of suggesting to implement the runtime's `ListOps` |
 | trait / type not imported (E0599, E0433, E0412) | `import` the suggested path |
 | unused `var` | declare it with `val` |
 
-rustc's own suggestions are kept as fixes when they map exactly onto the `.oxi` source, and
-the original message is shown last (`rustc: ...`) so it can still be searched for. In editors
-the fixes are code actions (quick fixes).
+rustc's own suggestions are kept as fixes when they map exactly onto the `.oxi` source, in
+Oxie terms. One that edits several places is a fix only as a whole, titled with rustc's help:
+"store this in the heap by calling `Box.new`" puts a value in a box
+(`vec[Box.new(Circle(1.5))]`), and a field that holds a function is called as `(s.run)(3)`.
+When its parts don't all map onto one line, the help is shown without code, since a part of it
+alone would mislead. The original message is shown last (`rustc: ...`) so it can still be
+searched for. In editors the fixes are code actions (quick fixes).
 
 The declaration an explanation depends on may be in another file of the project, such as the
 function a value moved into. A label there is shown under that file's name, and a fix there

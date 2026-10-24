@@ -50,7 +50,7 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
         "E0106" => {
             d.notes.push(help("Oxie fills in lifetimes for functions and for classes that hold references, but not here; write them yourself (`fun f<'a>(x: &'a str): &'a str`), or hold owned values (`String` instead of `&str`) to avoid lifetimes altogether."));
         }
-        "E0599" => no_method(d, &lines, &first),
+        "E0599" => no_method(d, sources, &lines, &first),
         "E0433" | "E0412" | "E0425" | "E0422" | "E0423" | "E0531" | "E0532" => {
             if d.message.contains("undeclared") || d.message.starts_with("cannot find") {
                 rewrite(d, format!("`{}` isn't defined or imported here", last_segment(&first)));
@@ -859,11 +859,19 @@ const KOTLIN_METHODS: &[(&str, &str)] = &[
     ("first", "first"),
 ];
 
-fn no_method(d: &mut MappedDiag, lines: &[&str], method: &str) {
+fn no_method(d: &mut MappedDiag, sources: &Sources, lines: &[&str], method: &str) {
     if !d.message.starts_with("no method named") && !d.message.starts_with("no function or associated item named") {
         return;
     }
     refine(d, lines, method);
+    // one of Oxie's list operations on something else: rustc suggests implementing the runtime's
+    // trait for it
+    if d.notes.iter().any(|n| n.contains("`ListOps` defines an item")) {
+        let ty = ticks(&d.message).get(1).cloned().unwrap_or_default();
+        d.notes.retain(|n| !n.contains("`ListOps` defines an item") && !n.contains("items from traits can only be used if"));
+        d.notes.push(help(&format!("`{}()` is one of Oxie's list operations: lists, arrays and slices have it, but `{}` doesn't.", method, ty)));
+    }
+    opposite_name(d, sources, method);
     let rust = KOTLIN_METHODS.iter().find(|(k, _)| *k == method).map(|(_, r)| r.to_string()).or_else(|| {
         // only when rustc knows a method by the snake_case name
         let snake = snake_case(method);
@@ -880,6 +888,118 @@ fn no_method(d: &mut MappedDiag, lines: &[&str], method: &str) {
         }
     }
     imports(d, lines);
+}
+
+/// Words of method names that mean the opposite of each other.
+const OPPOSITE_WORDS: &[(&str, &str)] = &[
+    ("some", "none"),
+    ("ok", "err"),
+    ("min", "max"),
+    ("first", "last"),
+    ("front", "back"),
+    ("start", "end"),
+    ("starts", "ends"),
+    ("prefix", "suffix"),
+    ("upper", "lower"),
+    ("uppercase", "lowercase"),
+    ("push", "pop"),
+    ("encode", "decode"),
+    ("increment", "decrement"),
+    ("ascending", "descending"),
+    ("enable", "disable"),
+    ("enabled", "disabled"),
+];
+
+/// rustc's "there is a method `is_empty` with a similar name" for `is_not_empty`: a name that
+/// means the opposite isn't a fix. When it is the call negated, the fix is `!value.is_empty()`.
+fn opposite_name(d: &mut MappedDiag, sources: &Sources, method: &str) {
+    let Some(other) = d.notes.iter().find(|n| n.contains(" with a similar name")).and_then(|n| ticks(n).first().cloned()) else { return };
+    let (a, b) = (words(method), words(&other));
+    if !d.raw_suggestions.contains(&other) || !opposite(&a, &b) {
+        return;
+    }
+    d.notes.retain(|n| !n.contains(" with a similar name"));
+    d.suggestions.retain(|s| s.replacement != other);
+    let negation = negates(&a, &b) && is_predicate(&a) && is_predicate(&b);
+    let fix = if negation { negated_call(d, sources, method, &other) } else { None };
+    d.notes.push(help(&match &fix {
+        Some((text, _)) => format!("`{}` means the opposite of `{}`: write `{}`.", other, method, text),
+        None if negation => format!("`{}` means the opposite of `{}`: negate it with `!`.", other, method),
+        None => format!("`{}` exists, but it means the opposite of `{}`.", other, method),
+    }));
+    if let Some((text, edits)) = fix {
+        d.fixes.push(Fix { title: format!("use `{}`", text), edits });
+    }
+}
+
+/// The call of `method` at the error, negated, with `other` in its place: `!x.other()`, in
+/// parentheses when a `.` or `?` follows, or `x.other()` for `!x.method()`. Its text and the
+/// edits, when it is on one line.
+fn negated_call(d: &MappedDiag, sources: &Sources, method: &str, other: &str) -> Option<(String, Vec<Edit>)> {
+    let here = sources.file(&d.file)?;
+    let src = here.text.as_str();
+    let at = byte_offset(src, d.line, d.col);
+    if !src[at..].starts_with(method) {
+        return None;
+    }
+    let is_call = |e: &Expr| matches!(&e.kind, ExprKind::MethodCall { recv, name, safe: false, .. } if name == method && src.get(recv.span.end as usize..at).is_some_and(|t| t.trim() == "."));
+    // the call, the `!` in front of it, and whether it is the operand of a postfix operator
+    let (mut call, mut not, mut postfix) = (None, None, false);
+    oxie_compiler::visit::walk_items(&here.ast().items, &mut |e| {
+        match &e.kind {
+            _ if is_call(e) => call = Some(e.span),
+            ExprKind::Unary(UnOp::Not, x) if is_call(x) => not = Some(e.span),
+            ExprKind::MethodCall { recv: x, .. } | ExprKind::Field { recv: x, .. } | ExprKind::Index(x, _) | ExprKind::Try(x) | ExprKind::Unwrap(x) | ExprKind::Await(x) | ExprKind::Cast(x, _) if is_call(x) => postfix = true,
+            _ => {}
+        }
+        true
+    });
+    let (start, end) = call.map(|s| (s.start as usize, s.end as usize))?;
+    let (open, close) = match not {
+        Some(_) => ("", ""),
+        None if postfix => ("(!", ")"),
+        None => ("!", ""),
+    };
+    let text = format!("{}{}{}{}{}", open, &src[start..at], other, &src[at + method.len()..end], close);
+    if text.contains('\n') {
+        return None;
+    }
+    let mut edits = vec![span_edit(src, Span::new(not.map_or(start, |n| n.start as usize), start), open), span_edit(src, Span::new(at, at + method.len()), other)];
+    if !close.is_empty() {
+        edits.push(span_edit(src, Span::new(end, end), close));
+    }
+    Some((text, edits))
+}
+
+/// The words of a method name: `is_not_empty` and `isNotEmpty` are `is`, `not`, `empty`.
+fn words(name: &str) -> Vec<String> {
+    snake_case(name).split('_').filter(|w| !w.is_empty()).map(str::to_string).collect()
+}
+
+/// Do two method names, as words, mean the opposite of each other: one negates the other, or
+/// they differ in one word of the opposite meaning (`is_some`, `is_none`)?
+fn opposite(a: &[String], b: &[String]) -> bool {
+    negates(a, b) || one_word_apart(a, b).is_some_and(|(x, y)| OPPOSITE_WORDS.iter().any(|&(p, q)| (x, y) == (p, q) || (x, y) == (q, p)))
+}
+
+/// Is one name the other with a negating word (`is_not_empty`, `has_no_items`) or prefix
+/// (`is_invalid`, `is_unsorted`)?
+fn negates(a: &[String], b: &[String]) -> bool {
+    let (long, short) = if a.len() > b.len() { (a, b) } else { (b, a) };
+    let word = long.len() == short.len() + 1 && (0..long.len()).any(|i| matches!(long[i].as_str(), "not" | "no" | "non") && long[..i] == short[..i] && long[i + 1..] == short[i..]);
+    word || one_word_apart(a, b).is_some_and(|(x, y)| ["un", "in", "im", "ir", "il", "dis", "non"].iter().any(|p| x.strip_prefix(p) == Some(y) || y.strip_prefix(p) == Some(x)))
+}
+
+/// The words in which two names differ, when they have as many words and differ in one.
+fn one_word_apart<'a>(a: &'a [String], b: &'a [String]) -> Option<(&'a str, &'a str)> {
+    let mut diff = a.iter().zip(b).filter(|(x, y)| x != y).map(|(x, y)| (x.as_str(), y.as_str()));
+    let first = diff.next()?;
+    (a.len() == b.len() && diff.next().is_none()).then_some(first)
+}
+
+/// Does a method name ask a yes-or-no question (`is_empty`, `has_items`), so that `!` negates it?
+fn is_predicate(words: &[String]) -> bool {
+    matches!(words.first().map(String::as_str), Some("is" | "has" | "are" | "can" | "does" | "should"))
 }
 
 /// `use a::b::C;` suggestions become `import a::b::C` fixes.
@@ -1175,7 +1295,8 @@ fn not_optional(d: &mut MappedDiag, src: &str) -> bool {
         "E0277" if msg.contains("the `?` operator can only be applied to values that implement `Try`") => (d.label.as_deref().and_then(|l| between(l, "cannot be applied to type `", "`")), false),
         "E0599" if ["as_ref", "map", "and_then"].iter().any(|m| msg.starts_with(&format!("no method named `{}` found", m))) => (msg.split_once(" found for ").and_then(|(_, r)| ticks(r).first().cloned()), false),
         "E0599" if msg.ends_with("is not an iterator") => (ticks(&msg).first().cloned(), false),
-        "E0282" | "E0283" if d.notes.iter().any(|n| n.contains(" as AsRef<")) => (d.notes.iter().find_map(|n| between(n, "<", " as AsRef<")), false),
+        // rustc suggests `<String as AsRef<T>>::as_ref(&` and `)`
+        "E0282" | "E0283" if d.raw_suggestions.iter().any(|s| s.contains(" as AsRef<")) => (d.raw_suggestions.iter().find_map(|s| between(s, "<", " as AsRef<")), false),
         _ => return false,
     };
     let (file, _) = oxie_compiler::parser::parse_file(src);
@@ -1259,6 +1380,7 @@ fn not_optional(d: &mut MappedDiag, src: &str) -> bool {
     (d.line, d.col, d.end_line, d.end_col) = (l as u32, c as u32, el as u32, ec as u32);
     d.secondary.clear();
     d.suggestions.clear();
+    d.multipart.clear();
     d.raw_suggestions.clear();
     // in a `throws` function `?.` passes errors on, and rustc's follow-up errors about that
     // `?` come at the same position
@@ -1373,6 +1495,58 @@ fn rustc_fixes(d: &mut MappedDiag, lines: &[&str]) {
         }
         d.fixes.push(Fix { title, edits: vec![e] });
     }
+    // one that edits several places (`Box::new(` and `)`), when each part reads as Oxie: its note
+    // can't show the code in one piece, so it becomes the fix's title
+    for m in d.multipart.clone() {
+        let edits: Option<Vec<Edit>> = m.parts.iter().map(|p| Some(Edit { file: None, line: p.line, col: p.col, end_line: p.end_line, end_col: p.end_col, text: oxie_code(&p.replacement)? })).collect();
+        let Some(edits) = edits else { continue };
+        if d.fixes.iter().any(|f| f.edits.iter().any(|x| edits.iter().any(|e| (x.line, x.col) == (e.line, e.col)))) {
+            continue;
+        }
+        d.notes.retain(|n| n.strip_prefix("help: ") != Some(m.message.as_str()));
+        d.fixes.push(Fix { title: oxie_terms(&m.message), edits });
+    }
+}
+
+/// A part of a rustc suggestion as Oxie, when it reads the same apart from paths through a type
+/// (`Box::new(` is `Box.new(`): parentheses, `&`, `*`, `?`, names and calls.
+fn oxie_code(part: &str) -> Option<String> {
+    let code = type_paths(part);
+    let rust_only = |w: &str| matches!(w, "self" | "Self" | "dyn" | "impl" | "fn" | "let");
+    let ok = code.chars().all(|c| is_ident_char(c) || " ().,&*?".contains(c)) && !code.split(|c: char| !is_ident_char(c)).any(rust_only);
+    ok.then_some(code)
+}
+
+/// rustc's words in Oxie terms: a path through a type in its code takes `.` (`Box.new`), and a
+/// field that holds a function isn't a "trait object".
+fn oxie_terms(message: &str) -> String {
+    let message = message.replace("the trait object stored in", "the function stored in");
+    message.split('`').enumerate().map(|(i, s)| if i % 2 == 1 { type_paths(s) } else { s.to_string() }).collect::<Vec<_>>().join("`")
+}
+
+/// Rust code with Oxie's spelling of paths through a type: `Box::new` is `Box.new`,
+/// `Ordering::Less` is `Ordering.Less`. Paths through a module (`std::mem::take`) keep `::`.
+fn type_paths(code: &str) -> String {
+    let mut out = String::new();
+    let mut rest = code;
+    while let Some(i) = rest.find(is_ident_char) {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        // the path's segments: names joined by `::`
+        let mut segs = Vec::new();
+        loop {
+            let n = rest.find(|c: char| !is_ident_char(c)).unwrap_or(rest.len());
+            segs.push(&rest[..n]);
+            rest = &rest[n..];
+            match rest.strip_prefix("::").filter(|r| r.starts_with(is_ident_char)) {
+                Some(r) => rest = r,
+                None => break,
+            }
+        }
+        let types = segs[..segs.len() - 1].iter().all(|s| s.starts_with(char::is_uppercase));
+        out.push_str(&segs.join(if types { "." } else { "::" }));
+    }
+    out + rest
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1909,12 +2083,65 @@ mod tests {
             from_oxie: true,
             secondary: Vec::new(),
             suggestions: Vec::new(),
+            multipart: Vec::new(),
             raw_suggestions: Vec::new(),
             rust_message: None,
             gen_text: None,
             fixes: Vec::new(),
             covers_position: false,
         }
+    }
+
+    #[test]
+    fn names_that_mean_the_opposite() {
+        let opp = |a: &str, b: &str| opposite(&words(a), &words(b));
+        let neg = |a: &str, b: &str| negates(&words(a), &words(b));
+        assert!(neg("is_not_empty", "is_empty") && neg("is_empty", "isNotEmpty") && neg("has_no_items", "has_items") && neg("is_invalid", "is_valid"));
+        assert!(opp("is_none", "is_some") && !neg("is_none", "is_some") && opp("to_lowercase", "to_uppercase"));
+        // a negation, but not of a yes-or-no question, so `!` doesn't turn one into the other
+        assert!(neg("filter_not", "filter") && !is_predicate(&words("filter")));
+        // typos and other similar names
+        assert!(!opp("is_emty", "is_empty") && !opp("lenght", "len") && !opp("push_str", "push") && !opp("to_owned", "to_string"));
+    }
+
+    #[test]
+    fn a_similar_name_that_means_the_opposite_is_negated() {
+        // the line `value.is_not_empty()` is on, with the one fix offered for it, which rustc
+        // suggests `is_empty` for
+        let fixed = |line: &str| {
+            let src = format!("fun f(value: &str) {{\n    {}\n}}\n", line);
+            let col = 4 + line.find("is_not_empty").unwrap() as u32;
+            let mut d = diag("/crate/main.oxi", "E0599", "no method named `is_not_empty` found for reference `&str` in the current scope", 1, col, col + 12);
+            d.notes.push("help: there is a method `is_empty` with a similar name: `is_empty`".into());
+            d.raw_suggestions.push("is_empty".into());
+            d.suggestions.push(crate::cargo::Suggestion { line: 1, col, end_line: 1, end_col: col + 12, replacement: "is_empty".into() });
+            explain(&mut d, &Sources::from_texts(&[("/crate/main.oxi", &src)]));
+            let [fix] = &d.fixes[..] else { panic!("{:?}", d.fixes) };
+            let mut chars: Vec<char> = src.lines().nth(1).unwrap().chars().collect();
+            let mut edits = fix.edits.clone();
+            edits.sort_by_key(|e| std::cmp::Reverse(e.col));
+            for e in edits {
+                chars.splice(e.col as usize..e.end_col as usize, e.text.chars());
+            }
+            chars.into_iter().collect::<String>().trim().to_string()
+        };
+        assert_eq!(fixed("if (value.is_not_empty()) g()"), "if (!value.is_empty()) g()");
+        assert_eq!(fixed("if (!value.is_not_empty()) g()"), "if (value.is_empty()) g()");
+        assert_eq!(fixed("val n = value.is_not_empty().then { 1 }"), "val n = (!value.is_empty()).then { 1 }");
+        assert_eq!(fixed(r#"println("${value.is_not_empty()}")"#), r#"println("${!value.is_empty()}")"#);
+    }
+
+    #[test]
+    fn suggestion_parts_in_oxie_terms() {
+        assert_eq!(type_paths("Box::new("), "Box.new(");
+        assert_eq!(type_paths("std::mem::take(&mut v)"), "std::mem::take(&mut v)");
+        assert_eq!(type_paths("Vec::<i32>::new()"), "Vec::<i32>::new()");
+        assert_eq!(oxie_code("Box::new("), Some("Box.new(".into()));
+        assert_eq!(oxie_code(").into()"), Some(").into()".into()));
+        assert_eq!(oxie_code("i64::from("), None);
+        assert_eq!(oxie_code("let value = name.clone();\n"), None);
+        assert_eq!(oxie_terms("store this in the heap by calling `Box::new`"), "store this in the heap by calling `Box.new`");
+        assert_eq!(oxie_terms("to call the trait object stored in `run`, surround the field access with parentheses"), "to call the function stored in `run`, surround the field access with parentheses");
     }
 
     #[test]
