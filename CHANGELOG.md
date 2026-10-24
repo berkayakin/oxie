@@ -167,6 +167,10 @@
   named `f` in the message of an error enum's variant (`Missing(f: String) = "missing $f"`). A
   field that is the whole text (`override fun toString() = name`) is written as it is; it used
   to be moved out of `this`, which rustc rejected.
+* A field that a `toString` gives without being all of it (`return name` after other
+  statements, `if (short) nick else name`) needs `.clone()`, as in any method that returns a
+  `String`, and the error now says only that. It used to offer the fix `return &name` too, which
+  doesn't compile.
 * A labeled block (`'found: { ... }`) gets the declared type of what it initializes, as a plain
   block does, so its value is converted: `"text"` to a `String`, a value to `T?`.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cargo::{Edit, Fix, Label, MappedDiag};
 use crate::sources::Sources;
-use oxie_compiler::ast::{Block, Cond, Expr, ExprKind, File, FunDecl, Item, ItemKind, Pat, Stmt, Type, TypeDecl, UnOp};
+use oxie_compiler::ast::{Block, Cond, Expr, ExprKind, File, FunBody, FunDecl, Item, ItemKind, Pat, Stmt, Type, TypeDecl, UnOp};
 use oxie_compiler::diag::Span;
 
 pub fn explain(d: &mut MappedDiag, sources: &Sources) {
@@ -33,6 +33,12 @@ pub fn explain(d: &mut MappedDiag, sources: &Sources) {
         "E0507" => {
             rewrite(d, format!("can't take {} out of a value that is only borrowed", describe(&first)));
             d.notes.retain(|n| !n.contains("`mut "));
+            // rustc offers `&` because `Display` puts the text in a `String` variable, as for a
+            // `val`, but the text of a `toString` can't be a reference
+            if is_to_string_text(&here.ast().items, byte_offset(src, d.line, d.col) as u32) {
+                d.notes.retain(|n| !n.starts_with("help: consider borrowing here"));
+                d.suggestions.retain(|s| s.replacement != "&");
+            }
             d.notes.push(help("the value belongs to something you only borrowed, so it can't be moved out. Take a copy with `.clone()`, or borrow it with `&`."));
         }
         "E0373" => lambda_outlives(d, &lines, &names),
@@ -1402,6 +1408,60 @@ fn elvis_default_at(src: &str, line: u32, col: u32) -> Option<(String, String)> 
         true
     });
     found
+}
+
+/// Is the expression at `offset` the text of a `toString`: a value its body is or ends with, or
+/// one that a `return` gives?
+fn is_to_string_text(items: &[Item], offset: u32) -> bool {
+    for it in items.iter().filter(|it| it.span.start <= offset && offset <= it.span.end) {
+        match &it.kind {
+            ItemKind::Fun(f) if (f.name == "toString" || f.name == "to_string") && f.mods.is_override => {
+                let mut starts = Vec::new();
+                match &f.body {
+                    Some(FunBody::Expr(e)) => values(e, &mut starts),
+                    Some(FunBody::Block(b)) => {
+                        block_values(b, &mut starts);
+                        oxie_compiler::visit::walk_block(b, &mut |e| match &e.kind {
+                            // a `return` in a lambda gives the lambda's value
+                            ExprKind::Lambda { .. } => false,
+                            ExprKind::Return(Some(v)) => {
+                                values(v, &mut starts);
+                                true
+                            }
+                            _ => true,
+                        });
+                    }
+                    None => {}
+                }
+                return starts.contains(&offset);
+            }
+            ItemKind::Type(t) => return is_to_string_text(&t.members, offset),
+            ItemKind::Impl(i) => return is_to_string_text(&i.members, offset),
+            ItemKind::Mod { items, .. } | ItemKind::Object { items, .. } => return is_to_string_text(items, offset),
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Where the values a block ends with start (both branches of an `if` and every arm of a `when`).
+fn block_values(b: &Block, out: &mut Vec<u32>) {
+    if let Some(Stmt::Expr { expr, semi: false }) = b.stmts.last() {
+        values(expr, out);
+    }
+}
+
+fn values(e: &Expr, out: &mut Vec<u32>) {
+    match &e.kind {
+        ExprKind::If { then, else_: Some(el), .. } => {
+            block_values(then, out);
+            values(el, out);
+        }
+        ExprKind::When { arms, .. } => arms.iter().for_each(|a| values(&a.body, out)),
+        ExprKind::Block(b) => block_values(b, out),
+        ExprKind::Paren(x) => values(x, out),
+        _ => out.push(e.span.start),
+    }
 }
 
 /// The byte offset of a zero-based line and character column.
