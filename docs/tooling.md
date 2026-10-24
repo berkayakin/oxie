@@ -7,7 +7,13 @@ compiled by rustc, so a prebuilt `oxie` needs them too. Crates set their own min
 version (the current `tokio` needs 1.85), and Rust features need the Rust version that
 introduced them.
 
-Each of these installs `oxie` into `~/.cargo/bin`:
+With [Homebrew](https://brew.sh), on macOS or Linux:
+
+```bash
+brew install oxie-lang/tap/oxie
+```
+
+`brew upgrade oxie` updates it. Each of the others installs `oxie` into `~/.cargo/bin`:
 
 ```bash
 # macOS and Linux
@@ -27,7 +33,7 @@ cargo binstall oxie
 cargo install oxie
 ```
 
-The installers and `cargo binstall` download a prebuilt binary from the
+Homebrew, the installers and `cargo binstall` download a prebuilt binary from the
 [releases page](https://github.com/oxie-lang/oxie/releases) (macOS on Apple silicon and Intel, Linux on x86-64 and ARM, Windows on
 x86-64), which also has checksums. `cargo install` compiles it, which takes a minute or two.
 Running the same command again updates `oxie`.

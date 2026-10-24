@@ -162,6 +162,9 @@ prebuilt binary or from source:
 ```bash
 # macOS and Linux
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/oxie-lang/oxie/releases/latest/download/oxie-installer.sh | sh
+
+# or with Homebrew
+brew install oxie-lang/tap/oxie
 ```
 
 ```powershell
