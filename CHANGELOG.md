@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-10-24
+
+Oxie 0.2.0 makes the compiler explain itself and removes more of the bookkeeping Rust asks for.
+Errors point at `.oxi` lines, panics included, say why Oxie decided what the source doesn't
+spell out, and come with fixes that compile. More Kotlin-style code compiles as written: loops
+that change the elements of a list, `m[k] = v` on maps, `when` on a `String`, `+` on text,
+functions that return an interface, and `?.` on shared objects. `oxie guide` teaches AI coding
+agents the installed version of the language, and the documentation has a site at
+[oxie.bkymz.net](https://oxie.bkymz.net).
+
+### Upgrading
+
+* Set `oxie-build = "0.2.0"` in the `[build-dependencies]` of each project (`cargo update`
+  doesn't move from 0.1 to 0.2). `oxie` warns when a project builds with another `oxie-build`.
+* Some code behaves differently: `"cost $5"` is text (it printed `cost 5`); a throwing call
+  inside `try { }` jumps to `catch` instead of leaving the function; a function written
+  `= expr` without a return type no longer drops a value it can't type; a `{ ... }` statement
+  is an error that suggests `run { ... }`; a `String` or `Vec` parameter that a function only
+  reads is borrowed, so callers keep their value.
+
+### Changes
 
 * `oxie guide` prints a guide to writing Oxie, for AI coding agents and people: how to work with
   the compiler, the language at a glance, how it differs from Kotlin and from Rust, and the usual
