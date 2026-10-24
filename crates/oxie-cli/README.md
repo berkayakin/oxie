@@ -12,7 +12,8 @@ oxie run
 
 `oxie` creates, builds, runs, tests and formats Oxie projects, runs single `.oxi` files as
 scripts, shows the Rust generated for a file (`oxie emit`), translates Rust to Oxie
-(`oxie from-rust`) and serves editors over LSP (`oxie lsp`).
+(`oxie from-rust`), prints the guide to writing its version of Oxie for people and AI agents
+(`oxie guide`) and serves editors over LSP (`oxie lsp`).
 
 * [A tour of Oxie](https://oxie.bkymz.net/guide/)
 * [Tooling](https://oxie.bkymz.net/tooling/)

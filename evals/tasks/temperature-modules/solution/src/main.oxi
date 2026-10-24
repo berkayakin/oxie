@@ -1,0 +1,13 @@
+import units::Celsius
+
+fun main() {
+    val temps = vec[12.5, 14.0, 9.5, 17.0, 15.5]
+    for ((i, t) in temps.iter().enumerate()) {
+        val c = Celsius(*t)
+        println("day ${i + 1}: $c = ${c.to_fahrenheit():.1}F")
+    }
+    println("mean: ${Celsius(stats.mean(&temps)!!)}")
+    println("spread: ${Celsius(stats.spread(&temps)!!)}")
+    val none: Vec<f64> = vec[]
+    println("empty mean: ${stats.mean(&none).map { Celsius(it).to_string() } ?: "n/a".to_string()}")
+}

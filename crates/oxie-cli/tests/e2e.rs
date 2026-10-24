@@ -165,17 +165,17 @@ fn examples_run_and_test() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
-/// Every ```oxie block with `fun main` in README.md and docs/*.md must compile and run. Their
-/// output is recorded in `website/src/data/doc-outputs.json`, which the docs site shows beside
-/// each example (unless it contains `// output varies`); `OXIE_BLESS=1` rewrites it when an
-/// example or its output changes.
+/// Every ```oxie block with `fun main` in README.md, docs/*.md and the guide `oxie guide` prints
+/// must compile and run. The output of those in README.md and docs/ is recorded in
+/// `website/src/data/doc-outputs.json`, which the docs site shows beside each example (unless
+/// it contains `// output varies`); `OXIE_BLESS=1` rewrites it when an example or its output
+/// changes.
 #[test]
 fn documentation_examples_run() {
     let root = repo();
     let mut files = vec![root.join("README.md")];
-    let mut docs: Vec<PathBuf> = std::fs::read_dir(root.join("docs")).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map_or(false, |e| e == "md")).collect();
-    docs.sort();
-    files.extend(docs);
+    files.extend(markdown_files(&root.join("docs")));
+    files.push(root.join("crates/oxie-cli/guide/writing-oxie.md"));
     // the same directory every time, so the next run reuses the builds of unchanged examples
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("doc-examples");
     std::fs::create_dir_all(&tmp).unwrap();
@@ -230,7 +230,7 @@ fn documentation_examples_run() {
     for ((_, rel, start_line, block), (failure, output)) in examples.iter().zip(results) {
         failures.extend(failure);
         // no line numbers, so editing the text around an example doesn't make this stale
-        if !block.contains("// output varies") {
+        if !block.contains("// output varies") && !rel.starts_with("crates/") {
             outputs.push((*start_line, serde_json::json!({ "file": rel, "source": block, "output": output })));
         }
     }
@@ -261,6 +261,124 @@ fn documentation_examples_run() {
         stale.push("examples were removed or moved".into());
     }
     assert!(stale.is_empty(), "website/src/data/doc-outputs.json is out of date; after checking the changes below, update it with\n    OXIE_BLESS=1 cargo test -p oxie --test e2e documentation_examples_run\n\n{}", stale.join("\n\n"));
+}
+
+fn markdown_files(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map_or(false, |e| e == "md")).collect();
+    v.sort();
+    v
+}
+
+/// The pages of docs/ that `oxie guide <topic>` prints are built into the binary from copies in
+/// `crates/oxie-cli/guide/docs` (a published crate can't include files outside its directory).
+/// They must equal docs/, and every page of docs/ is a topic except the ones for working on Oxie
+/// itself. `OXIE_BLESS=1` copies docs/ over them.
+#[test]
+fn guide_topics_match_docs() {
+    const NOT_TOPICS: [&str; 1] = ["internals.md"];
+    let root = repo();
+    let copies = root.join("crates/oxie-cli/guide/docs");
+    let mut problems = Vec::new();
+    for doc in markdown_files(&root.join("docs")) {
+        let name = doc.file_name().unwrap().to_string_lossy().to_string();
+        let copy = copies.join(&name);
+        if NOT_TOPICS.contains(&name.as_str()) {
+            assert!(!copy.exists(), "docs/{name} isn't a guide topic, but crates/oxie-cli/guide/docs/{name} exists");
+            continue;
+        }
+        let text = std::fs::read_to_string(&doc).unwrap();
+        if std::fs::read_to_string(&copy).ok().as_deref() == Some(text.as_str()) {
+            continue;
+        }
+        if !copy.exists() {
+            problems.push(format!("docs/{name} is new: add it to TOPICS in crates/oxie-cli/src/guide.rs (and to the topics in guide/writing-oxie.md), or to NOT_TOPICS here"));
+        } else if std::env::var_os("OXIE_BLESS").is_some() {
+            std::fs::write(&copy, text).unwrap();
+        } else {
+            problems.push(format!("crates/oxie-cli/guide/docs/{name} differs from docs/{name}"));
+        }
+    }
+    for copy in markdown_files(&copies) {
+        let name = copy.file_name().unwrap().to_string_lossy().to_string();
+        if !root.join("docs").join(&name).exists() {
+            problems.push(format!("crates/oxie-cli/guide/docs/{name} has no docs/{name} any more"));
+        }
+    }
+    assert!(problems.is_empty(), "{}\n\nAfter checking docs/, update the copies with\n    OXIE_BLESS=1 cargo test -p oxie --test e2e guide_topics_match_docs", problems.join("\n"));
+}
+
+/// `oxie guide` prints the guide with this version, its topics print the pages of docs/, and
+/// in a project that builds with another `oxie-build` it says so.
+#[test]
+fn guide_describes_this_version() {
+    let version = env!("CARGO_PKG_VERSION");
+    let out = oxie().arg("guide").current_dir(std::env::temp_dir()).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && text.contains(&format!("oxie {version}")) && text.contains("# Writing Oxie"), "{text}");
+    let reference = oxie().args(["guide", "reference"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&reference.stdout), std::fs::read_to_string(repo().join("docs/reference.md")).unwrap());
+    assert!(!oxie().args(["guide", "nonsense"]).output().unwrap().status.success());
+
+    let tmp = std::env::temp_dir().join(format!("oxie-guide-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    assert!(oxie().args(["new", "older"]).current_dir(&tmp).status().unwrap().success());
+    let lock = "version = 4\n\n[[package]]\nname = \"oxie-build\"\nversion = \"0.0.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
+    std::fs::write(tmp.join("older/Cargo.lock"), lock).unwrap();
+    let out = oxie().arg("guide").current_dir(tmp.join("older/src")).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("builds with oxie-build 0.0.1") && text.contains(&format!("`oxie-build = \"{version}\"`")), "{text}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// The Claude Code skill sends agents to `oxie guide` and teaches no Oxie itself: rules written
+/// into it would be wrong for every other version of Oxie its users have installed.
+#[test]
+fn skill_defers_to_oxie_guide() {
+    let skill = std::fs::read_to_string(repo().join("skills/oxie/SKILL.md")).unwrap();
+    assert!(skill.starts_with("---\nname: oxie\ndescription: "), "SKILL.md needs its frontmatter");
+    assert!(skill.contains("oxie guide"), "SKILL.md must send agents to `oxie guide`");
+    assert!(!skill.contains("```oxie"), "SKILL.md must not contain Oxie code; the rules belong in crates/oxie-cli/guide/writing-oxie.md");
+}
+
+/// The reference solution of every task in `evals/tasks` builds and prints the task's
+/// expected.out, and its tests pass.
+#[test]
+fn eval_solutions_pass() {
+    let mut tasks: Vec<PathBuf> = std::fs::read_dir(repo().join("evals/tasks")).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.join("expected.out").exists()).collect();
+    tasks.sort();
+    let tmp = std::env::temp_dir().join(format!("oxie-evals-{}", std::process::id()));
+    let results = parallel(&tasks, |task, cache| {
+        let name = task.file_name().unwrap().to_string_lossy().to_string();
+        let dir = tmp.join(&name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(oxie().args(["new", &name]).current_dir(&tmp).output().unwrap().status.success());
+        let solution = task.join("solution/src");
+        let mut has_tests = false;
+        for f in programs(&solution) {
+            let text = std::fs::read_to_string(&f).unwrap();
+            has_tests |= text.contains("\ntest \"");
+            std::fs::write(dir.join("src").join(f.file_name().unwrap()), text).unwrap();
+        }
+        let target = cache.join("evals");
+        let out = oxie().arg("run").current_dir(&dir).env("CARGO_TARGET_DIR", &target).output().unwrap();
+        let expected = std::fs::read_to_string(task.join("expected.out")).unwrap();
+        let mut failures = Vec::new();
+        if String::from_utf8_lossy(&out.stdout) != expected {
+            failures.push(format!("{name}:\n--- expected\n{expected}--- actual\n{}--- stderr\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+        }
+        if has_tests {
+            let out = oxie().arg("test").current_dir(&dir).env("CARGO_TARGET_DIR", &target).output().unwrap();
+            if !out.status.success() {
+                failures.push(format!("{name}: `oxie test` failed\n{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+            }
+        }
+        failures
+    });
+    let _ = std::fs::remove_dir_all(&tmp);
+    let failures: Vec<String> = results.into_iter().flatten().collect();
+    assert!(tasks.len() > 10, "found only {} eval tasks", tasks.len());
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
 /// Every command `oxie --help` lists is described in docs/tooling.md.
@@ -300,6 +418,9 @@ fn new_projects_depend_on_oxie_build() {
 
     assert!(oxie().env_remove("OXIE_HOME").args(["new", "from_crates_io"]).current_dir(&tmp).status().unwrap().success());
     assert_eq!(build_dep(&tmp.join("from_crates_io")), format!(r#"oxie-build = "{}""#, env!("CARGO_PKG_VERSION")));
+    // agents are sent to `oxie guide`, which matches the installed Oxie, instead of being told rules
+    let agents = std::fs::read_to_string(tmp.join("from_crates_io/AGENTS.md")).unwrap();
+    assert!(agents.contains("run `oxie guide`") && !agents.contains("```"), "{agents}");
 
     assert!(oxie().args(["new", "from_checkout"]).current_dir(&tmp).status().unwrap().success());
     let local = repo().join("crates/oxie-build").display().to_string().replace('\\', "/");
@@ -310,7 +431,7 @@ fn new_projects_depend_on_oxie_build() {
     std::fs::write(rust.join("Cargo.toml"), "[package]\nname = \"rust_crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
     assert!(oxie().env_remove("OXIE_HOME").arg("init").current_dir(&rust).status().unwrap().success());
     assert_eq!(build_dep(&rust), format!(r#"oxie-build = "{}""#, env!("CARGO_PKG_VERSION")));
-    assert!(rust.join("build.rs").exists());
+    assert!(rust.join("build.rs").exists() && rust.join("AGENTS.md").exists());
 
     // a crate that already has build-dependencies gets oxie-build in the same table
     let with_deps = tmp.join("with_build_deps");

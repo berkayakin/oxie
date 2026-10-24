@@ -1,0 +1,28 @@
+import std::thread
+
+@sync shared class Totals(var sum: u64 = 0) {
+    var log: Vec<String> = vec[]
+
+    fun add(label: String, part: u64) {
+        sum += part
+        log.push("$label: $part")
+    }
+}
+
+fun main() {
+    val totals = Totals()
+    val handles = (0 until 4).map { i ->
+        val start = i * 250 + 1
+        val end = start + 249
+        thread.spawn { [totals] ->
+            val part: u64 = (start..=end).map { n: u64 -> n * n }.sum()
+            totals.add("$start..=$end", part)
+        }
+    }.collect::<Vec<_>>()
+    for (h in handles) h.join().unwrap()
+
+    var log = totals.log
+    log.sort()
+    for (line in &log) println(line)
+    println("total: ${totals.sum}")
+}

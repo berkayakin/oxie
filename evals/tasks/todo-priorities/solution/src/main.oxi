@@ -1,0 +1,47 @@
+enum Priority : PartialOrd, Ord { Low, Medium, High }
+
+error enum TodoError {
+    NotFound(id: u32) = "no task with id $id"
+    AlreadyDone(id: u32) = "task $id is already done"
+}
+
+data class Task(id: u32, title: String, priority: Priority, done: bool = false)
+
+class TodoList {
+    var tasks: Vec<Task> = vec[]
+    var next_id: u32 = 1
+
+    fun add(title: &str, priority: Priority = Priority.Medium): u32 {
+        val id = next_id
+        next_id += 1
+        tasks.push(Task(id, title.to_string(), priority))
+        id
+    }
+
+    fun complete(id: u32) throws TodoError {
+        val t = tasks.iter_mut().find { it.id == id } ?: throw TodoError.NotFound(id)
+        if (t.done) throw TodoError.AlreadyDone(id)
+        t.done = true
+    }
+
+    fun pending(): Vec<&Task> = tasks.iter().filter { !it.done }.collect()
+
+    fun by_priority(): Vec<&Task> {
+        var list = pending()
+        list.sort_by { a, b -> b.priority.cmp(&a.priority).then(a.title.cmp(&b.title)) }
+        list
+    }
+}
+
+fun main() {
+    var todo = TodoList()
+    todo.add("write report", Priority.High)
+    todo.add("buy milk", Priority.Low)
+    todo.add("call mom")
+    todo.add("fix bike", Priority.High)
+    todo.add("pay rent", Priority.High)
+    for (id in vec[2, 4, 4, 9]) {
+        if (val Err(e) = todo.complete(id)) println("error: $e")
+    }
+    for (t in todo.by_priority()) println("[${t.priority:?}] ${t.title}")
+}

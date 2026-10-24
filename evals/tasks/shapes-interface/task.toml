@@ -1,0 +1,2 @@
+features = ["interface", "default method", "list of interface values", "sorting"]
+requires = ['\binterface\s+Shape', '\boverride\b']

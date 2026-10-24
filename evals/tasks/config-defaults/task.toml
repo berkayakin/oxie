@@ -1,0 +1,2 @@
+features = ["nullable types", "?. and ?:", "data class", "string parsing"]
+requires = ['data\s+class', '\?:', ':\s*[A-Za-z0-9_<>]+\?']

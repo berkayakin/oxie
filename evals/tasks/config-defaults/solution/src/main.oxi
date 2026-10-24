@@ -1,0 +1,44 @@
+import std::collections::HashMap
+
+val TEXT = """
+    # server settings
+    host = example.org
+    port = 8080
+
+    timeout =
+    retries = three
+    """
+
+data class Config(host: String?, port: u16?, timeout: u32?, retries: u32?, user: String?)
+
+fun parse(text: &str): Config {
+    var values = HashMap()
+    for (line in text.lines()) {
+        val line = line.trim()
+        if (line.is_empty() || line.starts_with('#')) continue
+        val (key, value) = line.split_once('=') ?: continue
+        val value = value.trim()
+        if (!value.is_empty()) values.insert(key.trim(), value)
+    }
+    Config(
+        host = values.get("host")?.to_string(),
+        port = values.get("port").and_then { it.parse().ok() },
+        timeout = values.get("timeout").and_then { it.parse().ok() },
+        retries = values.get("retries").and_then { it.parse().ok() },
+        user = values.get("user")?.to_string(),
+    )
+}
+
+fun show(name: &str, value: u32?, default: u32) {
+    if (val v = value) println("$name: $v") else println("$name: $default (default)")
+}
+
+fun main() {
+    val c = parse(TEXT)
+    println("host: ${c.host.clone() ?: "localhost"}")
+    println("port: ${c.port ?: 80}")
+    show("timeout", c.timeout, 30)
+    show("retries", c.retries, 3)
+    println("user: ${c.user ?: "(none)"}")
+    println("host length: ${c.host?.len() ?: 0}")
+}

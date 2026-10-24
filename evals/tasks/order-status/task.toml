@@ -1,0 +1,2 @@
+features = ["enums with data", "when", "nullable results", "methods on enums"]
+requires = ['\benum\b', '\bwhen\b']

@@ -1,0 +1,333 @@
+# Writing Oxie
+
+Oxie is a programming language that compiles to Rust. It reads like Kotlin, and its semantics
+are Rust's: ownership and borrowing, traits, generics, `Option` and `Result`, and every Rust
+crate. This guide is for the Oxie version that printed it. Oxie changes between versions, so
+when this guide or the compiler disagrees with what you remember about Oxie, they are right.
+
+## How to work
+
+* A project is a Cargo crate. Code goes in `src/main.oxi` (`src/lib.oxi` for a library), and
+  every other `.oxi` file in `src/` is a module: `src/net/http.oxi` is `net::http`.
+  `src/main.rs` and `build.rs` only include the Rust that Oxie generates. Don't edit them, and
+  don't write Rust files to get around an Oxie error.
+* `oxie check` type-checks the project and is fast. Run it after each change and fix what it
+  reports before you write more.
+* `oxie run` builds and runs the program (arguments after `--` go to it), `oxie test` runs the
+  `test` blocks, and `oxie fmt` formats the sources. A `.oxi` file outside a project runs as a
+  script, `oxie run tool.oxi`, with its crates in header comments: `// dep: rand = "0.8"`.
+* Errors are explained in Oxie terms at `.oxi` lines. Many end with `= fix:` and the corrected
+  line: apply it when it matches what you meant. A fix that adds `.clone()` copies the data;
+  when the value is only read, borrowing it (a `&T` parameter) is usually the better fix.
+* `oxie emit src/main.oxi --annotate` prints the Rust generated for a file, with the reasons
+  for what Oxie inferred. Use it when you aren't sure what a construct does.
+* `oxie from-rust file.rs` translates Rust into Oxie, for example code from a crate's docs.
+* `oxie guide <topic>` prints the full documentation of this version; the topics are listed at
+  the end.
+
+## The language at a glance
+
+```oxie
+import std::collections::HashMap
+
+data class Item(name: String, price: f64, qty: u32 = 1)    // fields, ==, copy(), Debug
+
+interface Priced {
+    fun total(): f64
+    fun label(): String = "costs ${total():.2}"             // default method
+}
+
+class Cart(owner: String) : Priced {                        // no inheritance, only interfaces
+    var items: Vec<Item> = vec[]                            // body properties need a value
+
+    fun add(item: Item) = items.push(item)                  // changes the cart: Oxie makes it &mut self
+    override fun total() = items.sum_of { it.price * it.qty as f64 }
+}
+
+fun cheapest(items: &[Item]): &Item? = items.min_by_key { it.price }
+
+fun main() {
+    var cart = Cart("ada")                                  // `var`, because add() changes it
+    cart.add(Item("pen", 1.5, qty = 4))
+    cart.add(Item("book", 12.0))
+    println("${cart.owner}'s cart ${cart.label()}")
+
+    val names = cart.items.filter { it.price < 10.0 }.map { it.name.clone() }
+    println("cheap: ${names.join_to_string(", ")}, first: ${cheapest(&cart.items)?.name ?: "none"}")
+
+    var counts = HashMap()
+    for (word in "a b a".split(' ')) *counts.entry(word).or_insert(0) += 1
+    println("a appears ${counts["a"]} times, ${counts:?} has ${counts.len()} keys")
+
+    for (i in 0 until 3) print("$i ")                       // 0 1 2
+    for (i in 1..=3) print("$i ")                           // 1 2 3: `..` excludes the end
+    println()
+}
+```
+
+| Oxie | Meaning (Rust) |
+|---|---|
+| `val x = 1`, `var y = 2`, `val z: i64 = 3` | `let`, `let mut`, typed `let` |
+| `fun f(a: i32, b: i32 = 0): i32 { }`, `fun g(x: i32) = x * 2` | functions; defaults, named arguments `f(1, b = 2)` |
+| `"$name is ${age + 1}"`, `"${x:.2}"`, `"${list:?}"` | templates, format specs, Debug |
+| `if (c) a else b`, `when (x) { 1, 2 -> a; in 3..=9 -> b; else -> c }`, `when { c -> a; else -> b }` | expressions; `when` is `match` (or an if chain without a subject) |
+| `for (x in xs)`, `for ((i, x) in xs.iter().enumerate())`, `while`, `do { } while ()`, `loop`, `repeat(n) { }` | loops |
+| `0 until n`, `1..=n`, `a..b`, `10 downTo 0 step 2` | ranges: `a..b` excludes `b` |
+| `T?`, `null`, `a?.b`, `a ?: b`, `a!!`, `if (val v = opt) { }`, `opt?.let { it }` | `Option<T>`, `None`, map, `unwrap_or`, `unwrap`, `if let Some(v)` |
+| `fun f(): T throws`, `throws E`, `throw e`, `x?`, `try { } catch (e) { }`, `r ?: default` | `Result<T, AnyError>`, `Result<T, E>`, `return Err`, `?`, a block that catches `?` |
+| `class C(a: A, var b: B = d) { }`, `C(a)` | struct with fields `a`, `b`, constructor `C::new` |
+| `data class P(x: f64)`, `p.copy(x = 1.0)` | struct deriving `Debug`, `Clone`, `PartialEq` (and `Copy`, `Eq`, `Hash` when the fields allow) |
+| `enum E { A(n: i32), B }`, `E.A(1)`, `when (e) { A(n) -> ...; B -> ... }` | enum with data; variants without `E.` in patterns |
+| `interface I { fun f(): i32 }`, `class C : I { override fun f() = 1 }` | trait and its impl |
+| `&I`, `Vec<I>` (an interface as a type) | `&dyn I`, `Vec<Box<dyn I>>` |
+| `shared class S(var n: i32)`, `@sync shared class` | a handle to one object: `Rc<RefCell<..>>`, `Arc<Mutex<..>>` |
+| `object O { }`, `companion object { }`, `static fun` | namespace; static functions |
+| `{ it * 2 }`, `{ a, b -> a + b }`, `(a, b) => a + b`, `xs.map { }` | lambdas; a last lambda argument goes outside the parentheses |
+| `vec[1, 2]`, `listOf(1, 2)`, `mutableListOf<i32>()`, `mapOf("a" to 1)`, `setOf(1)` | `Vec`, `Vec`, `Vec::new()`, `HashMap`, `HashSet` |
+| `x in xs`, `x !in xs`, `x is Some(_)`, `a to b` | `contains`, `matches!`, a tuple `(a, b)` |
+| `Type.function()`, `Enum.Variant`, `module.item`, `HashMap()` | `::` paths; a constructor call `Type::new()` |
+| `import std::fs`, `import std.collections.HashMap`, `import { A, B } from module` | `use` |
+| `test "adds" { assert_eq(add(1, 1), 2) }` | a `#[test]` function |
+| `@derive(Hash)`, `@tokio::main` | `#[derive(Hash)]`, `#[tokio::main]` |
+| `println(x)`, `format("{} {}", a, b)`, `vec[0; n]`, `panic("...")`, `assert(c)` | std macros without `!`; crate macros keep it: `json!({})` |
+
+## What works differently from Kotlin
+
+* **Ranges.** `1..n` excludes `n`; Kotlin's `1..n` is `1..=n` here. `until`, `downTo` and
+  `step` work as in Kotlin.
+* **Collections are Rust's.** There is no `List`, `MutableList` or `Map` type: lists are
+  `Vec<T>` (`listOf`, `vec[...]` and `mutableListOf()` all make one), maps `HashMap<K, V>`,
+  sets `HashSet<T>`. A parameter that only reads a list is `&[T]`; one that only reads text
+  is `&str`.
+* **Method names are Rust's**: `len()` (not `size` or `length`), `is_empty()`,
+  `to_uppercase()`, `contains()`, `push()`, `insert()`, `remove()`, `to_string()`,
+  `trim()`, `split(',')`, `chars()`, `parse::<i32>()` (it returns a `Result`). Lists also have
+  Kotlin's collection operations under snake_case names: `map`, `filter`, `filter_map`,
+  `flat_map`, `for_each`, `find`, `any`, `all`, `none`, `count`, `sum`, `sum_of`, `max_of`,
+  `min_of`, `max_by_key`, `min_by_key`, `sorted`, `sorted_by`, `sorted_by_descending`,
+  `reversed`, `distinct`, `group_by`, `associate_by`, `partition`, `chunked`,
+  `join_to_string`, `join_with`, `map_indexed`, `index_of_first`, `is_not_empty`. They return
+  new `Vec`s (`find`, `first()`, `max_by_key` return references). `is_not_empty()` is only for
+  lists; for text write `!s.is_empty()`.
+* **Numbers don't convert by themselves.** `i32 * f64` is an error: write `n as f64`.
+  `len()` and indexes are `usize`. Integer division truncates. `Int`, `Long` and `Double` are
+  names for `i32`, `i64` and `f64`.
+* **Values have one owner.** Assigning a `String`, `Vec` or class value, or passing it to a
+  function that keeps it, moves it, and the old variable can't be used afterwards. Lend it
+  instead (`&T` and `&mut T` parameters; Oxie writes the `&` at the call), or pass
+  `.clone()` when the function really needs its own copy. A `for (x in xs)` over a local list
+  that is used afterwards borrows it, so `x` is a reference.
+* **Objects are not shared references.** `val b = a` moves or copies `a`; it doesn't alias it.
+  When several places must see the same mutable object (accounts shared by customers, nodes
+  of a graph, state shared between threads), declare it `shared class`, or
+  `@sync shared class` to use it from several threads. Copying such a value copies a handle,
+  and `==` on it compares identity.
+* **Mutability belongs to the variable.** A `val` object can't call a method that changes it;
+  declare the variable `var`. Oxie works out which methods change their object.
+* **No inheritance.** There are no `open`, `abstract` or `sealed` classes and no `: Base()`.
+  Share behavior with interfaces (they can have default methods) and composition; use an
+  `enum` with data where Kotlin would use a sealed class. Constructor parameters are fields
+  (no `val`/`var` needed), there are no getters or setters, and `this.` is only needed when a
+  parameter has the field's name.
+* **No exceptions.** `throws`, `throw`, `try`/`catch` and `?` work on `Result` values, and a
+  function that can fail says so in its signature. Calling a throwing function as a statement
+  inside another throwing function passes its error on; anywhere else you get the `Result` and
+  handle it: `when (val r = f()) { Ok(v) -> ...; Err(e) -> ... }`, `f() ?: default`,
+  `if (val Err(e) = f())`, or `.unwrap()`.
+* **`null` is `Option`.** A `T?` must be unwrapped before use: there are no smart casts, so
+  instead of `if (x != null) x.foo()` write `if (val x = x) x.foo()` or `x?.foo()`. In a
+  lambda, `return` returns from the lambda, not from the enclosing function.
+* **Printing.** `"$x"` needs `Display`: numbers, text and types with `toString()`. Lists,
+  maps, options and other values print with `"${x:?}"`. A whole `f64` prints without
+  decimals (`43`); write `"${x:.1}"` for a fixed number of decimals.
+
+## What works differently from Rust
+
+Most Rust syntax is accepted (`fn`, `let`, `match`, `impl`, `|x|` closures, `::`, macros), so
+Rust habits compile, but they skip what Oxie infers and don't read as Oxie. Write instead:
+
+* `fun`, `val`/`var`, a return type after `:`, `when` with `->` arms, `{ x -> }` lambdas,
+  templates instead of `format!`, `T?` instead of `Option<T>`, and `throws` instead of a
+  `Result` return type.
+* A class instead of a struct and an `impl` block. Leave out `self` parameters (`&self` or
+  `&mut self` is inferred from what the method does) and `self.` in front of fields. Implement
+  an interface with `: Name` and `override fun`, and `Display` with
+  `override fun toString() = "..."`.
+* Construct with `Point(1.0, 2.0)`, not `Point::new` or a struct literal; `HashMap()` calls
+  `HashMap::new()`. Use `.` in paths: `Color.Red`, `std.mem.swap(a, b)`, `Duration.from_secs(1)`.
+* No `&` or `&mut` at call sites of Oxie functions: `total(items)` lends `items` when the
+  parameter is a reference. Lifetimes and trait bounds that the body implies are added for you.
+* `data class` and enums derive `Debug`, `Clone` and `PartialEq` (and `Copy`, `Eq`, `Hash` when
+  possible) on their own. Other derives: `@derive(Hash)` or `class C : Hash`.
+* `error enum` (or `error class`) declares an error type with its messages, in place of a
+  hand-written `Display` and `Error` impl.
+
+## Patterns
+
+**Errors.**
+
+```oxie
+error enum ParseError {
+    Empty = "empty input"
+    BadNumber(text: String) = "'$text' is not a number"
+}
+
+fun parse_all(text: &str): Vec<i32> throws ParseError {
+    if (text.trim().is_empty()) throw ParseError.Empty
+    var out = vec[]
+    for (part in text.split(',')) {
+        val n: i32 = part.trim().parse().map_err { ParseError.BadNumber(part.trim().to_string()) }?
+        out.push(n)
+    }
+    out                                          // wrapped in Ok
+}
+
+fun main() {
+    for (input in ["1, 2, 3", "", "4, x"]) {
+        when (val r = parse_all(input)) {
+            Ok(nums) -> println("sum ${nums.iter().sum::<i32>()}")
+            Err(e) -> println("error: $e")
+        }
+    }
+    val total = try {
+        val a = parse_all("5")?
+        val b = parse_all("y")?
+        a.len() + b.len()
+    } catch (e) {
+        println("caught: $e")
+        0
+    }
+    println(total)
+    val fallback = parse_all("") ?: vec[]        // a default when it fails
+    println("${fallback:?}")
+}
+```
+
+`throws` without a type means `AnyError`, which every error and any string converts into
+(`throw "bad value $x"`). `fun main() throws` prints the error and exits with status 1.
+
+**Optional values.**
+
+```oxie
+data class User(name: String, email: String?)
+
+fun find(users: &[User], name: &str): &User? = users.iter().find { it.name == name }
+
+fun main() {
+    val users = vec[User("ada", "ada@example.org"), User("bob", null)]
+    println(find(&users, "ada")?.email.clone() ?: "no email")
+    println(find(&users, "bob")?.email.clone() ?: "no email")
+    if (val u = find(&users, "bob")) println("found ${u.name}")
+    val port: u16? = "8080".parse().ok()
+    println(port ?: 80)
+    val n = "x".parse::<i32>().ok().and_then { if (it > 0) Some(it) else null } ?: -1
+    println(n)
+}
+```
+
+* Through a reference (`find` returns `&User?`), `?.email` gives a borrowed value. Where you
+  need a `String`, copy it: `?.email.clone() ?: "..."`.
+* `a ?: b` takes `a`: for an optional field you use again later, write `a.clone() ?: b`.
+* `?.` followed by a method that itself returns an optional gives a nested optional
+  (`T??`); use `.and_then { }` instead.
+* The right side of `?:` can be `return`, `throw`, `continue` or `break`:
+  `val v = map.get(key) ?: return`.
+
+**Interfaces as values.**
+
+```oxie
+interface Shape {
+    fun area(): f64
+    fun name(): String
+}
+
+class Square(side: f64) : Shape {
+    override fun area() = side * side
+    override fun name() = "square"
+}
+
+class Circle(r: f64) : Shape {
+    override fun area() = 3.14159 * r * r
+    override fun name() = "circle"
+}
+
+fun describe(s: &Shape) = println("${s.name()}: ${s.area():.2}")
+
+fun main() {
+    var shapes: Vec<Shape> = vec[Square(2.0), Circle(1.0)]    // each value is boxed for you
+    shapes.sort_by { a, b -> a.area().total_cmp(&b.area()) }
+    for (s in &shapes) describe(s.as_ref())
+}
+```
+
+A list typed `Vec<Shape>` boxes the values you put in it; with `Vec<Box<Shape>>` you write
+`Box.new(...)` yourself. `sorted_by` needs `Clone`, which a box of an interface isn't, so sort
+such a list in place with `sort_by`.
+
+**Shared objects.**
+
+```oxie
+shared class Account(owner: String, var balance: i64 = 0) {
+    fun deposit(amount: i64) {
+        balance += amount
+    }
+}
+
+fun main() {
+    val joint = Account("ada")
+    val accounts = vec[joint, Account("bob")]     // the list holds a handle to the same account
+    accounts[0].deposit(50)
+    joint.deposit(25)
+    println("${joint.balance} ${accounts[0] == joint}")
+    println(accounts.map { "${it.owner()}=${it.balance()}" }.join_to_string(" "))
+}
+```
+
+Outside its class, a shared object's field reads like a field (`joint.balance`). Inside a lambda
+over a list of them, Oxie may not know the element's type: call the getter, `it.balance()`, as
+the compiler error suggests.
+
+**Functions as values.**
+
+```oxie
+class Step(name: String, run: (i32) -> i32)
+
+fun make_adder(n: i32): (i32) -> i32 = move { it + n }     // `move`: it outlives `n`
+
+fun apply_twice(x: i32, f: (i32) -> i32): i32 {
+    val once = f(x)                                        // `f(f(x))` borrows `f` twice
+    f(once)
+}
+
+fun main() {
+    val steps = vec[Step("double", { it * 2 }), Step("add 3", Box.new(make_adder(3)))]
+    var v = 5
+    for (s in &steps) {
+        v = (s.run)(v)                                     // call a field that holds a function
+        println("${s.name}: $v")
+    }
+    println(apply_twice(1) { it * 10 })
+}
+```
+
+* A function-typed parameter is an `impl FnMut`; a function-typed field or list element is a
+  boxed `Fn`, and lambdas written there are boxed for you. Other function values need
+  `Box.new(f)`.
+* A lambda returned from a function, stored in a field, or run on another thread must own what
+  it captures: `move { ... }`, or a capture list `{ [handle] -> ... }` that clones a shared
+  handle or channel sender into it.
+
+**Tests.** `test "name" { assert_eq(f(2), 4) }` blocks sit next to the code; `oxie test` runs
+them, and `oxie test "name"` runs one.
+
+## Topics
+
+`oxie guide <topic>` prints the documentation of this version:
+
+* `tour` — the language by example
+* `reference` — every construct and the Rust it compiles to
+* `errors` — error handling in depth
+* `cheatsheet` — Kotlin and TypeScript next to Oxie
+* `interop` — crates, Cargo, and mixing Oxie with Rust
+* `tooling` — the `oxie` command, its diagnostics, scripts and editors
+* `performance` — what Oxie code costs

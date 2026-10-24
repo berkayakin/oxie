@@ -1,0 +1,3 @@
+features = ["modules", "imports", "data class", "nullable results"]
+requires = ['data\s+class\s+Celsius']
+files = ["src/units.oxi", "src/stats.oxi"]

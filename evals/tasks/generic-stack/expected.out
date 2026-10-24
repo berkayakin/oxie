@@ -1,0 +1,7 @@
+size 4, top Some(40)
+popped Some(40) Some(30)
+size 2, empty false
+pop on empty: None, empty true
+top word: fig
+largest: Some(9) Some("plum")
+largest of nothing: None

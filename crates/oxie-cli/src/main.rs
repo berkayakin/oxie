@@ -3,6 +3,7 @@
 mod cargo;
 mod explain;
 mod from_rust;
+mod guide;
 mod locations;
 mod lsp;
 mod project;
@@ -34,6 +35,7 @@ COMMANDS:
                            each statement with the .oxi line it came from
     from-rust <file.rs> [-o out.oxi]
                            Translate Rust to Oxie (`-` reads stdin)
+    guide [topic]          Print the guide to writing this version of Oxie (`topics` lists the rest)
     lsp                    Start the language server (stdio)
     clean                  Remove build artifacts
     version                Print version
@@ -54,6 +56,7 @@ fn main() -> ExitCode {
         "fmt" | "format" => cmd_fmt(rest),
         "emit" => cmd_emit(rest),
         "from-rust" => from_rust::run(rest),
+        "guide" => guide::run(rest),
         "lsp" => {
             lsp::run();
             Ok(ExitCode::SUCCESS)
@@ -127,6 +130,9 @@ fn cmd_init(args: &[String]) -> R {
         if !dir.join("build.rs").exists() {
             std::fs::write(dir.join("build.rs"), project::BUILD_RS).map_err(|e| e.to_string())?;
         }
+        if !dir.join("AGENTS.md").exists() {
+            std::fs::write(dir.join("AGENTS.md"), project::AGENTS_MD).map_err(|e| e.to_string())?;
+        }
         println!("Added Oxie to the existing crate. Write modules as src/<name>.oxi and add this to src/main.rs or src/lib.rs:\n\n    include!(concat!(env!(\"OUT_DIR\"), \"/oxie/mod.rs\"));\n");
         return Ok(ExitCode::SUCCESS);
     }
@@ -152,6 +158,9 @@ fn report(out: &oxie_compiler::Output, root: &Path) -> bool {
 }
 
 fn precheck(p: &Project) -> Result<bool, String> {
+    if let Some(warning) = project::version_warning(p) {
+        eprintln!("warning: {warning}");
+    }
     let out = p.check_sources().map_err(|e| e.to_string())?;
     Ok(report(&out, &p.root))
 }

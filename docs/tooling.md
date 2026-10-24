@@ -52,9 +52,9 @@ it to the checkout it runs in.
 
 | Command | Description |
 |---|---|
-| `oxie new <name>` | New program: `Cargo.toml`, `build.rs`, `src/main.rs`, `src/main.oxi` |
+| `oxie new <name>` | New program: `Cargo.toml`, `build.rs`, `src/main.rs`, `src/main.oxi`, and an `AGENTS.md` for AI coding agents |
 | `oxie new <name> --lib` | New library (`src/lib.oxi`) |
-| `oxie init [--lib]` | Make the current directory an Oxie project; in an existing Rust crate, add Oxie support (`build.rs` + build-dependency) |
+| `oxie init [--lib]` | Make the current directory an Oxie project; in an existing Rust crate, add Oxie support (`build.rs` + build-dependency, and an `AGENTS.md` if there is none) |
 | `oxie run [--release] [-- args]` | Build and run the project |
 | `oxie run file.oxi [-- args]` | Run a single file. Inside a project's `src/` this runs the project |
 | `oxie build [--release]` | Build |
@@ -63,6 +63,7 @@ it to the checkout it runs in.
 | `oxie fmt [--check] [paths]` | Format `.oxi` files (the project's `src/` by default) |
 | `oxie emit file.oxi [--annotate]` | Print the Rust generated for a file; `--annotate` puts a `// file.oxi:line` comment above each statement and says why at each choice Oxie made (see [What Oxie decided](#what-oxie-decided)) |
 | `oxie from-rust file.rs [-o out.oxi]` | Translate Rust to Oxie (`-` reads stdin); see [Translating Rust](#translating-rust) |
+| `oxie guide [topic]` | Print the guide to writing this version of Oxie, or a page of this documentation (`oxie guide topics` lists them); see [AI coding agents](#ai-coding-agents) |
 | `oxie lsp` | Start the language server on stdin/stdout |
 | `oxie clean` | `cargo clean` |
 | `oxie version` | Print the version |
@@ -277,11 +278,33 @@ build.rs            fn main() { oxie_build::compile(); }
 src/main.rs         include!(concat!(env!("OUT_DIR"), "/oxie/main.rs"));
 src/main.oxi        crate root (src/lib.oxi for libraries)
 src/*.oxi           modules; directories are nested modules
+AGENTS.md           tells AI coding agents to read `oxie guide`
 ```
 
 `oxie_build::compile()` compiles `src/`; `oxie_build::compile_dir("other")` compiles another
 directory. In a Rust crate, `include!(concat!(env!("OUT_DIR"), "/oxie/mod.rs"))` declares the Oxie
 modules without an Oxie crate root.
+
+`oxie` checks the sources with the compiler built into it before cargo builds them with the
+project's `oxie-build`. When the two versions differ (after updating `oxie`, or a project made
+with another one), `oxie build`, `run`, `check` and `test` warn and say how to make them match.
+
+## AI coding agents
+
+AI coding agents (Claude Code, Codex, Cursor, ...) know little about Oxie, and what they know
+may be from an older version. Oxie gives them the rules of the version you use:
+
+* `oxie guide` prints a guide to writing Oxie: how to work with the compiler, the language at a
+  glance, how it differs from Kotlin and from Rust, and the mistakes to avoid. `oxie guide
+  <topic>` prints a page of this documentation (`oxie guide topics` lists them). Both are built
+  into the `oxie` binary, so they describe exactly the Oxie it compiles, and they warn when the
+  project builds with another `oxie-build`.
+* `oxie new` and `oxie init` write an `AGENTS.md` that tells agents to run `oxie guide` before
+  they change Oxie code. It states no language rules, so it stays right when you update Oxie.
+* The [Claude Code skill](../skills/oxie/SKILL.md) does the same for any work on Oxie code,
+  also in projects without an `AGENTS.md`. Install it with
+  `claude plugin install oxie --marketplace oxie-lang/oxie`, or copy `skills/oxie` to
+  `~/.claude/skills/oxie`.
 
 ## Formatter
 

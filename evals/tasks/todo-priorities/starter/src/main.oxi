@@ -1,0 +1,34 @@
+data class Task(id: u32, title: String, done: bool = false)
+
+class TodoList {
+    var tasks: Vec<Task> = vec[]
+    var next_id: u32 = 1
+
+    fun add(title: &str): u32 {
+        val id = next_id
+        next_id += 1
+        tasks.push(Task(id, title.to_string()))
+        id
+    }
+
+    fun complete(id: u32): bool {
+        for (t in tasks.iter_mut()) {
+            if (t.id == id) {
+                t.done = true
+                return true
+            }
+        }
+        false
+    }
+
+    fun pending(): Vec<&Task> = tasks.iter().filter { !it.done }.collect()
+}
+
+fun main() {
+    var todo = TodoList()
+    todo.add("write report")
+    todo.add("buy milk")
+    todo.add("call mom")
+    todo.complete(2)
+    for (t in todo.pending()) println("#${t.id} ${t.title}")
+}

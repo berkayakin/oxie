@@ -1,0 +1,27 @@
+data class Student(name: String, scores: Vec<i32>) {
+    fun average(): f64 = scores.sum() as f64 / scores.len() as f64
+}
+
+fun grade(avg: f64): char = when {
+    avg >= 90.0 -> 'A'
+    avg >= 80.0 -> 'B'
+    avg >= 70.0 -> 'C'
+    avg >= 60.0 -> 'D'
+    else -> 'F'
+}
+
+fun main() {
+    val students = vec[
+        Student("Ada", vec[92, 88, 95]),
+        Student("Linus", vec[75, 64, 81]),
+        Student("Grace", vec[85, 91, 79]),
+        Student("Alan", vec[58, 62, 49]),
+    ]
+    for (s in students.sorted_by_descending { it.average() }) {
+        println("${s.name}: ${s.average():.1} (${grade(s.average())})")
+    }
+    val class_avg = students.sum_of { it.average() } / students.len() as f64
+    println("class average: ${class_avg:.1}")
+    val passed = students.filter { it.average() >= 60.0 }.map { it.name.clone() }.sorted()
+    println("passed: ${passed.join_to_string(", ")}")
+}

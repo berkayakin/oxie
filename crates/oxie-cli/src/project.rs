@@ -133,6 +133,19 @@ fun main() {
 }
 "#;
 
+/// Written into new projects for AI coding agents. It sends them to `oxie guide` and states no
+/// rules of the language itself, so it stays right when the project moves to another Oxie
+/// version.
+pub const AGENTS_MD: &str = "# Notes for AI coding agents
+
+The `.oxi` files in this project are written in Oxie, a programming language that compiles to
+Rust. `build.rs` turns them into Rust when the crate builds; don't edit the generated Rust.
+
+Before you write or change Oxie code, run `oxie guide` and read it. It is the guide to the
+Oxie version installed here, which may differ from what you know about Oxie. Check changes
+with `oxie check`, run the program with `oxie run` and the tests with `oxie test`.
+";
+
 const HELLO_LIB: &str = r#"/// Adds two numbers.
 fun add(a: i32, b: i32): i32 = a + b
 
@@ -152,6 +165,7 @@ pub fn create(dir: &Path, name: &str, lib: bool) -> std::io::Result<()> {
     write_new(dir.join("Cargo.toml"), &manifest_text(name, ""))?;
     write_new(dir.join("build.rs"), BUILD_RS)?;
     write_new(dir.join(".gitignore"), "/target\n")?;
+    write_new(dir.join("AGENTS.md"), AGENTS_MD)?;
     if lib {
         write_new(dir.join("src/lib.rs"), &root_stub("lib"))?;
         write_new(dir.join("src/lib.oxi"), HELLO_LIB)?;
@@ -160,6 +174,44 @@ pub fn create(dir: &Path, name: &str, lib: bool) -> std::io::Result<()> {
         write_new(dir.join("src/main.oxi"), HELLO_MAIN)?;
     }
     Ok(())
+}
+
+/// The crates.io version of `oxie-build` in the Cargo.lock of the project at `root` (or of its
+/// workspace). A path dependency, as with `OXIE_HOME`, has no version and gives `None`.
+pub fn locked_oxie_build(root: &Path) -> Option<String> {
+    let lock = root.ancestors().map(|d| d.join("Cargo.lock")).find(|p| p.exists())?;
+    locked_version(&std::fs::read_to_string(lock).ok()?, "oxie-build")
+}
+
+fn locked_version(lock: &str, package: &str) -> Option<String> {
+    lock.split("[[package]]").find_map(|entry| {
+        let field = |key: &str| {
+            entry.lines().find_map(|l| l.trim().strip_prefix(key)?.trim_start().strip_prefix('=').map(|v| v.trim().trim_matches('"').to_string()))
+        };
+        (field("name")? == package && field("source").is_some()).then(|| field("version")).flatten()
+    })
+}
+
+/// A warning when the project builds with another `oxie-build` than this `oxie`. `oxie` checks
+/// the sources with its own compiler, and `oxie guide` describes its own version, while cargo
+/// compiles the project with the `oxie-build` in Cargo.lock.
+pub fn version_warning(p: &Project) -> Option<String> {
+    let locked = locked_oxie_build(&p.root)?;
+    let own = env!("CARGO_PKG_VERSION");
+    if locked == own {
+        return None;
+    }
+    let fix = if version_key(&locked) < version_key(own) {
+        format!("set `oxie-build = \"{own}\"` in Cargo.toml")
+    } else {
+        format!("install oxie {locked} (`cargo install oxie --version {locked}`)")
+    };
+    Some(format!("this project builds with oxie-build {locked} (see Cargo.lock), but this is oxie {own}, so code written for one may not build with the other; {fix}"))
+}
+
+/// `1.10.2` → `[1, 10, 2]`, for comparing versions (a pre-release suffix is ignored).
+fn version_key(v: &str) -> Vec<u64> {
+    v.split(['-', '+']).next().unwrap_or(v).split('.').map(|n| n.parse().unwrap_or(0)).collect()
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -244,7 +296,24 @@ pub fn script_options(name: &str, deps: &[String]) -> Options {
 
 #[cfg(test)]
 mod tests {
-    use super::add_build_dependency;
+    use super::{add_build_dependency, locked_version, version_key};
+
+    #[test]
+    fn locked_version_is_read_from_cargo_lock() {
+        let lock = "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"oxie-build\"\nversion = \"0.2.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"oxie-compiler\"\nversion = \"0.2.1\"\n";
+        assert_eq!(locked_version(lock, "oxie-build").as_deref(), Some("0.2.1"));
+        // a path dependency (OXIE_HOME) has no source
+        let path = "[[package]]\nname = \"oxie-build\"\nversion = \"0.2.1\"\n";
+        assert_eq!(locked_version(path, "oxie-build"), None);
+        assert_eq!(locked_version(lock, "serde"), None);
+    }
+
+    #[test]
+    fn versions_compare_by_number() {
+        assert!(version_key("0.10.0") > version_key("0.9.3"));
+        assert!(version_key("0.1.0") < version_key("0.1.1-beta.1"));
+        assert_eq!(version_key("1.2.3"), vec![1, 2, 3]);
+    }
 
     #[test]
     fn build_dependency_joins_an_existing_table() {

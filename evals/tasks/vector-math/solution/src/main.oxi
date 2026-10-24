@@ -1,0 +1,33 @@
+import std::f64::consts::PI
+
+data class Vec2(x: f64, y: f64) {
+    operator fun plus(o: Vec2): Vec2 = Vec2(x + o.x, y + o.y)
+    operator fun minus(o: Vec2): Vec2 = Vec2(x - o.x, y - o.y)
+    operator fun times(k: f64): Vec2 = Vec2(x * k, y * k)
+    operator fun unaryMinus(): Vec2 = Vec2(-x, -y)
+
+    fun length(): f64 = (x * x + y * y).sqrt()
+    fun rotated(degrees: f64): Vec2 {
+        val r = degrees.deg_to_rad()
+        Vec2(x * r.cos() - y * r.sin(), x * r.sin() + y * r.cos())
+    }
+
+    override fun toString() = "(${x:.1}, ${y:.1})"
+}
+
+fun f64.deg_to_rad(): f64 = this * PI / 180.0
+
+fun main() {
+    val a = Vec2(3.0, 4.0)
+    val b = Vec2(1.0, -2.0)
+    println("a + b = ${a + b}")
+    println("a - b = ${a - b}")
+    println("a * 2 = ${a * 2.0}")
+    println("-b = ${-b}")
+    println("|a| = ${a.length()}")
+    println("a rotated 90 = ${a.rotated(90.0)}")
+    val path = vec[a, b, Vec2(0.5, 0.5)]
+    var sum = Vec2(0.0, 0.0)
+    for (p in path) sum = sum + p
+    println("sum = $sum, a is still ${a}")
+}

@@ -1,0 +1,7 @@
+fun mean(xs: &[f64]): f64? = if (xs.is_empty()) null else xs.iter().sum::<f64>() / xs.len() as f64
+
+fun spread(xs: &[f64]): f64? {
+    val max = xs.iter().copied().reduce { a, b -> a.max(b) } ?: return null
+    val min = xs.iter().copied().reduce { a, b -> a.min(b) } ?: return null
+    max - min
+}

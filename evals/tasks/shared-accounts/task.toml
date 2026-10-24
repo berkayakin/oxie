@@ -1,0 +1,2 @@
+features = ["shared class", "classes", "identity"]
+requires = ['shared\s+class\s+Account']
