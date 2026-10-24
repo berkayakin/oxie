@@ -11,25 +11,29 @@ fun main() {
     // error: 10: cannot assign twice
 }
 
-// the text of a `toString` is a `String`: a field it gives isn't lent with `&` (a `val` is)
+// a field given back from `this` is copied with `.clone()`, as rustc suggests; the text of a
+// `toString` is a `String`, so a field it gives isn't lent with `&` (a `val` in it is)
 class Person(val name: String, val items: Vec<String>) {
+    fun label(): String {
+        return name
+        // error: 18: fix: use a copy (`.clone()`): `return name.clone()`
+    }
+
     override fun toString(): String {
         val first = items[0]
-        // error: 17: fix: pass a reference (`&`): `val first = &items[0]`
+        // error: 23: fix: pass a reference (`&`): `val first = &items[0]`
         if (first.is_empty()) return name
-        // error: 19: can't take `self.name` out of a value that is only borrowed
-        // not: 19: pass a reference
-        // not: 19: consider borrowing
-        name
-        // error: 23: can't take `self.name` out of a value that is only borrowed
-        // not: 23: pass a reference
-        // not: 23: consider borrowing
+        // error: 25: fix: use a copy (`.clone()`): `if (first.is_empty()) return name.clone()`
+        // not: 25: pass a reference
+        // not: 25: consider borrowing
+        this.name
+        // error: 29: fix: use a copy (`.clone()`): `this.name.clone()`
+        // not: 29: pass a reference
     }
 }
 
-class Nick(val name: String, val nick: String, val short: bool) {
-    override fun toString() = if (short) nick else name
-    // error: 31: can't take `self.nick` out of a value that is only borrowed
-    // error: 31: can't take `self.name` out of a value that is only borrowed
-    // not: 31: pass a reference
+class Nick(val nick: String, val short: bool) {
+    override fun toString() = if (short) nick else "anonymous"
+    // error: 36: fix: use a copy (`.clone()`): `override fun toString() = if (short) nick.clone() else "anonymous"`
+    // not: 36: pass a reference
 }

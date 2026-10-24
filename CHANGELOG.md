@@ -169,8 +169,11 @@
   to be moved out of `this`, which rustc rejected.
 * A field that a `toString` gives without being all of it (`return name` after other
   statements, `if (short) nick else name`) needs `.clone()`, as in any method that returns a
-  `String`, and the error now says only that. It used to offer the fix `return &name` too, which
-  doesn't compile.
+  `String`, and the error now offers only that. It used to offer the fix `return &name` too,
+  which doesn't compile.
+* A field of `this` that can't be moved out (`return name` in a method that returns a `String`)
+  gets rustc's `.clone()` as a quick fix: `return name.clone()`. It used to be only a note,
+  because the end of the generated `self.name` didn't map onto `name` (or onto `this.name`).
 * A labeled block (`'found: { ... }`) gets the declared type of what it initializes, as a plain
   block does, so its value is converted: `"text"` to a `String`, a value to `T?`.
 * Windows: scripts and projects whose paths Oxie resolves no longer get the `\\?\` prefix

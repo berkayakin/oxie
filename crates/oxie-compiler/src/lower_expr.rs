@@ -1124,7 +1124,7 @@ impl<'a> Lowerer<'a> {
                 self.e.w(")");
             }
             Null => self.e.w("None"),
-            Path { segs, generics, global } => self.path_expr(segs, generics.as_ref(), *global),
+            Path { segs, generics, global } => self.path_expr(segs, generics.as_ref(), *global, e.span),
             // `Vec::<i32>::new` (parsed as `<Vec<i32>>::new`)
             QualifiedPath(Type::Qualified { ty, trait_: None, rest }) if matches!(**ty, Type::Path { .. }) => {
                 let turbofish = |s: String| match s.find('<') {
@@ -1198,6 +1198,10 @@ impl<'a> Lowerer<'a> {
                     return;
                 }
                 self.expr(recv, P_POSTFIX);
+                // `this` is written `self`: the rest is marked, as after an implicit field's `self`
+                if matches!(recv.kind, SelfValue) {
+                    self.e.mark(Span::new(recv.span.end as usize, recv.span.end as usize));
+                }
                 self.e.w(".");
                 self.e.w(&member(name));
             }
@@ -1789,7 +1793,7 @@ impl<'a> Lowerer<'a> {
 
     // ------------------------------------------------------------------ paths
 
-    fn path_expr(&mut self, segs: &[String], generics: Option<&Vec<GenericArg>>, global: bool) {
+    fn path_expr(&mut self, segs: &[String], generics: Option<&Vec<GenericArg>>, global: bool, span: Span) {
         let mut s = String::new();
         if global {
             s.push_str("::");
@@ -1797,7 +1801,12 @@ impl<'a> Lowerer<'a> {
         if segs.len() == 1 {
             let n = &segs[0];
             if let Some(f) = self.implicit_field(n) {
-                self.e.w(&f);
+                // the name after `self.` is marked too, so a position after `self.name` maps
+                // exactly after `name` (where rustc's `.clone()` goes)
+                let (recv, field) = f.split_at(f.rfind('.').map_or(0, |i| i + 1));
+                self.e.w(recv);
+                self.e.mark(span);
+                self.e.w(field);
                 return;
             }
             if !self.is_local(n) && !self.k.is_class_name(n) && !self.k.is_fun_name(n) {
